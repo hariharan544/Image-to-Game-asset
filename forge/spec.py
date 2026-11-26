@@ -71,6 +71,8 @@ class TextureSpec(BaseModel):
     size: int = 2048
     maps: list[str] = Field(default_factory=lambda: ["basecolor", "normal", "roughness", "metallic", "ao"])
     cage_extrusion_ratio: float = 0.01
+    # metallic below this is AI-texture noise -> 0; real metal above is rescaled (0 = keep as baked)
+    metallic_floor: float = 0.35
     samples: int = 16
     device: Literal["CPU", "GPU"] = "GPU"
 

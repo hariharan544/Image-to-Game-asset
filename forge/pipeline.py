@@ -260,6 +260,7 @@ class Pipeline:
             uv_res = job.stage(f"uv@{target}")["attempts"][-1]["result"]
             a.update(texture_size=spec.texture.size, texture_dir=str(job.path("textures", tdir, ".keep").parent),
                      maps=spec.texture.maps, margin_px=spec.uv.margin_px, device=spec.texture.device,
+                     metallic_floor=spec.texture.metallic_floor,
                      uv_utilization={p: r.get("utilization", 0.7) for p, r in uv_res.get("parts", {}).items()})
         elif name == "skin":
             parts = job.stage("cleanup")["attempts"][-1]["result"].get("parts", [])

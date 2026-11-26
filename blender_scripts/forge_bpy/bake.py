@@ -119,6 +119,24 @@ def _bake(map_type: str, extrusion: float, max_ray: float, margin: int) -> None:
         bpy.ops.object.bake(type="AO", **kw)
 
 
+def _clean_metallic(img, floor: float) -> dict:
+    """AI-generated PBR textures put low 'metallic' noise (~0.1-0.25) on non-metal surfaces
+    (measured on the first real asset: the whole fur at ~0.2). Values below `floor` become 0;
+    real metal above it is rescaled to the full 0..1 range."""
+    px = np.empty(img.size[0] * img.size[1] * 4, dtype=np.float32)
+    img.pixels.foreach_get(px)
+    px = px.reshape(-1, 4)
+    m = px[:, 0]
+    covered = m > 1e-3
+    noise = covered & (m < floor)
+    out = np.where(m < floor, 0.0, (m - floor) / max(1.0 - floor, 1e-6)).astype(np.float32)
+    px[:, 0] = px[:, 1] = px[:, 2] = out
+    img.pixels.foreach_set(px.ravel())
+    n = max(int(covered.sum()), 1)
+    return {"floor": floor, "zeroed_pct": round(float(100.0 * noise.sum() / n), 2),
+            "metal_pct": round(float(100.0 * (covered & (m >= floor)).sum() / n), 2)}
+
+
 def _miss_ratio(img, covered_hint: float) -> float:
     """Fraction of pure-black texels in a base colour bake (rays that hit nothing)."""
     px = np.empty(img.size[0] * img.size[1] * 4, dtype=np.float32)
@@ -172,6 +190,7 @@ def run(args: dict) -> dict:
             c.hide_render = False
 
     report = {}
+    cleaned: dict = {}
     for low in C.meshes_with_role("low"):
         high = C.high_for(low)
         part = low.get(C.PART_PROP)
@@ -193,12 +212,16 @@ def run(args: dict) -> dict:
                     _bake(mtype, extrusion, extrusion * 4, margin)
             else:
                 _bake(mtype, extrusion, extrusion * 4, margin)
+            if mtype == "metallic":
+                cleaned[part] = _clean_metallic(img, float(args.get("metallic_floor", 0.35)))
             path = os.path.join(out_dir, f"T_{part}_{mtype}.png")
             img.filepath_raw = path
             img.file_format = "PNG"
             img.save()
             baked[mtype] = img
         entry = {"maps": {k: os.path.join(out_dir, f"T_{part}_{k}.png") for k in baked}}
+        if part in cleaned:
+            entry["metallic_cleanup"] = cleaned[part]
         if "basecolor" in baked:
             util = float(args.get("uv_utilization", {}).get(part, 0.7))
             entry["bake_miss_ratio"] = round(_miss_ratio(baked["basecolor"], util), 4)
