@@ -1,0 +1,4 @@
+00:00.032  color_management | Using config from OCIO: "C:\Program Files\Blender Foundation\Blender 5.3\5.3\datafiles\colormanagement\config.ocio"
+00:01.735  blend            | Read blend: "C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\blend\unity\06_skin_a1.blend"
+Blender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:33:43)
+Info: Saved as "07_lods_a1.blend"

@@ -1,0 +1,9 @@
+00:00.032  color_management | Using config from OCIO: "C:\Program Files\Blender Foundation\Blender 5.3\5.3\datafiles\colormanagement\config.ocio"
+00:01.657  blend            | Read blend: "C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\blend\unreal\07_lods_a1.blend"
+00:02.469  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\previews\unreal\front.png'
+00:02.516  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\previews\unreal\right.png'
+00:02.578  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\previews\unreal\back.png'
+00:02.625  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\previews\unreal\left.png'
+00:02.672  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\previews\unreal\three_quarter.png'
+00:02.735  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\bull\previews\unreal\clay.png'
+Blender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:33:43)

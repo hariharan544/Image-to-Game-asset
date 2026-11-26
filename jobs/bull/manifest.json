@@ -577,7 +577,7 @@
       "finished": 1795690395.4858425
     },
     "metrics@unreal": {
-      "status": "awaiting_review",
+      "status": "done",
       "attempts": [
         {
           "attempt": 1,
@@ -648,11 +648,445 @@
         }
       ],
       "started": 1795690395.4893079,
-      "params": {}
+      "params": {},
+      "accepted_by": "director"
+    },
+    "previews@unreal": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "result": {
+            "images": [
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\front.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\right.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\back.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\left.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\three_quarter.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\clay.png"
+            ],
+            "engine": "BLENDER_WORKBENCH"
+          }
+        }
+      ],
+      "started": 1795690905.4484372,
+      "finished": 1795690908.4984727
+    },
+    "retopo@unity": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "params": {
+            "target_tris": 15000,
+            "budget_scale": 1.0,
+            "method": "quadremesher",
+            "symmetry_x": true,
+            "preserve_hard_edges": false,
+            "seed": 0
+          },
+          "result": {
+            "parts": {
+              "Body": {
+                "budget": 15000,
+                "tris_before": 19397,
+                "tris_after": 14999,
+                "method": "quadremesher(rerun)+decimate",
+                "ngons_split": 0
+              }
+            },
+            "total_tris": 14999
+          },
+          "issues": [
+            {
+              "code": "RETOPO_FALLBACK",
+              "stage": "retopo",
+              "part": "Body",
+              "message": "quad remesh failed, decimation was used (triangles, worse deformation)",
+              "value": "quadremesher(rerun)+decimate",
+              "limit": null,
+              "severity": "warn"
+            }
+          ],
+          "decision": {
+            "action": "accept",
+            "reason": "no blocking issues; 1 warning(s) sent to review",
+            "decided_by": "rules",
+            "new_params": null
+          },
+          "blend": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\03_retopo_a1.blend"
+        }
+      ],
+      "started": 1795690912.3182044,
+      "params": {
+        "target_tris": 15000,
+        "budget_scale": 1.0,
+        "method": "quadremesher",
+        "symmetry_x": true,
+        "preserve_hard_edges": false,
+        "seed": 0
+      },
+      "finished": 1795690923.850835
+    },
+    "uv@unity": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "params": {
+            "method": "min_stretch",
+            "angle_limit_deg": 66.0,
+            "margin_px": 8,
+            "smooth_angle_deg": 40.0,
+            "packer": "uvpackmaster",
+            "uvpm_search_time": 3.0
+          },
+          "result": {
+            "parts": {
+              "Body": {
+                "has_uv": true,
+                "utilization": 0.706,
+                "overlap_pct": 0.018,
+                "texel_density_px_per_m": 1266.04,
+                "texel_density_cv": 0.0956,
+                "out_of_bounds_ratio": 0.0,
+                "zero_area_uv_tris": 5,
+                "packer": "uvpackmaster"
+              }
+            }
+          },
+          "issues": [
+            {
+              "code": "TEXEL_DENSITY_OFF_TARGET",
+              "stage": "uv",
+              "part": "Body",
+              "message": "texel density 1266 px/m vs target 512",
+              "value": 1266.04,
+              "limit": 512.0,
+              "severity": "warn"
+            }
+          ],
+          "decision": {
+            "action": "accept",
+            "reason": "no blocking issues; 1 warning(s) sent to review",
+            "decided_by": "rules",
+            "new_params": null
+          },
+          "blend": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\04_uv_a1.blend"
+        }
+      ],
+      "started": 1795690931.2537796,
+      "params": {
+        "method": "min_stretch",
+        "angle_limit_deg": 66.0,
+        "margin_px": 8,
+        "smooth_angle_deg": 40.0,
+        "packer": "uvpackmaster",
+        "uvpm_search_time": 3.0
+      },
+      "finished": 1795690946.8209217
+    },
+    "bake@unity": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "params": {
+            "cage_extrusion_ratio": 0.01,
+            "samples": 8
+          },
+          "result": {
+            "parts": {
+              "Body": {
+                "maps": {
+                  "basecolor": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\textures\\unity\\T_Body_basecolor.png",
+                  "normal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\textures\\unity\\T_Body_normal.png",
+                  "roughness": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\textures\\unity\\T_Body_roughness.png",
+                  "metallic": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\textures\\unity\\T_Body_metallic.png",
+                  "ao": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\textures\\unity\\T_Body_ao.png"
+                },
+                "bake_miss_ratio": 0.0
+              }
+            }
+          },
+          "issues": [],
+          "decision": {
+            "action": "accept",
+            "reason": "no blocking issues",
+            "decided_by": "rules",
+            "new_params": null
+          },
+          "blend": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\05_bake_a1.blend"
+        }
+      ],
+      "started": 1795690946.8222215,
+      "params": {
+        "cage_extrusion_ratio": 0.01,
+        "samples": 8
+      },
+      "finished": 1795690966.7134979
+    },
+    "skin@unity": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "params": {
+            "max_influences": 4,
+            "min_weight": 0.01
+          },
+          "result": {
+            "rig_system": "auto_rig_pro",
+            "arp": {
+              "source_joints": [
+                "ball_l",
+                "ball_r",
+                "calf_l",
+                "calf_r",
+                "clavicle_l",
+                "clavicle_r",
+                "foot_l",
+                "foot_r",
+                "hand_l",
+                "hand_r",
+                "head",
+                "index1_l",
+                "index1_r",
+                "index2_l",
+                "index2_r",
+                "index3_l",
+                "index3_r",
+                "lowerarm_l",
+                "lowerarm_r",
+                "middle1_l",
+                "middle1_r",
+                "middle2_l",
+                "middle2_r",
+                "middle3_l",
+                "middle3_r",
+                "neck",
+                "pelvis",
+                "pinky1_l",
+                "pinky1_r",
+                "pinky2_l",
+                "pinky2_r",
+                "pinky3_l",
+                "pinky3_r",
+                "ring1_l",
+                "ring1_r",
+                "ring2_l",
+                "ring2_r",
+                "ring3_l",
+                "ring3_r",
+                "thigh_l",
+                "thigh_r",
+                "thumb1_l",
+                "thumb1_r",
+                "thumb2_l",
+                "thumb2_r",
+                "thumb3_l",
+                "thumb3_r",
+                "upperarm_l",
+                "upperarm_r"
+              ],
+              "spine_bones": 3,
+              "placed": 65,
+              "missing_in_arp": [],
+              "bind_engine": "HEAT_MAP",
+              "weight_cleanup": {
+                "Body": 0
+              },
+              "body_vertex_groups": {
+                "Body": 64
+              },
+              "props": {},
+              "sockets": {},
+              "rig": "rig",
+              "bones": 345,
+              "deform_bones": 67
+            },
+            "parts": {
+              "Body": {
+                "vertex_groups": 64,
+                "unweighted_verts": 0
+              }
+            },
+            "sockets": {},
+            "bones": 345
+          },
+          "issues": [
+            {
+              "code": "SKELETON_TOO_HEAVY",
+              "stage": "skin",
+              "part": null,
+              "message": "345 bones > 75 recommended for mobile",
+              "value": 345,
+              "limit": 75,
+              "severity": "warn"
+            }
+          ],
+          "decision": {
+            "action": "accept",
+            "reason": "no blocking issues; 1 warning(s) sent to review",
+            "decided_by": "rules",
+            "new_params": null
+          },
+          "blend": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\06_skin_a1.blend"
+        }
+      ],
+      "started": 1795690966.7189858,
+      "params": {
+        "max_influences": 4,
+        "min_weight": 0.01
+      },
+      "finished": 1795690981.0341346
+    },
+    "lods@unity": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "result": {
+            "parts": {
+              "Body": [
+                14999,
+                5999,
+                2249
+              ]
+            }
+          }
+        }
+      ],
+      "started": 1795690981.0356252,
+      "finished": 1795690983.2733006
+    },
+    "metrics@unity": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "params": {},
+          "result": {
+            "parts": {
+              "Body": {
+                "mesh": {
+                  "tris": 14999,
+                  "verts": 8078,
+                  "non_manifold_edges": 2,
+                  "boundary_edges": 1145,
+                  "ngons": 0,
+                  "quad_ratio": 0.0,
+                  "shells": 20,
+                  "dimensions_m": [
+                    0.9747,
+                    0.7538,
+                    0.9941
+                  ]
+                },
+                "uv": {
+                  "has_uv": true,
+                  "utilization": 0.706,
+                  "overlap_pct": 0.018,
+                  "texel_density_px_per_m": 1266.04,
+                  "texel_density_cv": 0.0956,
+                  "out_of_bounds_ratio": 0.0,
+                  "zero_area_uv_tris": 5
+                },
+                "weights": {
+                  "weighted": true,
+                  "vertex_groups": 64,
+                  "verts_over_influence_limit": 0,
+                  "unweighted_verts_pct": 0.0,
+                  "not_normalized_pct": 0.0
+                }
+              }
+            }
+          },
+          "issues": [
+            {
+              "code": "NON_MANIFOLD",
+              "stage": "metrics",
+              "part": "Body",
+              "message": "non-manifold edges",
+              "value": 2,
+              "limit": 0,
+              "severity": "error"
+            }
+          ],
+          "decision": {
+            "action": "escalate",
+            "reason": "no automatic fix left for ['NON_MANIFOLD'] (tried [])",
+            "decided_by": "rules",
+            "new_params": null
+          },
+          "blend": null
+        }
+      ],
+      "started": 1795690983.2744656,
+      "params": {},
+      "accepted_by": "director"
+    },
+    "previews@unity": {
+      "status": "done",
+      "attempts": [
+        {
+          "attempt": 1,
+          "result": {
+            "images": [
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\front.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\right.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\back.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\left.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\three_quarter.png",
+              "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\clay.png"
+            ],
+            "engine": "BLENDER_WORKBENCH"
+          }
+        }
+      ],
+      "started": 1795690996.1139445,
+      "finished": 1795690998.9412436
+    },
+    "final_review": {
+      "status": "done",
+      "attempts": [],
+      "started": 1795691004.3470275,
+      "finished": 1795691004.3485322
+    },
+    "export@unreal": {
+      "status": "done",
+      "attempts": [],
+      "started": 1795691004.3496015,
+      "finished": 1795691023.3119984
+    },
+    "export@unity": {
+      "status": "done",
+      "attempts": [],
+      "started": 1795691023.3130603,
+      "finished": 1795691033.986941
     }
   },
   "tripo_tasks": {},
-  "checkpoints": {},
+  "checkpoints": {
+    "escalation_metrics@unreal": {
+      "status": "approved",
+      "notes": "approved in Blender",
+      "reviewer": "director",
+      "time": 1795690904.850638
+    },
+    "escalation_metrics@unity": {
+      "status": "approved",
+      "notes": "approved in Blender",
+      "reviewer": "director",
+      "time": 1795690995.545026
+    },
+    "final": {
+      "status": "approved",
+      "notes": "approved in Blender",
+      "reviewer": "director",
+      "time": 1795691003.794993
+    }
+  },
   "artifacts": {
     "tripo": {
       "source": "user_model",
@@ -665,9 +1099,62 @@
       "uv@unreal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unreal\\04_uv_a1.blend",
       "bake@unreal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unreal\\05_bake_a1.blend",
       "skin@unreal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unreal\\06_skin_a1.blend",
-      "lods@unreal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unreal\\07_lods_a1.blend"
+      "lods@unreal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unreal\\07_lods_a1.blend",
+      "retopo@unity": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\03_retopo_a1.blend",
+      "uv@unity": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\04_uv_a1.blend",
+      "bake@unity": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\05_bake_a1.blend",
+      "skin@unity": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\06_skin_a1.blend",
+      "lods@unity": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\blend\\unity\\07_lods_a1.blend"
+    },
+    "previews": {
+      "unreal": [
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\front.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\right.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\back.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\left.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\three_quarter.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unreal\\clay.png"
+      ],
+      "unity": [
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\front.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\right.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\back.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\left.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\three_quarter.png",
+        "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\previews\\unity\\clay.png"
+      ]
+    },
+    "ai_critique": null,
+    "exports": {
+      "unreal": {
+        "meshes": {
+          "body": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unreal\\SK_bull.fbx"
+        },
+        "textures": {
+          "Body": {
+            "basecolor": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unreal\\Textures\\T_bull_Body_BC.png",
+            "normal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unreal\\Textures\\T_bull_Body_N.png",
+            "orm": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unreal\\Textures\\T_bull_Body_ORM.png"
+          }
+        },
+        "rig_system": "auto_rig_pro",
+        "sockets": {}
+      },
+      "unity": {
+        "meshes": {
+          "body": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unity\\bull.fbx"
+        },
+        "textures": {
+          "Body": {
+            "basecolor": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unity\\Textures\\bull_Body_BaseMap.png",
+            "normal": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unity\\Textures\\bull_Body_Normal.png",
+            "mask": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\bull\\export\\unity\\Textures\\bull_Body_MetallicSmoothness.png"
+          }
+        },
+        "rig_system": "auto_rig_pro",
+        "sockets": {}
+      }
     }
   },
-  "status": "awaiting_review",
-  "waiting_on": "escalation_metrics@unreal"
+  "status": "done"
 }
