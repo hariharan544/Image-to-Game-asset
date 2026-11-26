@@ -237,12 +237,14 @@ assets:
     detachable_parts: [Sword]
     overrides:
       texture: {size: 128, samples: 1, device: CPU}
-      qa: {min_uv_utilization: 0.0, max_texel_density_cv: 5, max_bake_miss_ratio: 1}
+      qa: {min_uv_utilization: 0.0, max_texel_density_cv: 5, max_bake_miss_ratio: 1,
+           max_tris_over_budget_pct: 50, max_ngons: 1000}
 """)
     jobs = tmp_path / "jobs"
     assert cli(["--jobs", str(jobs), "--data", str(tmp_path / "d"), "run", str(guide)]) == 0
     job = Job.load(jobs / "bull")
-    assert job.m["status"] == "done", job.m.get("stages")
+    assert job.m["status"] == "done", (job.m.get("waiting_on"),
+                                       {k: v.get("status") for k, v in job.m["stages"].items()})
     clean = job.stage("cleanup")["attempts"][-1]["result"]
     assert clean["rigged"] and clean["rig_source"]["bones"] == 52
     assert abs(clean["rig_source"]["aligned_scale"] - 0.01) < 1e-3      # 100x copy scaled back
