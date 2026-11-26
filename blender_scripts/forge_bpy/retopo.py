@@ -113,7 +113,21 @@ def _part_budgets(lows, total_budget: int, budget_scale: float, min_part: int) -
     return {o.name: max(int(total_budget * budget_scale * areas[o.name] / total_area), min_part) for o in lows}
 
 
+def _split_ngons(obj) -> int:
+    """Engines want tris and quads only; remeshers occasionally leave a few n-gons."""
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    ngons = [f for f in bm.faces if len(f.verts) > 4]
+    if ngons:
+        bmesh.ops.triangulate(bm, faces=ngons, quad_method="BEAUTY", ngon_method="BEAUTY")
+        bm.to_mesh(obj.data)
+        obj.data.update()
+    bm.free()
+    return len(ngons)
+
+
 def _finish_part(obj, part_budget: int, used: str, before: int, report: dict, quad_method: bool) -> None:
+    split = _split_ngons(obj)
     after = C.tri_count(obj)
     # never exceed budget: final safety decimate (QR re-runs smaller first, see _qr_part)
     if after > part_budget * 1.05:
@@ -123,7 +137,7 @@ def _finish_part(obj, part_budget: int, used: str, before: int, report: dict, qu
     for p in obj.data.polygons:
         p.use_smooth = True
     report[obj.get(C.PART_PROP)] = {"budget": part_budget, "tris_before": before,
-                                    "tris_after": after, "method": used}
+                                    "tris_after": after, "method": used, "ngons_split": split}
 
 
 def _opts(args: dict) -> dict:

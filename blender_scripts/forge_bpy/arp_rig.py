@@ -261,6 +261,13 @@ def build(args: dict) -> dict:
     with bpy.context.temp_override(**_ov()):
         bpy.ops.arp.bind_to_rig()
     report["bind_engine"] = engine
+    # ARP's binding does not respect the engine's influence limit nor normalise: do it here
+    # (measured on the first real asset: 1217 vertices over the limit, 74% not normalised)
+    from .skin import _cleanup_weights
+    deform = {b.name for b in rig.data.bones if b.use_deform}
+    max_inf = int(args.get("max_influences", 4))
+    min_w = float(args.get("min_weight", 0.01))
+    report["weight_cleanup"] = {o.get(C.PART_PROP): _cleanup_weights(o, max_inf, min_w, deform) for o in body}
     report["body_vertex_groups"] = {o.get(C.PART_PROP): len(o.vertex_groups) for o in body}
 
     # props: 100% to their socket bone (engine sockets attach to the same bone)
