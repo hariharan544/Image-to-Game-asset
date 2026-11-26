@@ -140,6 +140,10 @@ class AssetSpec(BaseModel):
     #                  optional and only used as the reference in reviews.
     image: Optional[str] = None
     model: Optional[str] = None
+    # optional second file with the skeleton, when the dense model itself cannot be rigged
+    # (Tripo Studio rigs only after retopologizing): dense model = shape + texture,
+    # rig_model = skeleton (+ weights for the fallback skinning)
+    rig_model: Optional[str] = None
     extra_images: dict[str, str] = Field(default_factory=dict)   # left/back/right reference views
     type: AssetType = "prop"
     tier: Tier = "standard"

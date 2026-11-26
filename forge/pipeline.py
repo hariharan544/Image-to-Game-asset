@@ -181,8 +181,13 @@ class Pipeline:
             dst = self.job.path("source", src.name)
             if src.resolve() != dst.resolve():
                 shutil.copy(src, dst)
-            self.job.set_artifact("tripo", {"source": "user_model", "generated": str(dst),
-                                            "source_for_blender": str(dst)})
+            art = {"source": "user_model", "generated": str(dst), "source_for_blender": str(dst)}
+            if self.spec.rig_model:
+                rsrc = Path(self.spec.rig_model)
+                rdst = self.job.path("source", "rig_" + rsrc.name)
+                shutil.copy(rsrc, rdst)
+                art["rig_source"] = str(rdst)
+            self.job.set_artifact("tripo", art)
             return
         self.job.set_artifact("tripo", self.tripo.run(self.tripo.generate(self.job)))
 
@@ -245,6 +250,8 @@ class Pipeline:
             a["save_blend"] = str(job.path("blend", tdir, f"{STAGE_NAMES.index(name):02d}_{name}_a{attempt}.blend"))
         if name == "cleanup":
             a["source"] = job.artifact("tripo")["source_for_blender"]
+            if job.artifact("tripo").get("rig_source"):
+                a["rig_source"] = job.artifact("tripo")["rig_source"]
             a["detachable_parts"] = list(spec.detachable_parts)
             a["merge_body_parts"] = spec.merge_body_parts
         elif name == "uv":

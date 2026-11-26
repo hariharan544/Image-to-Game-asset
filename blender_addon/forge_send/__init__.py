@@ -195,6 +195,10 @@ class ForgeSettings(bpy.types.PropertyGroup):
     notes: StringProperty(name="Notes", description="Creative direction for the reviewers / AI supervisor")
     image: StringProperty(name="Concept image", subtype="FILE_PATH",
                           description="Optional: the concept image, shown in the review")
+    rig_object: PointerProperty(
+        name="Rig source", type=bpy.types.Object, poll=lambda self, o: o.type == "ARMATURE",
+        description="Optional: the skeleton of a separate rigged copy (Tripo Studio rigs only after "
+                    "retopologizing). The selected dense model gives shape + texture, this gives the skeleton")
     auto_run: BoolProperty(name="Start the pipeline", default=True)
     reject_notes: StringProperty(name="What is wrong")
     redo_from: EnumProperty(name="Rebuild from", items=REDO)
@@ -243,12 +247,24 @@ class FORGE_OT_send(bpy.types.Operator):
             s.asset_name = safe_name(context.active_object.name if context.active_object else "asset").lower()
         s.asset_name = safe_name(s.asset_name)
         glb = project / "inputs" / f"{s.asset_name}.glb"
+        rig = s.rig_object
+        rig_rel = None
         try:
+            sel = [o for o in context.selected_objects
+                   if not (rig and (o == rig or o.parent == rig))]      # keep the rig copy out
+            for o in context.view_layer.objects:
+                o.select_set(o in sel)
             names = export_selection(context, glb)
+            if rig:
+                for o in context.view_layer.objects:
+                    o.select_set(o == rig)
+                rig_glb = project / "inputs" / f"{s.asset_name}_rig.glb"
+                export_selection(context, rig_glb)
+                rig_rel = f"../inputs/{rig_glb.name}"
         except Exception as exc:
             self.report({"ERROR"}, str(exc))
             return {"CANCELLED"}
-        if s.asset_type in ("humanoid", "creature") and not any(
+        if s.asset_type in ("humanoid", "creature") and not rig and not any(
                 bpy.data.objects[n].type == "ARMATURE" for n in names):
             self.report({"WARNING"}, "No armature found: characters need the auto-rigged model "
                                      "(auto-rig in Tripo Studio, then send again)")
@@ -262,7 +278,10 @@ class FORGE_OT_send(bpy.types.Operator):
                 image_rel = f"../inputs/{dst.name}"
         gpath = guide_path(project)
         gpath.parent.mkdir(parents=True, exist_ok=True)
-        guide = upsert_asset(load_guide(gpath), build_entry(s, f"../inputs/{glb.name}", image_rel))
+        entry = build_entry(s, f"../inputs/{glb.name}", image_rel)
+        if rig_rel:
+            entry["rig_model"] = rig_rel
+        guide = upsert_asset(load_guide(gpath), entry)
         gpath.write_text(json.dumps(guide, indent=2), encoding="utf-8")
         msg = f"Sent '{s.asset_name}' ({len(names)} objects) -> {glb.name}"
         if s.auto_run:
@@ -346,6 +365,7 @@ class FORGE_PT_panel(bpy.types.Panel):
         row = col.row(align=True)
         row.prop(s, "detachable")
         row.operator("forge.mark_detachable", text="", icon="ADD")
+        col.prop(s, "rig_object")
         col.prop(s, "height_m")
         col.prop(s, "notes")
         col.prop(s, "image")

@@ -91,7 +91,7 @@ def previews(args: dict) -> dict:
     engine = args.get("engine", "BLENDER_WORKBENCH")
     _setup_preview_engine(engine, res)
     sc = bpy.context.scene
-    for name in (C.HIGH_COLLECTION, C.LOD_COLLECTION):
+    for name in (C.HIGH_COLLECTION, C.LOD_COLLECTION, "FORGE_WEIGHTS"):
         c = bpy.data.collections.get(name)
         if c:
             c.hide_render = True

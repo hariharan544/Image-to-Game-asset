@@ -287,6 +287,8 @@ def build(args: dict) -> dict:
                 o.modifiers.remove(m)
             o.parent = None
     bpy.data.objects.remove(src)
+    for o in C.meshes_with_role("weights"):       # rig-file meshes were only a weight source
+        bpy.data.objects.remove(o)
     report["rig"] = rig.name
     report["bones"] = len(rig.data.bones)
     report["deform_bones"] = sum(1 for b in rig.data.bones if b.use_deform)

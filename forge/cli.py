@@ -46,7 +46,8 @@ def cmd_run(a) -> int:
     for spec in assets:
         image = (guide.base_dir / spec.image).resolve() if spec.image else None
         model = (guide.base_dir / spec.model).resolve() if spec.model else None
-        missing = [str(p) for p in (image, model) if p is not None and not p.exists()]
+        rig_model = (guide.base_dir / spec.rig_model).resolve() if spec.rig_model else None
+        missing = [str(p) for p in (image, model, rig_model) if p is not None and not p.exists()]
         if missing:
             print(f"[{spec.name}] input file not found: {', '.join(missing)}", file=sys.stderr)
             rc = 1
@@ -56,7 +57,8 @@ def cmd_run(a) -> int:
                 print(f"[{spec.name}] model must be .glb, .gltf, .fbx or .obj: {model}", file=sys.stderr)
                 rc = 1
                 continue
-            spec = spec.model_copy(update={"model": str(model)})
+            spec = spec.model_copy(update={"model": str(model),
+                                           "rig_model": str(rig_model) if rig_model else None})
             print(f"[{spec.name}] starting from your model {model.name} (no Tripo API credits used)")
         job = Job.open(a.jobs, spec, image or model)
         status = Pipeline(job, rec).run()

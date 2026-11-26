@@ -185,3 +185,68 @@ def test_asset_needs_image_or_model():
     from forge.spec import resolve_asset
     with pytest.raises(Exception):
         resolve_asset({"name": "x", "type": "prop"}, {})
+
+
+SPLIT_RIG = r'''
+import bpy, sys
+src, dense_out, rig_out = sys.argv[1:4]
+# dense model: same character, skeleton removed, denser mesh
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.gltf(filepath=src)
+for o in [o for o in bpy.data.objects if o.type == "ARMATURE"]:
+    bpy.data.objects.remove(o)
+for o in [o for o in bpy.data.objects if o.type == "MESH"]:
+    o.parent = None
+    o.modifiers.clear()
+    o.vertex_groups.clear()
+    m = o.modifiers.new("s", "SUBSURF"); m.levels = 1
+    bpy.context.view_layer.objects.active = o
+    bpy.ops.object.modifier_apply(modifier="s")
+bpy.ops.export_scene.gltf(filepath=dense_out, export_format="GLB")
+# rig model: the rigged copy, but 100x bigger and moved (like a centimetre FBX)
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.import_scene.gltf(filepath=src)
+for o in [o for o in bpy.data.objects if o.parent is None]:
+    o.scale = (100, 100, 100); o.location = (50, -20, 0)
+bpy.ops.export_scene.gltf(filepath=rig_out, export_format="GLB")
+'''
+
+
+def test_dense_model_plus_separate_rig_model(tmp_path):
+    """Studio can't rig a 950k-triangle model: the user gives the dense textured model plus the
+    rigged retopologized copy. Shape/texture from the first, skeleton from the second."""
+    import subprocess
+    import sys as _sys
+    src = tmp_path / "h.glb"
+    run_stage("fixture", {"out": str(src), "humanoid": True}, tmp_path / "f.log")
+    inputs = tmp_path / "inputs"
+    inputs.mkdir()
+    subprocess.run([_sys.executable, "-c", SPLIT_RIG, str(src), str(inputs / "bull.glb"),
+                    str(inputs / "bull_rig.glb")], check=True, capture_output=True)
+    guide = tmp_path / "guide.yaml"
+    guide.write_text("""
+project: T
+engines: [unity]
+defaults: {review: {auto_approve: true}}
+assets:
+  - name: bull
+    model: inputs/bull.glb
+    rig_model: inputs/bull_rig.glb
+    type: humanoid
+    tier: background
+    detachable_parts: [Sword]
+    overrides:
+      texture: {size: 128, samples: 1, device: CPU}
+      qa: {min_uv_utilization: 0.0, max_texel_density_cv: 5, max_bake_miss_ratio: 1}
+""")
+    jobs = tmp_path / "jobs"
+    assert cli(["--jobs", str(jobs), "--data", str(tmp_path / "d"), "run", str(guide)]) == 0
+    job = Job.load(jobs / "bull")
+    assert job.m["status"] == "done", job.m.get("stages")
+    clean = job.stage("cleanup")["attempts"][-1]["result"]
+    assert clean["rigged"] and clean["rig_source"]["bones"] == 52
+    assert abs(clean["rig_source"]["aligned_scale"] - 0.01) < 1e-3      # 100x copy scaled back
+    assert sorted(clean["parts"]) == ["Body", "Sword"]
+    m = job.stage("metrics@unity")["attempts"][-1]["result"]["parts"]["Body"]["weights"]
+    assert m["weighted"] and m["unweighted_verts_pct"] == 0 and m["vertex_groups"] >= 3
+    assert (jobs / "bull" / "export" / "unity" / "bull.fbx").exists()

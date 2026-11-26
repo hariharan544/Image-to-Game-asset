@@ -39,8 +39,8 @@ def check(stage: str, result: dict, spec: AssetSpec) -> list[Issue]:
         if not result.get("parts"):
             add(Issue("NO_PARTS", stage, None, "Imported model has no mesh parts"))
         if spec.rig.enabled and not result.get("rigged"):
-            hint = (" - in Tripo Studio, auto-rig the model and download the rigged GLB"
-                    if spec.model else "")
+            hint = (" - in Tripo Studio, auto-rig the model (retopologize first if it asks) and give the "
+                    "rigged copy as rig_model / Rig source" if spec.model else "")
             add(Issue("NOT_RIGGED", stage, None, "Rig expected but the source model has no armature" + hint))
         if result.get("unit_fix"):
             add(Issue("UNITS_CONVERTED", stage, None,

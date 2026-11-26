@@ -86,17 +86,8 @@ def _merge_body(meshes: list, detachable: list) -> tuple[list, list]:
     return [joined] + kept, merged
 
 
-def run(args: dict) -> dict:
-    src = args["source"]
-    target_height = args.get("target_height_m")       # None = keep AI scale
-    merge_dist_ratio = float(args.get("merge_distance_ratio", 1e-5))
-
-    _clear_scene()
-    _import(src)
-    C.ensure_object_mode()
-
-    arm = C.find_armature()
-    # bone display shapes / helper meshes the importer creates are not asset parts
+def _drop_import_helpers() -> None:
+    """Bone display shapes / helper meshes the importers create are not asset parts."""
     shape_meshes = set()
     for a in (o for o in bpy.data.objects if o.type == "ARMATURE"):
         for pb in a.pose.bones:
@@ -107,9 +98,56 @@ def run(args: dict) -> dict:
         in_helper = any(c.name.startswith("glTF_not_exported") for c in o.users_collection)
         if o.type == "MESH" and (o.name in shape_meshes or in_helper):
             bpy.data.objects.remove(o)
-    meshes = [o for o in bpy.data.objects if o.type == "MESH"]
+
+
+def _import_rig_source(path: str, main_meshes: list) -> dict:
+    """Bring in the skeleton from a separate rigged file (e.g. Studio's retopologized + rigged
+    copy, because Studio cannot rig the dense model). Its armature becomes the asset's skeleton;
+    its meshes are kept hidden only as a skin-weight source. Aligned to the dense model by
+    bounding box in case the two files differ in scale or placement."""
+    before = set(bpy.data.objects)
+    _import(path)
+    _drop_import_helpers()
+    new = [o for o in bpy.data.objects if o not in before]
+    arms = [o for o in new if o.type == "ARMATURE"]
+    if not arms:
+        raise RuntimeError(f"rig model has no skeleton: {os.path.basename(path)}")
+    for o in [o for o in bpy.data.objects if o.type == "ARMATURE" and o not in new]:
+        bpy.data.objects.remove(o)                 # the rig file's skeleton wins
+    rig_meshes = [o for o in new if o.type == "MESH"]
+    mlo, mhi = _world_bbox(main_meshes)
+    rlo, rhi = _world_bbox(rig_meshes or arms)
+    s = (mhi.z - mlo.z) / max(rhi.z - rlo.z, 1e-9)
+    mc, rc = (mlo + mhi) / 2, (rlo + rhi) / 2
+    moved = abs(s - 1) > 0.02 or (mc - rc).length > 0.02 * (mhi.z - mlo.z)
+    if moved:
+        for r in [o for o in new if o.parent is None]:
+            r.location = (r.location - rc) * s + mc
+            r.scale = r.scale * s
+        bpy.context.view_layer.update()
+    coll = C.get_collection("FORGE_WEIGHTS", hide_render=True)
+    for m in rig_meshes:
+        m[C.ROLE_PROP] = "weights"
+        C.move_to_collection(m, coll)
+        m.hide_set(True)
+    return {"file": os.path.basename(path), "bones": len(arms[0].data.bones),
+            "aligned_scale": round(s, 4) if moved else 1.0, "weight_meshes": len(rig_meshes)}
+
+
+def run(args: dict) -> dict:
+    src = args["source"]
+    target_height = args.get("target_height_m")       # None = keep AI scale
+    merge_dist_ratio = float(args.get("merge_distance_ratio", 1e-5))
+
+    _clear_scene()
+    _import(src)
+    C.ensure_object_mode()
+    _drop_import_helpers()
+    meshes = [o for o in bpy.data.objects if o.type == "MESH" and o.get(C.ROLE_PROP) != "weights"]
     if not meshes:
         raise RuntimeError("Imported file contains no meshes")
+    rig_report = _import_rig_source(args["rig_source"], meshes) if args.get("rig_source") else None
+    arm = C.find_armature()
 
     # --- normalise scale and pivot: bottom-centre at the origin -------------
     roots = [o for o in bpy.data.objects if o.parent is None]
@@ -173,6 +211,7 @@ def run(args: dict) -> dict:
         "scale_applied": scale,
         "unit_fix": unit_fix,
         "merged_into_body": merged_from,
+        "rig_source": rig_report,
         "height_m": size.z * scale,
         "cleanup": stats,
     }

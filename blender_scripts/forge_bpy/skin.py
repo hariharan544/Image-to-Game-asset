@@ -163,10 +163,24 @@ def _weight_report() -> dict:
     return out
 
 
+def _weights_source():
+    """The rig file's meshes (role 'weights'), joined into one weight source."""
+    ws = C.meshes_with_role("weights")
+    if not ws:
+        return None
+    if len(ws) > 1:
+        C.select_only(*ws, active=ws[0])
+        bpy.ops.object.join()
+    src = C.meshes_with_role("weights")[0]
+    src.hide_set(False)
+    return src
+
+
 def _run_transfer(args: dict) -> dict:
     arm = C.find_armature()
     if arm is None:
         return {"skipped": "no armature in source model"}
+    weights_src = _weights_source()
     max_inf = int(args.get("max_influences", 4))
     min_w = float(args.get("min_weight", 0.01))
     rigid_parts = set(args.get("rigid_parts", []))   # props: weld 100% to one bone instead
@@ -175,6 +189,8 @@ def _run_transfer(args: dict) -> dict:
     for low in C.meshes_with_role("low"):
         part = low.get(C.PART_PROP)
         high = C.high_for(low)
+        if (high is None or not high.vertex_groups) and weights_src is not None:
+            high = weights_src            # skeleton came from a separate rigged file
         if part in rigid_parts:
             report[part] = {"rigid": True}
             continue
