@@ -302,20 +302,25 @@ def _trial_arp_flow(report: dict):
     out_dir = os.path.abspath(report.get("_out_dir", "."))
     exports = {}
     engines = arp["enums"].get("arp_engine_type", {}).get("items", [])
-    for eng in engines:
-        if eng not in ("UNITY", "UE", "UNREAL"):
-            continue
+    variants = []          # (label, engine, rig_type, extra scene settings)
+    if "UNITY" in engines:
+        variants.append(("UNITY", "UNITY", "HUMANOID", {}))
+    if "UNREAL" in engines:
+        variants.append(("UNREAL", "UNREAL", "UNIVERSAL", {"arp_rename_for_ue": True}))
+        variants.append(("UNREAL_HUMANOID", "UNREAL", "HUMANOID",
+                         {"arp_rename_for_ue": True, "arp_mannequin_axes": True}))
+        variants.append(("UNREAL_HUMANOID_UE4", "UNREAL", "HUMANOID",
+                         {"arp_rename_for_ue": True, "arp_ue4": True}))
+    for label, eng, rig_type, extra in variants:
         sc = bpy.context.scene
-        path = os.path.join(out_dir, f"arp_trial_{eng}.fbx")
+        path = os.path.join(out_dir, f"arp_trial_{label}.fbx")
         entry: dict = {"path": path, "attempts": {}}
         sc.arp_engine_type = eng
-        if eng == "UNITY" and "HUMANOID" in arp["enums"].get("arp_export_rig_type", {}).get("items", []):
-            sc.arp_export_rig_type = "HUMANOID"        # Unity Mecanim humanoid
-        else:
-            sc.arp_export_rig_type = "UNIVERSAL"
-        if eng == "UNREAL" and hasattr(sc, "arp_rename_for_ue"):
-            sc.arp_rename_for_ue = True                # UE Mannequin bone names
-        entry["settings"] = {"engine": eng, "rig_type": sc.arp_export_rig_type}
+        sc.arp_export_rig_type = rig_type
+        for k, v in extra.items():
+            if hasattr(sc, k):
+                setattr(sc, k, v)
+        entry["settings"] = {"engine": eng, "rig_type": rig_type, **extra}
         # the Export button's operator prepares the data the internal FBX writer needs
         calls = (("arp.arp_export_fbx_panel", lambda: bpy.ops.arp.arp_export_fbx_panel(filepath=path)),
                  ("arp_export_scene.fbx", lambda: bpy.ops.arp_export_scene.fbx(
@@ -337,7 +342,10 @@ def _trial_arp_flow(report: dict):
                 break
         entry["exists"] = os.path.exists(path)
         entry["size"] = os.path.getsize(path) if entry["exists"] else 0
-        exports[eng] = entry
+        exports[label] = entry
+        for k in extra:                       # reset for the next variant
+            if hasattr(sc, k) and k != "arp_rename_for_ue":
+                setattr(sc, k, False)
         yield 0.5
     arp["exports"] = exports
     # read the exported skeletons back
@@ -418,6 +426,7 @@ def _trial_uvpm(report: dict):
         pass
     if "call_result" not in u:
         u["call_error"] = "pack could not run in any context"
+        u["poll_diagnosis"] = _uvpm_diagnose()
         if area:
             area.ui_type = old_ui
         bpy.ops.object.mode_set(mode="OBJECT")
@@ -439,6 +448,40 @@ def _trial_uvpm(report: dict):
     u["elapsed_s"] = round(time.time() - t0, 1)
     u["uv_changed"] = last is not None
     u["after"] = metrics.uv_metrics(obj, 1024)
+
+
+def _uvpm_diagnose() -> dict:
+    """Why does uvpackmaster4.pack.poll() fail? Read the poll source and the add-on state."""
+    import inspect
+    out: dict = {"mode": bpy.context.mode}
+    cls = None
+    stack = list(bpy.types.Operator.__subclasses__())
+    while stack:
+        c = stack.pop()
+        stack.extend(c.__subclasses__())
+        if getattr(c, "bl_idname", "") == "uvpackmaster4.pack":
+            cls = c
+            break
+    if cls is None:
+        out["error"] = "operator class not found"
+        return out
+    out["class"] = f"{cls.__module__}.{cls.__qualname__}"
+    out["mro"] = [f"{k.__module__}.{k.__qualname__}" for k in cls.__mro__][:12]
+    for k in cls.__mro__:
+        if "poll" in k.__dict__:
+            try:
+                out.setdefault("poll_sources", []).append(
+                    {"class": k.__qualname__, "source": inspect.getsource(k.__dict__["poll"])[:3000]})
+            except Exception as exc:
+                out.setdefault("poll_sources", []).append({"class": k.__qualname__, "error": _err(exc)})
+    # add-on preferences (engine path / status live here in UVPM)
+    for name, addon in bpy.context.preferences.addons.items():
+        if "uvpackmaster" in name.lower():
+            try:
+                out["prefs"] = _rna_dump(addon.preferences, depth=1)
+            except Exception as exc:
+                out["prefs_error"] = _err(exc)
+    return out
 
 
 def run_v2(args: dict):

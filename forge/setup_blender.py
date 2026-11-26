@@ -29,7 +29,7 @@ def _remember_blender(path: str, env_file: Path) -> None:
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _smoke(blender: list[str], work: Path, gpu: bool, say) -> dict:
+def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False) -> dict:
     """Run every Blender stage once on a generated test asset. Returns per-stage timings."""
     t: dict = {}
     logs = work / "logs"
@@ -45,7 +45,15 @@ def _smoke(blender: list[str], work: Path, gpu: bool, say) -> dict:
     stage("fixture", {"out": str(src), "rigged": True})
     b = lambda n: str(work / f"{n}.blend")    # noqa: E731
     stage("cleanup", {"source": str(src), "target_height_m": 1.8, "save_blend": b("1")})
-    stage("retopo", {"load_blend": b("1"), "target_tris": 4000, "save_blend": b("2")})
+    if use_qr:
+        res = stage("retopo", {"load_blend": b("1"), "target_tris": 4000, "save_blend": b("2"),
+                               "method": "quadremesher", "ensure_addons": ["quad remesher"]},
+                    windowed=True, factory_startup=False)
+        methods = sorted({r["method"] for r in res["parts"].values()})
+        say(f"             retopo method: {methods}, total tris {res['total_tris']}")
+        t["retopo_methods"] = methods
+    else:
+        stage("retopo", {"load_blend": b("1"), "target_tris": 4000, "save_blend": b("2")})
     uv = stage("uv", {"load_blend": b("2"), "texture_size": 1024, "save_blend": b("3")})
     bake = stage("bake", {"load_blend": b("3"), "texture_size": 1024, "texture_dir": str(work / "textures"),
                           "samples": 16, "device": "GPU" if gpu else "CPU", "save_blend": b("4"),
@@ -199,7 +207,8 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
     if not skip_smoke and ok:
         say("Running the pipeline smoke test inside your Blender ...")
         try:
-            report["smoke"] = _smoke(blender, work / "smoke", bool(gpu), say)
+            report["smoke"] = _smoke(blender, work / "smoke", bool(gpu), say,
+                                     use_qr=info["addons"]["quad_remesher"]["installed"])
             say(f"[OK] Smoke test passed. Exports: {work / 'smoke' / 'export'}")
         except BlenderError as exc:
             say(f"[X] Smoke test failed: {str(exc).splitlines()[0]}\n  Logs: {work / 'smoke' / 'logs'}")
