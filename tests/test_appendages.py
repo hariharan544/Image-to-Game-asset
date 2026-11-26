@@ -157,3 +157,43 @@ def test_flat_upright_ears_and_sideways_horns():
     J = joints.estimate(body)
     kinds = sorted(a["kind"] for a in appendages.from_object(body, J))
     assert kinds.count("ear") == 2 and kinds.count("horn") == 2, kinds
+
+
+def test_one_sided_tail_is_split_before_mirroring():
+    """A tail curling to one side: mirroring the body would make two tails (or none). It is
+    found as a one-sided part, split off, and the symmetric body keeps a single tail."""
+    import bmesh
+    import numpy as np
+    from mathutils import Matrix, Vector
+
+    from forge_bpy import density, fixture, rescue
+    fixture.humanoid({"out": "/tmp/_forge_creature3.glb"})
+    body = bpy.data.objects["Body"]
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    pts = [Vector((0.0, 0.12, 0.95)), Vector((0.08, 0.35, 0.75)), Vector((0.3, 0.45, 0.55))]
+    for a, b in zip(pts, pts[1:]):                 # a tail that bends to the character's left
+        d = b - a
+        m = Matrix.Translation((a + b) / 2) @ d.to_track_quat("Z", "Y").to_matrix().to_4x4()
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=12, radius1=0.03, radius2=0.025,
+                              depth=d.length + 0.03, matrix=m)
+    bm.to_mesh(body.data)
+    bm.free()
+    m = body.modifiers.new("v", "REMESH")
+    m.mode, m.voxel_size = "VOXEL", 0.012
+    dg = bpy.context.evaluated_depsgraph_get()
+    dg.update()
+    me = bpy.data.meshes.new_from_object(body.evaluated_get(dg))
+    ids = density.one_sided_parts(me)
+    co = np.array([v.co[:] for v in me.vertices])
+    assert ids.max() == 1, ids.max()
+    tip = np.linalg.norm(co - (0.3, 0.45, 0.55), axis=1) < 0.05
+    belly = np.linalg.norm(co - (0, -0.16, 1.1), axis=1) < 0.08
+    arm = np.abs(co[:, 0]) > 0.5
+    assert ids[tip].min() == 1 and ids[belly].max() == 0 and ids[arm].max() == 0
+    pieces = rescue.split_off(me, ids)
+    density.symmetrize(me, "right")                # keep -X: would have deleted the tail
+    co2 = np.array([v.co[:] for v in me.vertices])
+    behind = co2[(co2[:, 1] > 0.3) & (co2[:, 2] < 0.85)]
+    assert len(behind) == 0                        # no mirrored tail on the body
+    assert len(pieces) == 1                        # the one tail travels on its own

@@ -244,3 +244,28 @@ def test_palette_has_the_texture_colours_not_darker_ones():
     img.pixels.foreach_set(px.ravel())
     pal = S.texture_palette(img)
     assert pal.name == "Forge colours" and 3 <= len(pal.colors) <= 12
+
+
+def test_mirror_image_uv_islands_are_turned_round():
+    """A mirrored half unwraps as a mirror-image island: checker text reads backwards and the
+    normal-map tangents flip. Every island ends up the right way round, in the same box."""
+    import bmesh
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_scripts"))
+    from forge_bpy import uv as U
+    bm = bmesh.new()
+    bmesh.ops.create_grid(bm, x_segments=4, y_segments=4, size=1.0)
+    me = bpy.data.meshes.new("flipuv")
+    bm.to_mesh(me)
+    bm.free()
+    o = bpy.data.objects.new("flipuv", me)
+    bpy.context.scene.collection.objects.link(o)
+    layer = me.uv_layers.new(name="UVMap")
+    for l in me.loops:                              # mirror-image UVs: u = 1 - x
+        x, y, _z = me.vertices[l.vertex_index].co
+        layer.data[l.index].uv = (0.5 - x * 0.25, 0.5 + y * 0.25)
+    before = [tuple(d.uv) for d in layer.data]
+    assert U.unflip_islands(o) == 1
+    after = [tuple(d.uv) for d in me.uv_layers.active.data]
+    assert min(u for u, _v in after) == pytest.approx(min(u for u, _v in before))
+    assert max(u for u, _v in after) == pytest.approx(max(u for u, _v in before))
+    assert U.unflip_islands(o) == 0                 # now the right way round

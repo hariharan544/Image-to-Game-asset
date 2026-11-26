@@ -611,6 +611,69 @@ def symmetrize(me, side: str) -> None:
     me.update()
 
 
+def _mirror_far(co: np.ndarray, cell: float) -> np.ndarray:
+    """True where a vertex's mirror image (across X = 0) has no vertex of the mesh within about
+    one cell: grid lookup, fast on millions of vertices (AI meshes are dense)."""
+    def key(q):
+        return (q[:, 0] * 2_000_003 + q[:, 1]) * 2_000_003 + q[:, 2]
+    lo = co.min(axis=0) - 2 * cell
+    q = np.floor((co - lo) / cell).astype(np.int64)
+    occ = np.unique(key(q))
+    m = co.copy()
+    m[:, 0] = -m[:, 0]
+    qm = np.floor((m - lo) / cell).astype(np.int64)
+    found = np.zeros(len(co), bool)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                k = key(qm + np.array([dx, dy, dz]))
+                i = np.clip(np.searchsorted(occ, k), 0, len(occ) - 1)
+                found |= occ[i] == k
+    return ~found
+
+
+def one_sided_parts(me, taken=None, high: float = 0.05, low: float = 0.012,
+                    min_extent: float = 0.08, max_share: float = 0.15) -> np.ndarray:
+    """Parts that mirroring would duplicate or delete: a tail curling to one side, a horn
+    broken on one side, a pouch on one hip. Hysteresis like an edge detector: a region is
+    seeded where the mirror is far off (> high x size) and grown over the surface while the
+    mirror stays off by more than low x size, so the cut lands near the root, on the
+    symmetric body. Small one-sided details (a notch, a scar) are left to the chosen side.
+    Returns piece ids (0 = body), numbered after the ones already in `taken`."""
+    n = len(me.vertices)
+    ids = np.zeros(n, np.int32)
+    if n == 0:
+        return ids
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    size = float((co.max(axis=0) - co.min(axis=0)).max()) or 1.0
+    far_hi = _mirror_far(co, high * size)
+    far_lo = _mirror_far(co, low * size)
+    if taken is not None:
+        far_lo &= taken == 0
+        far_hi &= taken == 0
+    if not far_hi.any():
+        return ids
+    ev = np.empty(len(me.edges) * 2, np.int32)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2).astype(np.int64)
+    keep = far_lo[ev[:, 0]] & far_lo[ev[:, 1]]
+    from .appendages import _components
+    lab = _components(n, ev[keep, 0], ev[keep, 1])
+    k = int(taken.max()) if taken is not None and len(taken) else 0
+    for root in np.unique(lab[far_hi & far_lo]):
+        sel = (lab == root) & far_lo
+        if sel.sum() > max_share * n:          # a broad lopsided area of the body itself
+            continue
+        ext = float((co[sel].max(axis=0) - co[sel].min(axis=0)).max())
+        if ext < min_extent * size:
+            continue
+        k += 1
+        ids[sel] = k
+    return ids
+
+
 def write_split(me, ids: np.ndarray) -> None:
     a = me.attributes.get(SPLIT_ATTR)
     if a is not None:

@@ -185,6 +185,18 @@ ACTIONS = {
 }
 
 
+def _clean_view(context) -> None:
+    """Only the new meshes, in plain grey: the originals (coloured by the detail map) stay
+    hidden, otherwise they show through the new surface as coloured streaks."""
+    for o in S.parts():
+        o.hide_set(True)
+    for o in S.lows():
+        o.hide_set(False)
+    for area in (context.screen.areas if context.screen else []):
+        if area.type == "VIEW_3D":
+            area.spaces.active.shading.color_type = "MATERIAL"
+
+
 class FORGE_OT_step(bpy.types.Operator):
     bl_idname = "forge.step"
     bl_label = "Forge step"
@@ -238,6 +250,7 @@ class FORGE_OT_step(bpy.types.Operator):
                     r["symmetry"] = bool(o.get("forge_symmetry_x"))
                     r["asymmetry_pct"] = round(100 * float(o.get("forge_asymmetry", 1.0)), 1)
             S.clay_lows()
+            _clean_view(bpy.context)
             _save_rep(st, "retopo_rep", rep)
             st.retopo = "review"
         run(st, "retopology (Quad Remesher)" if qr else "retopology",

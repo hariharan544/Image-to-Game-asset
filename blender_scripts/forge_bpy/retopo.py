@@ -409,6 +409,13 @@ def _run_qr(args: dict):
         split_pieces = []
         side = str(args.get("symmetry", "auto"))
         ids = _dens.read_split(backup) if args.get("split_thin", True) else None
+        if side in ("left", "right"):
+            # whatever mirroring would duplicate or delete (a tail curling to one side) is
+            # split off too and keeps its own shape
+            import numpy as np
+            extra = _dens.one_sided_parts(backup, ids)
+            if extra.any():
+                ids = np.where(extra > 0, extra, ids if ids is not None else 0).astype(np.int32)
         if ids is not None or side in ("left", "right"):
             full_backup = backup
             backup = full_backup.copy()

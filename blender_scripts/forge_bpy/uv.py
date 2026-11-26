@@ -44,6 +44,41 @@ def _unwrap(obj, method: str, angle_deg: float, margin: float) -> None:
     bpy.ops.object.mode_set(mode="OBJECT")
 
 
+def unflip_islands(obj) -> int:
+    """Turn mirror-image UV islands the right way round (text and painted details read
+    correctly, every island has the same tangent handedness for normal maps). Each flipped
+    island is mirrored inside its own box, so the packing and margins stay exactly as they
+    are. Returns how many islands were turned."""
+    from bpy_extras.bmesh_utils import bmesh_linked_uv_islands
+    me = obj.data
+    if not me.uv_layers:
+        return 0
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    uv = bm.loops.layers.uv.active
+    n = 0
+    for island in bmesh_linked_uv_islands(bm, uv):
+        area = 0.0
+        for f in island:
+            pts = [l[uv].uv for l in f.loops]
+            for i in range(len(pts)):
+                a, b = pts[i], pts[(i + 1) % len(pts)]
+                area += a.x * b.y - b.x * a.y
+        if area >= 0:
+            continue
+        us = [l[uv].uv.x for f in island for l in f.loops]
+        mid = (min(us) + max(us))
+        for f in island:
+            for l in f.loops:
+                l[uv].uv.x = mid - l[uv].uv.x
+        n += 1
+    if n:
+        bm.to_mesh(me)
+        me.update()
+    bm.free()
+    return n
+
+
 def _pack(obj, margin: float) -> None:
     C.select_only(obj)
     bpy.ops.object.mode_set(mode="EDIT")
@@ -91,9 +126,11 @@ def _run(args: dict, use_uvpm: bool):
                 _pack(obj, margin)
         else:
             _pack(obj, margin)
+        turned = unflip_islands(obj)
         C.select_only(obj)
         bpy.ops.object.shade_smooth_by_angle(angle=math.radians(smooth_angle))
-        report[obj.get(C.PART_PROP)] = {**metrics.uv_metrics(obj, tex), "packer": packer}
+        report[obj.get(C.PART_PROP)] = {**metrics.uv_metrics(obj, tex), "packer": packer,
+                                        "unflipped": turned}
     return {"parts": report}
 
 
@@ -116,6 +153,8 @@ def _uvpm_pack(obj, tex: int, margin_px: float, search_time: float, timeout: flo
     m.pixel_margin_tex_size = int(tex)
     m.rotation_enable = True
     m.rotation_step = 90
+    if hasattr(m, "flipping_enable"):
+        m.flipping_enable = False                # islands stay the right way round
     m.normalize_scale = True                     # equal texel density across islands
     m.fully_inside = True
     m.heuristic_enable = search_time > 0         # spend a few seconds searching for a tighter pack
