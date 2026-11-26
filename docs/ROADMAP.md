@@ -37,13 +37,11 @@
   * the character stands upright at the correct height in both files.
 
   If ARP fails, the stage falls back to transferring Tripo's weights, in a fresh Blender.
-- ⏳ **UVPackmaster**: the add-on loads, but its packing engine (installed separately) is not
-  detected. The adapter is built once the engine is installed. Blender's packer is used until then.
-- Bake: optional cage mesh, anti-aliased bakes, texture de-lighting and seam fixing.
-- Mobile: strip non-essential bones (fingers, twist bones) when the bone count is over budget.
-  Optionally bake an atlas so all parts share one material, for fewer draw calls.
-- Vision model labels parts from renders, so "sword", "helmet" and "cape" are recognised whatever
-  Tripo calls them.
+- ✅ **UVPackmaster 4** is the default UV packer (`uv.packer: uvpackmaster`). Each part is packed
+  into its own tile with a pixel margin at that part's texture size, normalised texel density and
+  a few seconds of heuristic search (10 s for humanoid heroes). It runs in a windowed Blender.
+  Verified on the user's PC: texture use went from 57% to 75% on the test mesh in 2.7 s. If it
+  fails, it falls back to Blender's packer.
 
 ## Phase 4: AI supervisor v1
 - Collect ≥ 200 labelled decisions, fine-tune Qwen3-8B on the 4080, evaluate, switch to

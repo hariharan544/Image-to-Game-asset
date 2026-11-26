@@ -37,6 +37,8 @@ ACTIONS: dict[str, tuple[str, str, Transform]] = {
     "retopo_new_seed": ("retopo", "Retry QuadriFlow with a different random seed", _add("seed", 1, cast=int)),
     "retopo_no_symmetry": ("retopo", "Disable X symmetry (asymmetric models)", _set(symmetry_x=False)),
     # UVs
+    "uv_blender_packer": ("uv", "Pack with Blender's packer instead of UVPackmaster", _set(packer="blender")),
+    "uv_more_pack_search": ("uv", "Give UVPackmaster 3x more search time (tighter packing)", _mul("uvpm_search_time", 3.0, 1, 60)),
     "uv_smart": ("uv", "Smart UV Project unwrap", _set(method="smart")),
     "uv_angle_seams": ("uv", "Seams on hard edges + angle-based unwrap", _set(method="angle_seams")),
     "uv_min_stretch": ("uv", "Seams + minimum-stretch unwrap (organic shapes)", _set(method="min_stretch")),

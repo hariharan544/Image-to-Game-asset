@@ -30,7 +30,8 @@ def _remember_blender(path: str, env_file: Path) -> None:
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False, use_arp: bool = False) -> dict:
+def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False, use_arp: bool = False,
+           use_uvpm: bool = False) -> dict:
     """Run every Blender stage once on a generated test asset. Returns per-stage timings."""
     t: dict = {}
     logs = work / "logs"
@@ -56,7 +57,16 @@ def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False,
         t["retopo_methods"] = methods
     else:
         stage("retopo", {"load_blend": b("1"), "target_tris": 4000, "save_blend": b("2")})
-    uv = stage("uv", {"load_blend": b("2"), "texture_size": 1024, "save_blend": b("3")})
+    uv_args = {"load_blend": b("2"), "texture_size": 1024, "save_blend": b("3")}
+    if use_uvpm:
+        uv = stage("uv", {**uv_args, "packer": "uvpackmaster", "ensure_addons": ["uvpackmaster"]},
+                   windowed=True, factory_startup=False)
+        packers = sorted({r.get("packer") for r in uv["parts"].values()})
+        say(f"             uv packer: {packers}, utilization "
+            f"{ {p: r['utilization'] for p, r in uv['parts'].items()} }")
+        t["uv_packers"] = packers
+    else:
+        uv = stage("uv", uv_args)
     bake = stage("bake", {"load_blend": b("3"), "texture_size": 1024, "texture_dir": str(work / "textures"),
                           "samples": 16, "device": "GPU" if gpu else "CPU", "save_blend": b("4"),
                           "uv_utilization": {p: r["utilization"] for p, r in uv["parts"].items()}})
@@ -233,7 +243,8 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
         try:
             report["smoke"] = _smoke(blender, work / "smoke", bool(gpu), say,
                                      use_qr=info["addons"]["quad_remesher"]["installed"],
-                                     use_arp=info["addons"]["auto_rig_pro"]["installed"])
+                                     use_arp=info["addons"]["auto_rig_pro"]["installed"],
+                                     use_uvpm=info["addons"]["uvpackmaster"]["installed"])
             say(f"[OK] Smoke test passed. Exports: {work / 'smoke' / 'export'}")
         except BlenderError as exc:
             say(f"[X] Smoke test failed: {str(exc).splitlines()[0]}\n  Logs: {work / 'smoke' / 'logs'}")

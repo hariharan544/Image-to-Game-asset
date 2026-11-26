@@ -66,6 +66,11 @@ def check(stage: str, result: dict, spec: AssetSpec) -> list[Issue]:
             if not r.get("has_uv"):
                 add(Issue("NO_UV", stage, part, "no UV map"))
                 continue
+            if str(r.get("packer", "")).startswith("uvpackmaster-") or (
+                    spec.uv.packer == "uvpackmaster" and result.get("packer_fallback_reason")):
+                add(Issue("UVPACKMASTER_FALLBACK", stage, part,
+                          "UVPackmaster unavailable or failed; Blender's packer used",
+                          r.get("packer") or result.get("packer_fallback_reason"), severity="warn"))
             if r["overlap_pct"] > q.max_uv_overlap_pct:
                 add(Issue("UV_OVERLAP", stage, part, "overlapping UV islands", r["overlap_pct"], q.max_uv_overlap_pct))
             if r["utilization"] < q.min_uv_utilization:

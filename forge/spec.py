@@ -60,6 +60,9 @@ class UVSpec(BaseModel):
     margin_px: int = 8
     smooth_angle_deg: float = 40.0
     texel_density_px_per_m: float = 512.0
+    # uvpackmaster = UVPackmaster 4 (tighter packing; needs its engine), falls back to blender
+    packer: Literal["uvpackmaster", "blender"] = "uvpackmaster"
+    uvpm_search_time: float = 3.0                # seconds of heuristic search per part (more = tighter)
 
 
 class TextureSpec(BaseModel):

@@ -65,7 +65,8 @@ def tunables(stage: str, spec: AssetSpec) -> dict:
         "retopo": {"target_tris": t.target_tris, "budget_scale": t.budget_scale, "method": t.method,
                    "symmetry_x": t.symmetry_x, "preserve_hard_edges": t.preserve_hard_edges, "seed": 0},
         "uv": {"method": u.method, "angle_limit_deg": u.angle_limit_deg, "margin_px": u.margin_px,
-               "smooth_angle_deg": u.smooth_angle_deg},
+               "smooth_angle_deg": u.smooth_angle_deg, "packer": u.packer,
+               "uvpm_search_time": u.uvpm_search_time},
         "bake": {"cage_extrusion_ratio": x.cage_extrusion_ratio, "samples": x.samples},
         "skin": {"max_influences": spec.rig.max_influences, "min_weight": spec.rig.min_weight},
         "lods": {"lod_ratios": t.lod_ratios},
@@ -256,6 +257,8 @@ class Pipeline:
         addons = []
         if name == "retopo" and args.get("method") == "quadremesher":
             addons.append("quad remesher")
+        if name == "uv" and args.get("packer") == "uvpackmaster":
+            addons.append("uvpackmaster")
         if name == "skin" and args.get("rig_method") == "auto_rig_pro":
             addons.append("auto-rig pro")
         if name == "export" and args.get("rig_system") == "auto_rig_pro":

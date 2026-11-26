@@ -11,7 +11,7 @@ from .base import Decision, Observation, Supervisor, apply_action
 PLAYBOOK: dict[str, list[str]] = {
     "OVER_BUDGET": ["retopo_reduce_budget", "retopo_reduce_budget", "retopo_decimate"],
     "RETOPO_FAILED": ["retopo_voxel_first", "retopo_decimate"],
-    "UV_OVERLAP": ["uv_bigger_margin", "uv_smart", "uv_lower_angle"],
+    "UV_OVERLAP": ["uv_bigger_margin", "uv_smart", "uv_lower_angle", "uv_blender_packer"],
     "UV_STRETCH": ["uv_lower_angle", "uv_min_stretch", "uv_angle_seams"],
     "UV_OUT_OF_BOUNDS": ["uv_smart"],
     "NO_UV": ["uv_smart"],
