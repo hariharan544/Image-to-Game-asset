@@ -293,6 +293,17 @@ def _prop_to_static(obj, rig, bone_name: str) -> None:
     obj.matrix_world = Matrix.Identity(4)
 
 
+def _export_preview(lows, arm, path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    C.select_only(*(lows + ([arm] if arm else [])))
+    kw = dict(filepath=path, export_format="GLB", use_selection=True)
+    try:
+        bpy.ops.export_scene.gltf(**kw, export_animations=False)
+    except TypeError:
+        bpy.ops.export_scene.gltf(**kw)
+    return path if os.path.exists(path) else None
+
+
 def export(args: dict) -> dict:
     engine = args["engine"]
     asset = C.safe_name(args["asset_name"])
@@ -323,6 +334,10 @@ def export(args: dict) -> dict:
     # LOD0 naming for Unity's automatic LODGroup
     for o in lows:
         o.name = f"{o.get(C.PART_PROP)}_LOD0"
+
+    # a standard glTF/GLB preview with the PBR materials embedded: opens correctly in any viewer
+    # (Marmoset, Sketchfab, Windows 3D Viewer...) unlike the engine-packed textures
+    files["preview"] = _export_preview(lows, arm, os.path.join(out_dir, "Preview", f"{asset}_preview.glb"))
 
     if use_arp:
         files["rig_system"] = "auto_rig_pro"
