@@ -252,12 +252,36 @@ def _run_builtin(args: dict) -> dict:
 
 # ----------------------------------------------------------------------------- Quad Remesher
 
+# Quad Remesher jobs that timed out keep running in their engine and import their result
+# later: input name -> True. Their late "Retopo_<name>" objects are removed, never taken.
+_QR_PENDING: dict = {}
+
+
+def _is_result_of(o, name: str) -> bool:
+    r = "Retopo_" + name
+    return o.name == r or (o.name.startswith(r + ".") and o.name[len(r) + 1:].isdigit())
+
+
+def _purge_late_results() -> None:
+    for name in list(_QR_PENDING):
+        late = [o for o in bpy.data.objects if _is_result_of(o, name)]
+        for o in late:
+            bpy.data.objects.remove(o)
+        src = bpy.data.objects.get(name)
+        if src is not None:
+            src.hide_set(False)           # the late import hid it again (hide_input)
+        if late:
+            _QR_PENDING.pop(name, None)
+
+
 def _qr_part(obj, quads: int, args: dict, timeout: float):
     """Generator: remesh `obj` with Quad Remesher, replace its mesh with the result.
     Returns True on success. Measured on the user's PC: the operator returns
     RUNNING_MODAL at once; the result appears as a new object 'Retopo_<name>' and the
     source gets hidden."""
     from .addon_trial import view3d_override
+    if args.get("_qr_refused"):
+        return False                      # it refused once (licence / engine): don't wait again
     s = bpy.context.scene.qremesher
     s.target_count = max(int(quads), 20)
     from .density import only_qr_density
@@ -272,18 +296,28 @@ def _qr_part(obj, quads: int, args: dict, timeout: float):
     s.autodetect_hard_edges = bool(args.get("preserve_hard_edges", not painted))
     s.symmetry_x = bool(obj.get("forge_symmetry_x", args.get("symmetry_x", False)))
     s.symmetry_y = s.symmetry_z = False
+    _purge_late_results()
     C.select_only(obj)
     before = {o.name for o in bpy.data.objects}
+    ov = view3d_override()
+    if not ov:
+        return False
     try:
-        with bpy.context.temp_override(**view3d_override()):
-            bpy.ops.qremesher.remesh()
+        with bpy.context.temp_override(**ov):
+            res = bpy.ops.qremesher.remesh()
     except RuntimeError:
+        return False
+    if not ({"RUNNING_MODAL", "FINISHED"} & set(res)):
+        args["_qr_refused"] = True
         return False
     t0, last, stable = time.time(), None, 0
     result = None
     while time.time() - t0 < timeout:
         yield 0.5
-        new = [o for o in bpy.data.objects if o.name not in before and o.type == "MESH"]
+        _purge_late_results()
+        # only this input's result: a late import of an earlier part must never be taken
+        new = [o for o in bpy.data.objects
+               if o.name not in before and o.type == "MESH" and _is_result_of(o, obj.name)]
         if new:
             faces = sum(len(o.data.polygons) for o in new)
             stable = stable + 1 if faces == last else 0
@@ -292,12 +326,14 @@ def _qr_part(obj, quads: int, args: dict, timeout: float):
                 result = max(new, key=lambda o: len(o.data.polygons))
                 break
     if result is None:
+        _QR_PENDING[obj.name] = True      # its result may still arrive: remove it then
+        obj.hide_set(False)
         return False
     # bring the result into the low object (keeps its name, part tag, parent, modifiers)
     mesh = result.data.copy()
     mesh.transform(obj.matrix_world.inverted() @ result.matrix_world)
     _replace_mesh(obj, mesh)
-    for o in [o for o in bpy.data.objects if o.name not in before]:
+    for o in [o for o in bpy.data.objects if o.name not in before and _is_result_of(o, obj.name)]:
         bpy.data.objects.remove(o)
     obj.hide_set(False)
     obj.vertex_groups.clear()
@@ -355,10 +391,11 @@ def _run_qr(args: dict):
                 from . import rescue
                 total_area = max(rescue.area(backup), 1e-9)
                 rescued = 0
-                for region in rescue.regions(backup, shape["mask"])[:4]:
+                for ri, region in enumerate(rescue.regions(backup, shape["mask"])[:4]):
                     piece_me = rescue.extract(backup, region)
                     quads = max(150, int(target * 3 * rescue.area(piece_me) / total_area))
-                    piece = bpy.data.objects.new(f"{obj.name}_rescue", piece_me)
+                    piece = bpy.data.objects.new(f"{obj.name}_rescue{ri}", piece_me)
+                    piece.matrix_world = obj.matrix_world.copy()   # its mesh is in obj's space
                     piece["forge_rescue"] = True
                     for col in obj.users_collection:
                         col.objects.link(piece)
@@ -368,6 +405,9 @@ def _run_qr(args: dict):
                         rescued += 1
                     # the remesher swaps the piece's mesh (and frees the old one): look both up by name
                     mesh_names = {piece.data.name}
+                    if not ok3 and piece.name in _QR_PENDING:
+                        piece.hide_set(True)      # QR may still import for it: removed later
+                        continue
                     bpy.data.objects.remove(piece)
                     for name in mesh_names:
                         m = bpy.data.meshes.get(name)

@@ -118,4 +118,33 @@ def test_thin_part_rescued_when_remesher_keeps_losing_it(monkeypatch):
     a = G.analyse(o)
     assert a["pieces"] == 1 and a["holes"] == 0, a                  # fused into one closed surface
     assert rep["parts"]["Body"]["method"] == "quadremesher(rescued)"
-    assert not [x for x in bpy.data.objects if x.name.endswith("_rescue")]
+    assert not [x for x in bpy.data.objects if "_rescue" in x.name]
+
+
+def test_late_quad_remesher_results_are_never_taken():
+    from forge_bpy import retopo
+    bpy.ops.wm.read_homefile(use_empty=True)
+
+    def obj(name):
+        o = bpy.data.objects.new(name, bpy.data.meshes.new(name))
+        bpy.context.scene.collection.objects.link(o)
+        return o
+    body = obj("Body_low")
+    for n in ("Retopo_Body_low", "Retopo_Body_low.001", "Retopo_Body_low_rescue0", "Retopo_Body_lowX"):
+        obj(n)
+    match = sorted(o.name for o in bpy.data.objects if retopo._is_result_of(o, "Body_low"))
+    assert match == ["Retopo_Body_low", "Retopo_Body_low.001"]
+    # a timed-out part: its late import is removed and the part shown again
+    body.hide_set(True)
+    retopo._QR_PENDING["Body_low"] = True
+    retopo._purge_late_results()
+    assert "Body_low" not in retopo._QR_PENDING and not body.hide_get()
+    assert sorted(o.name for o in bpy.data.objects) == ["Body_low", "Retopo_Body_lowX", "Retopo_Body_low_rescue0"]
+    # a refusal (licence / busy engine) is remembered: no 15-minute wait per part
+    args = {"_qr_refused": True}
+    gen = retopo._qr_part(body, 100, args, 900)
+    try:
+        next(gen)
+        raise AssertionError("should not wait")
+    except StopIteration as stop:
+        assert stop.value is False
