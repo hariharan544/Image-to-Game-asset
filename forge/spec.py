@@ -1,12 +1,17 @@
 """Creative Guide -> fully resolved technical spec for each asset.
 
-Layering (later wins):
+Every engine is a *target* with its own platform and budgets:
+  unreal -> platform "aaa"     (asset type `tiers:` table)
+  unity  -> platform "mobile"  (asset type `mobile:` table)
+One Tripo generation is shared; Blender builds one game asset per target.
+
+Layering per target (later wins):
   built-in defaults
-  < asset_types/<type>.yaml  (+ its tier block)
+  < asset_types/<type>.yaml  (+ the tier block of the target's platform)
   < styles/<style>.yaml
-  < engines/<engine>.yaml    (each engine; strictest influence limit wins)
-  < guide `defaults:` block
-  < the asset's own `overrides:` block
+  < engines/<engine>.yaml
+  < guide `defaults:`               < guide `defaults: targets: <engine>:`
+  < the asset's `overrides:`        < the asset's `overrides: targets: <engine>:`
 """
 
 from __future__ import annotations
@@ -23,6 +28,8 @@ PROFILE_DIR = Path(__file__).resolve().parent.parent / "guides" / "profiles"
 AssetType = Literal["humanoid", "creature", "weapon", "prop", "vehicle", "environment"]
 Tier = Literal["hero", "standard", "background"]
 Engine = Literal["unity", "unreal"]
+Platform = Literal["aaa", "mobile"]
+TECH_SECTIONS = ("topology", "uv", "texture", "rig", "export", "qa")
 
 
 class GenerationSpec(BaseModel):
@@ -68,12 +75,14 @@ class RigSpec(BaseModel):
     spec: str = "tripo"
     model_version: Optional[str] = "v3.0-20260909"
     max_influences: int = 4
+    max_bones: Optional[int] = None              # warn above this (mobile)
     min_weight: float = 0.01
     sockets: dict[str, str] = Field(default_factory=dict)   # socket bone -> parent key (hand_r, head...)
 
 
 class ExportSpec(BaseModel):
-    unity_pipeline: Literal["hdrp", "urp"] = "hdrp"
+    unity_pipeline: Literal["hdrp", "urp"] = "urp"
+    ao_into_basecolor: bool = False              # mobile: bake AO into the base map, one texture less
 
 
 class QASpec(BaseModel):
@@ -99,6 +108,18 @@ class SupervisorSpec(BaseModel):
     max_retries_per_stage: int = 3
 
 
+class TargetSpec(BaseModel):
+    """The technical sections resolved for one engine/platform."""
+    engine: Engine
+    platform: Platform
+    topology: TopologySpec
+    uv: UVSpec
+    texture: TextureSpec
+    rig: RigSpec
+    export: ExportSpec
+    qa: QASpec
+
+
 class AssetSpec(BaseModel):
     name: str
     image: str
@@ -118,6 +139,21 @@ class AssetSpec(BaseModel):
     qa: QASpec = Field(default_factory=QASpec)
     review: ReviewSpec = Field(default_factory=ReviewSpec)
     supervisor: SupervisorSpec = Field(default_factory=SupervisorSpec)
+    platform: Platform = "aaa"
+    targets: dict[str, TargetSpec] = Field(default_factory=dict)
+
+    @property
+    def primary_engine(self) -> str:
+        """The AAA engine when there is one: its skeleton spec is what Tripo rigs to."""
+        return "unreal" if "unreal" in self.engines else self.engines[0]
+
+    def for_target(self, engine: str) -> "AssetSpec":
+        """A copy whose technical sections are the given engine's (used by every per-target stage)."""
+        if engine not in self.targets:
+            raise KeyError(f"{self.name} has no target {engine!r} (engines: {self.engines})")
+        t = self.targets[engine]
+        upd = {k: getattr(t, k) for k in TECH_SECTIONS}
+        return self.model_copy(update={**upd, "engines": [engine], "platform": t.platform, "targets": {}})
 
     @field_validator("engines")
     @classmethod
@@ -158,42 +194,48 @@ def _load_yaml(path: Path) -> dict:
 
 
 def resolve_asset(raw: dict, project_defaults: dict, profile_dir: Path = PROFILE_DIR) -> AssetSpec:
-    merged_top = deep_merge(project_defaults, {k: v for k, v in raw.items() if k != "overrides"})
+    scalars = {k: v for k, v in project_defaults.items() if not isinstance(v, dict)}
+    merged_top = deep_merge(scalars, {k: v for k, v in raw.items() if k != "overrides"})
     a_type = merged_top.get("type", "prop")
     tier = merged_top.get("tier", "standard")
     style = merged_top.get("style", "realistic")
     engines = merged_top.get("engines", ["unreal", "unity"])
 
     type_prof = _load_yaml(profile_dir / "asset_types" / f"{a_type}.yaml")
-    tiers = type_prof.pop("tiers", {})
-    if a_type and not type_prof and not tiers:
+    if not type_prof:
         raise ValueError(f"unknown asset type profile: {a_type}")
-    layers = [type_prof, tiers.get(tier, {})]
+    tier_tables = {"aaa": type_prof.pop("tiers", {}), "mobile": type_prof.pop("mobile", {})}
 
     style_path = profile_dir / "styles" / f"{style}.yaml"
     if not style_path.exists():
         raise ValueError(f"unknown style profile: {style} (add guides/profiles/styles/{style}.yaml)")
-    layers.append(_load_yaml(style_path))
+    style_prof = _load_yaml(style_path)
 
-    engine_layers = [_load_yaml(profile_dir / "engines" / f"{e}.yaml") for e in engines]
-    merged: dict[str, Any] = {}
-    for layer in layers:
-        merged = deep_merge(merged, layer)
-    # rig spec from the first engine, influence limit = strictest engine
-    if engine_layers:
-        merged = deep_merge(merged, engine_layers[0])
-        infl = [l.get("rig", {}).get("max_influences") for l in engine_layers if l.get("rig")]
-        infl = [i for i in infl if i]
-        if infl:
-            merged = deep_merge(merged, {"rig": {"max_influences": min(infl)}})
-        for l in engine_layers[1:]:
-            merged = deep_merge(merged, {"export": l.get("export", {})})
+    proj_tech = {k: v for k, v in project_defaults.items() if isinstance(v, dict) and k != "targets"}
+    proj_targets = project_defaults.get("targets", {}) or {}
+    overrides = dict(raw.get("overrides", {}) or {})
+    ov_targets = overrides.pop("targets", {}) or {}
+    top = {k: v for k, v in merged_top.items() if not isinstance(v, dict) or k == "extra_images"}
 
-    proj_tech = {k: v for k, v in project_defaults.items() if isinstance(v, dict)}
-    merged = deep_merge(merged, proj_tech)
-    merged = deep_merge(merged, {k: v for k, v in merged_top.items() if not isinstance(v, dict) or k in ("extra_images",)})
-    merged = deep_merge(merged, raw.get("overrides", {}))
-    return AssetSpec(**merged)
+    per_target: dict[str, AssetSpec] = {}
+    platforms: dict[str, str] = {}
+    for e in engines:
+        eprof = _load_yaml(profile_dir / "engines" / f"{e}.yaml")
+        platform = eprof.pop("platform", "aaa")
+        table = tier_tables.get(platform) or tier_tables["aaa"]
+        merged: dict[str, Any] = {}
+        for layer in (type_prof, table.get(tier, {}), style_prof, eprof, proj_tech,
+                      proj_targets.get(e, {}), top, overrides, ov_targets.get(e, {})):
+            merged = deep_merge(merged, layer)
+        per_target[e] = AssetSpec(**merged, platform=platform)
+        platforms[e] = platform
+
+    primary = "unreal" if "unreal" in engines else engines[0]
+    spec = per_target[primary]
+    spec.targets = {e: TargetSpec(engine=e, platform=platforms[e],
+                                  **{k: getattr(s, k) for k in TECH_SECTIONS})
+                    for e, s in per_target.items()}
+    return spec
 
 
 def load_guide(path: str | Path, profile_dir: Path = PROFILE_DIR) -> Guide:

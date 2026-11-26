@@ -4,6 +4,7 @@
   forge status   [--jobs jobs]                            where every asset is
   forge review   jobs/knight --checkpoint final --approve [--notes "..."]
   forge review   jobs/knight --checkpoint final --reject --notes "cape clips" --redo-from retopo
+  forge review   jobs/knight --reject --notes "mobile textures too blurry" --redo-from bake@unity
   forge check                                             verify Blender, Tripo key, AI supervisor
 """
 
@@ -18,7 +19,7 @@ from pathlib import Path
 from .blender import find_blender
 from .dataset import DatasetRecorder
 from .job import AWAITING_REVIEW, DONE, PENDING, Job
-from .pipeline import ORDER, Pipeline
+from .pipeline import STAGE_NAMES, Pipeline, split_key, stage_order
 from .spec import load_guide
 
 
@@ -58,10 +59,11 @@ def cmd_status(a) -> int:
     for m in sorted(root.glob("*/manifest.json")):
         job = Job.load(m.parent)
         stages = job.m["stages"]
-        cur = next((s for s in ORDER if stages.get(s, {}).get("status") not in ("done", "skipped")), "-")
+        cur = next((s for s in stage_order(job.spec.engines)
+                    if stages.get(s, {}).get("status") not in ("done", "skipped")), "-")
         credits = sum(v or 0 for v in job.m.get("credits", {}).values())
         wait = f" waiting on '{job.m.get('waiting_on')}'" if job.m["status"] == AWAITING_REVIEW else ""
-        print(f"{job.m['asset']:24} {job.m['status']:16} stage={cur:12} credits={credits:<6g}{wait}")
+        print(f"{job.m['asset']:24} {job.m['status']:16} stage={cur:18} credits={credits:<6g}{wait}")
     return 0
 
 
@@ -88,25 +90,31 @@ def cmd_review(a) -> int:
             job.m["artifacts"].setdefault("blend", {})[stage] = last["blend"]
         job.set_stage(stage, "done", accepted_by="director")
     if a.redo_from:
-        if a.redo_from not in ORDER:
-            print(f"--redo-from must be one of {ORDER}", file=sys.stderr)
+        order = stage_order(job.spec.engines)
+        name, target = split_key(a.redo_from)
+        if name not in STAGE_NAMES or (target and target not in job.spec.engines):
+            print(f"--redo-from must be a stage ({', '.join(STAGE_NAMES)}), optionally @engine "
+                  f"({', '.join(job.spec.engines)})", file=sys.stderr)
             return 2
-        idx = ORDER.index(a.redo_from)
-        if idx <= ORDER.index("generate"):       # new cloud generation (spends credits)
+        idx = next(i for i, k in enumerate(order)
+                   if split_key(k)[0] == name and (target is None or split_key(k)[1] in (None, target)))
+        if name in ("concept", "generate"):          # new cloud generation (spends credits)
             keys = ["generate", "segment", "complete", "rig_check", "rig"]
-            if a.redo_from == "concept":
+            if name == "concept":
                 keys.append("multiview")
                 job.m["artifacts"].pop("concept_views", None)
             for k in keys:
                 job.m["tripo_tasks"].pop(k, None)
             job.m["artifacts"].pop("tripo", None)
-        for s in ORDER[idx:]:
-            job.m["stages"].pop(s, None)
+        # with @engine only that target is rebuilt; shared later stages (final review) always reset
+        reset = [k for k in order[idx:]
+                 if not (target and split_key(k)[1] and split_key(k)[1] != target)]
         blends = job.m["artifacts"].get("blend", {})
-        for s in ORDER[idx:]:
-            blends.pop(s, None)
+        for k in reset:
+            job.m["stages"].pop(k, None)
+            blends.pop(k, None)
         for c in list(job.m["checkpoints"]):
-            if c == "final" or c.startswith("escalation_") or (c == "concept" and idx == 0):
+            if c == "final" or c.startswith("escalation_") or (c == "concept" and name == "concept"):
                 job.m["checkpoints"].pop(c)
     job.m["status"] = PENDING
     job.m.pop("waiting_on", None)
@@ -157,7 +165,8 @@ def main(argv=None) -> int:
     g.add_argument("--approve", action="store_true")
     g.add_argument("--reject", action="store_true")
     v.add_argument("--notes", help="what is wrong / right - this becomes AI training data")
-    v.add_argument("--redo-from", help=f"restart from this stage: {', '.join(ORDER)}")
+    v.add_argument("--redo-from", help=f"restart from this stage ({', '.join(STAGE_NAMES)}); "
+                                       "add @unreal or @unity to rebuild only that target")
     v.set_defaults(fn=cmd_review)
 
     c = sub.add_parser("check", help="verify the environment")

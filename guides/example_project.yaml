@@ -7,7 +7,7 @@
 
 project: Example Game
 
-engines: [unreal, unity]   # export for both
+engines: [unreal, unity]   # unreal = AAA build, unity = mobile build (one generation, two game assets)
 style: realistic           # realistic | stylized | lowpoly  (add your own in profiles/styles)
 
 defaults:
@@ -16,6 +16,8 @@ defaults:
     final_checkpoint: true     # look at the finished asset before it is exported
   supervisor:
     backend: rules             # rules = built-in checks; llm = your local AI supervisor
+  # targets:                   # optional per-engine tweaks for every asset, e.g.
+  #   unity: {rig: {max_influences: 2}}     # low-end phones
 
 assets:
   - name: knight

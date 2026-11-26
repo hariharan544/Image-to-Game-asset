@@ -3,7 +3,11 @@ generation: {use_multiview: false, generate_parts: false}
 topology: {preserve_hard_edges: true}
 uv: {method: smart}
 rig: {enabled: false}
-tiers:
+tiers:                      # AAA budgets (Unreal)
   hero:       {topology: {target_tris: 20000}, texture: {size: 2048}, uv: {texel_density_px_per_m: 1024}}
   standard:   {topology: {target_tris: 6000},  texture: {size: 2048}, uv: {texel_density_px_per_m: 512}}
   background: {topology: {target_tris: 1500},  texture: {size: 1024}, uv: {texel_density_px_per_m: 256}}
+mobile:                     # mobile budgets (Unity)
+  hero:       {topology: {target_tris: 4000}, texture: {size: 1024}, uv: {texel_density_px_per_m: 512}}
+  standard:   {topology: {target_tris: 1500}, texture: {size: 512}, uv: {texel_density_px_per_m: 256}}
+  background: {topology: {target_tris: 400}, texture: {size: 256}, uv: {texel_density_px_per_m: 128}}

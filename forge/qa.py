@@ -96,6 +96,11 @@ def check(stage: str, result: dict, spec: AssetSpec) -> list[Issue]:
                 add(Issue("NO_WEIGHTS", stage, part, r["skipped"]))
             if r.get("unweighted_verts", 0) > 0:
                 add(Issue("UNWEIGHTED_VERTS", stage, part, "vertices without skin weights", r["unweighted_verts"], 0))
+        bones = (result or {}).get("bones", 0)
+        if spec.rig.max_bones and bones > spec.rig.max_bones:
+            add(Issue("SKELETON_TOO_HEAVY", stage, None,
+                      f"{bones} bones > {spec.rig.max_bones} recommended for {spec.platform}",
+                      bones, spec.rig.max_bones, severity="warn"))
         missing = set(spec.rig.sockets) - set((result or {}).get("sockets", {}))
         for s in sorted(missing):
             add(Issue("SOCKET_MISSING", stage, None, f"socket {s} could not find its parent bone", severity="warn"))

@@ -1,3 +1,12 @@
-# Unity (HDRP by default for AAA; set export.unity_pipeline: urp for URP).
-rig: {spec: unity, max_influences: 4}
-export: {unity_pipeline: hdrp}
+# Unity = mobile target. Uses the `mobile` budgets of each asset type.
+platform: mobile
+rig:
+  spec: unity
+  max_influences: 4        # set 2 for low-end devices (Unity Quality > Skin Weights)
+  max_bones: 75            # warn above this; mobile GPU skinning sweet spot
+topology: {lod_ratios: [1.0, 0.4, 0.15]}
+texture:
+  samples: 8
+export:
+  unity_pipeline: urp      # URP = Unity's mobile render pipeline
+  ao_into_basecolor: true  # multiply AO into the base map: one texture less on device

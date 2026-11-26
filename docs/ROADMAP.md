@@ -9,6 +9,10 @@
 - Training environment: dataset builder, QLoRA trainer, evaluator, Ollama serving
 - Tests: full pipeline run with a fake Tripo
 
+## Phase 1b: AAA + mobile targets ✅
+- Unreal = AAA and Unity = mobile, built as two versions from one Tripo generation, each with its
+  own budgets, textures, influences, LODs and export.
+
 ## Phase 2: First live run on your PC
 - `forge check`, then one prop and one humanoid through the live Tripo API. Fix any field-name
   surprises in the Tripo responses.
@@ -22,6 +26,8 @@
 - **Auto-Rig Pro** adapter: rebuild the Tripo skeleton as an ARP rig (IK/FK, facial, twist bones),
   then use ARP's game-engine export (UE Mannequin / Unity Humanoid naming).
 - Bake: optional cage mesh, anti-aliased bakes, texture de-lighting and seam fixing.
+- Mobile: strip non-essential bones (fingers, twist bones) when the bone count is over budget.
+  Optionally bake an atlas so all parts share one material, for fewer draw calls.
 - Vision model labels parts from renders, so "sword", "helmet" and "cape" are recognised whatever
   Tripo calls them.
 

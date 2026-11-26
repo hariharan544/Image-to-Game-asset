@@ -67,6 +67,7 @@ def test_full_pipeline_with_review(tmp_path, fixture_glb):
             "uv": {"texel_density_px_per_m": 128},
             "rig": {"sockets": {"socket_weapon_r": "hand_r"}},
             "qa": {"min_uv_utilization": 0.1},
+            "targets": {"unity": {"topology": {"target_tris": 800}, "texture": {"size": 128}}},
         },
     }, {"engines": ["unreal", "unity"]})
     jobs = tmp_path / "jobs"
@@ -91,13 +92,19 @@ def test_full_pipeline_with_review(tmp_path, fixture_glb):
     un = job.root / "export" / "unity"
     assert (ue / "SK_knight.fbx").exists() and (ue / "SK_knight_Sword.fbx").exists()
     assert (ue / "Textures" / "T_knight_Body_ORM.png").exists()
-    assert (un / "knight.fbx").exists() and (un / "Textures" / "knight_Body_MaskMap.png").exists()
+    # unity = mobile: URP maps, AO folded into the base map (no separate occlusion texture)
+    assert (un / "knight.fbx").exists() and (un / "Textures" / "knight_Body_MetallicSmoothness.png").exists()
+    assert not (un / "Textures" / "knight_Body_Occlusion.png").exists()
 
-    retopo = job.stage("retopo")["attempts"][-1]["result"]
-    assert retopo["total_tris"] <= 3000 * 1.05
-    metrics = job.stage("metrics")["attempts"][-1]["result"]["parts"]["Body"]
-    assert metrics["weights"]["unweighted_verts_pct"] == 0
-    assert metrics["uv"]["overlap_pct"] < 0.5
+    # two separate builds from one generation: AAA budget vs mobile budget
+    aaa = job.stage("retopo@unreal")["attempts"][-1]["result"]["total_tris"]
+    mob = job.stage("retopo@unity")["attempts"][-1]["result"]["total_tris"]
+    assert aaa <= 3000 * 1.05 and mob <= 800 * 1.05 and mob < aaa
+    assert (job.root / "textures" / "unity" / "T_Body_basecolor.png").exists()
+    for engine in ("unreal", "unity"):
+        m = job.stage(f"metrics@{engine}")["attempts"][-1]["result"]["parts"]["Body"]
+        assert m["weights"]["unweighted_verts_pct"] == 0 and m["uv"]["overlap_pct"] < 0.5
+    assert (job.root / "review" / "final" / "unity" / "front.png").exists()
 
     decisions = rec.read_jsonl(rec.decisions)
     assert {d["observation"]["stage"] for d in decisions if "observation" in d} >= {"cleanup", "retopo", "uv", "bake", "skin"}
@@ -120,12 +127,12 @@ def test_supervisor_retries_then_escalates_then_director_accepts(tmp_path, fixtu
     rec = DatasetRecorder(data)
     job = Job.open(jobs, spec, img)
     assert Pipeline(job, rec, tripo=FakeTripo(fixture_glb)).run() == "awaiting_review"
-    assert job.m["waiting_on"] == "escalation_uv"
-    attempts = job.stage("uv")["attempts"]
+    assert job.m["waiting_on"] == "escalation_uv@unity"
+    attempts = job.stage("uv@unity")["attempts"]
     actions = [a["decision"]["action"] for a in attempts]
     assert actions == ["uv_lower_angle", "uv_min_stretch", "uv_angle_seams", "escalate"]
     # each retry really ran with the changed parameters
-    assert attempts[1]["params"]["angle_limit_deg"] == spec.uv.angle_limit_deg - 10
+    assert attempts[1]["params"]["angle_limit_deg"] == spec.targets["unity"].uv.angle_limit_deg - 10
     assert attempts[2]["params"]["method"] == "min_stretch"
     # outcomes of retries are recorded for training
     outcomes = [r for r in rec.read_jsonl(rec.decisions) if "outcome_for" in r]

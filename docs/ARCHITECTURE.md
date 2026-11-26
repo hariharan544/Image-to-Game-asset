@@ -1,5 +1,24 @@
 # Architecture
 
+## Targets: Unreal = AAA, Unity = mobile
+
+The stages that cost money or are shared run once: concept, generate and cleanup. Every later
+Blender stage runs once per engine, as `retopo@unreal` … `export@unreal` and `retopo@unity` …
+`export@unity`. Each run uses the budgets of that engine's platform:
+
+| | Unreal (platform `aaa`) | Unity (platform `mobile`) |
+|---|---|---|
+| Budget table | `tiers:` in each asset type | `mobile:` in each asset type |
+| Humanoid hero / standard / background | 80k / 40k / 15k tris, 4K / 2K / 1K | 15k / 7k / 2.5k tris, 2K / 1K / 512 |
+| Bone influences | 8 | 4 (set 2 for low-end) |
+| LODs | 1, 0.5, 0.25, 0.12 | 1, 0.4, 0.15 |
+| Textures | BaseColor, Normal (DirectX), ORM | URP BaseMap (AO multiplied in), Normal, MetallicSmoothness |
+| Extra checks | - | bone count > 75 warning |
+
+The skeleton comes from Tripo once, in the AAA spec (`unreal`). Unity's Humanoid avatar maps it
+directly. Per-target overrides live under `targets: {unreal: {...}, unity: {...}}` in the guide
+defaults or in an asset's overrides.
+
 ## Stages
 
 | # | Stage | Where | What it does | Measured by the QA gate |
@@ -44,14 +63,15 @@ run stage(params) ─► metrics ─► QA gate ─► issues ─► supervisor.
 
 ## Engine conventions
 
-| | Unreal Engine 5 | Unity (HDRP default, URP optional) |
+| | Unreal Engine 5 | Unity (URP; HDRP selectable with `export.unity_pipeline: hdrp`) |
 |---|---|---|
+| Platform | AAA | mobile |
 | Mesh names | `SK_<asset>.fbx` (rigged) / `SM_` (static), parts `..._<part>.fbx` | `<asset>.fbx`, `<asset>_<part>.fbx` |
 | LODs | `<part>_LOD0..n` in the FBX | `<part>_LOD0..n` → automatic LODGroup |
 | Normal map | DirectX (green flipped) `T_*_N` | OpenGL `*_Normal` |
-| Packed map | `T_*_ORM` (R AO, G roughness, B metallic) | HDRP `*_MaskMap` (R metal, G AO, B detail, A smoothness) / URP `*_MetallicSmoothness` + `*_Occlusion` |
+| Packed map | `T_*_ORM` (R AO, G roughness, B metallic) | URP `*_MetallicSmoothness` (R metal, A smoothness); AO multiplied into `*_BaseMap` (`export.ao_into_basecolor`; turn off for a separate `*_Occlusion`) |
 | FBX | scale 1.0, armature object named `Armature` (UE drops it, no extra root bone) | apply unit scale, bake space transform |
-| Skin influences | the guide's limit (default 4, valid in both engines) | 4 |
+| Skin influences | 8 | 4 |
 
 ## Multi-part assets
 

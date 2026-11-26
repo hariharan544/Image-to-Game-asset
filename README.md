@@ -1,7 +1,9 @@
 # Forge: one image → game-ready 3D asset
 
-Forge turns a single concept image into a **game-ready, multi-part, rigged 3D asset** for
-**Unreal Engine 5 and Unity**. A creative director only has to choose the image, write a few
+Forge turns a single concept image into a **game-ready, multi-part, rigged 3D asset** for two
+targets at once: **Unreal Engine 5 (AAA / high-end)** and **Unity (mobile)**. Tripo generates the
+model once. Blender then builds two separate versions from it, each with its own polygon budget,
+texture sizes, bone limits and export conventions. A creative director only has to choose the image, write a few
 plain lines in a *Creative Guide*, and approve at two checkpoints.
 
 ```
@@ -15,11 +17,13 @@ image ─► Tripo (cloud) ─────────► Blender (headless, aut
 
 * **Tripo** does the generation: 4 views from your image, the 3D model, part splitting, and the
   skeleton (Unity or Unreal spec). It is called through the official `tripo3d` SDK (apiv3).
-* **Blender** rebuilds the AI model into a production asset: clean quad topology inside the
+* **Blender** rebuilds the AI model into a production asset, once per target: clean quad topology inside the
   polygon budget, proper UVs, the AI's detail and colour baked into PBR maps, the AI's skin
   weights transferred onto the new mesh and limited to the engine's influence count, weapon/prop
-  sockets, LODs, and engine-correct export (Unreal: `SK_`/`SM_`, ORM, DirectX normals; Unity:
-  HDRP Mask Map or URP, OpenGL normals).
+  sockets, LODs, and engine-correct export.
+  * **Unreal AAA:** `SK_`/`SM_` names, ORM, DirectX normals, up to 8 influences, 4 LODs.
+  * **Unity mobile:** URP, AO folded into the base map, OpenGL normals, 4 influences, a bone-count
+    warning, 3 LODs, and budgets around 5× smaller.
 * **QA gate + AI supervisor** measure every stage (triangles, UV overlap/stretch/texel density,
   bake misses, unweighted vertices...) and decide what to do. The supervisor is a **local open
   model you fine-tune on your RTX 4080** from the pipeline's own history and your reviews
@@ -47,7 +51,8 @@ image ─► Tripo (cloud) ─────────► Blender (headless, aut
 1. Put concept images in `inputs/`: one object per image, plain background.
 2. Copy `guides/example_project.yaml` to `guides/my_game.yaml` and list your assets. For each one
    you pick a **type** (humanoid, creature, weapon, prop, vehicle, environment), a **tier** (hero,
-   standard, background) and a **style** (realistic, stylized, lowpoly). Add **detachable parts**
+   standard, background) and a **style** (realistic, stylized, lowpoly). The tier picks the
+   budget in *both* tables: the AAA table for Unreal and the mobile table for Unity. Add **detachable parts**
    and **notes** in plain words. Budgets, texture sizes, rig spec and export settings follow from
    those choices (see `guides/profiles/`).
 3. Run:
@@ -68,6 +73,10 @@ image ─► Tripo (cloud) ─────────► Blender (headless, aut
    critique, warnings and metrics. Approve to export, or reject with notes and a restart stage:
    ```bat
    forge review jobs\knight --reject --notes "sword blade too thin" --redo-from retopo
+   ```
+   To rebuild only one version, add the engine to the stage name:
+   ```bat
+   forge review jobs\knight --reject --notes "mobile texture too blurry" --redo-from bake@unity
    ```
 6. The game-ready files are in `jobs\<asset>\export\unreal\` and `jobs\<asset>\export\unity\`.
 

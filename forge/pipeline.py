@@ -1,17 +1,20 @@
-"""The Forge pipeline: one image -> game-ready, rigged, multi-part asset.
+r"""The Forge pipeline: one image -> game-ready, rigged, multi-part asset per target engine.
 
+Shared (paid once):
   concept      Tripo: 1 image -> 4 views            [checkpoint: director approves views]
   generate     Tripo: views -> 3D (+ parts, + rig)
-  cleanup      Blender: import, scale, pivot, clean       \
-  retopo       Blender: clean quads inside the budget      |  each stage is checked by
-  uv           Blender: unwrap + pack, measured            |  the QA gate; the supervisor
-  bake         Blender: AI detail -> PBR maps              |  accepts, retries with new
-  skin         Blender: weights onto the new mesh, sockets |  parameters, or escalates
-  lods         Blender: LOD chain                          |  to the director
-  metrics      Blender: final measurements                /
-  previews     Blender: turntable renders (+ AI critique)
-  final_review                                     [checkpoint: director approves asset]
-  export       Blender: FBX + packed textures for each engine
+  cleanup      Blender: import, scale, pivot, clean
+Per target (unreal = AAA, unity = mobile), each with its own budgets:
+  retopo@T     Blender: clean quads inside the budget      \  each stage is checked by
+  uv@T         Blender: unwrap + pack, measured             |  the QA gate; the supervisor
+  bake@T       Blender: AI detail -> PBR maps               |  accepts, retries with new
+  skin@T       Blender: weights onto the new mesh, sockets  |  parameters, or escalates
+  lods@T       Blender: LOD chain                           |  to the director
+  metrics@T    Blender: final measurements                 /
+  previews@T   Blender: turntable renders
+Then:
+  final_review                                     [checkpoint: director approves all targets]
+  export@T     Blender: FBX + packed textures in the engine's conventions
 """
 
 from __future__ import annotations
@@ -32,10 +35,20 @@ from .supervisor import Decision, Observation, Supervisor, make_supervisor
 
 log = logging.getLogger("forge")
 
-ORDER = ["concept", "generate", "cleanup", "retopo", "uv", "bake", "skin", "lods",
-         "metrics", "previews", "final_review", "export"]
-BLENDER_STAGES = ["cleanup", "retopo", "uv", "bake", "skin", "lods", "metrics", "previews"]
-SUPERVISED = {"cleanup", "retopo", "uv", "bake", "skin", "metrics"}
+SHARED = ["concept", "generate", "cleanup"]
+TARGET_STAGES = ["retopo", "uv", "bake", "skin", "lods", "metrics", "previews"]
+STAGE_NAMES = SHARED + TARGET_STAGES + ["final_review", "export"]
+
+
+def stage_order(engines: list[str]) -> list[str]:
+    """Concrete stage keys, e.g. ['concept', ..., 'retopo@unreal', ..., 'retopo@unity', ..., 'export@unity']."""
+    return (SHARED + [f"{s}@{e}" for e in engines for s in TARGET_STAGES]
+            + ["final_review"] + [f"export@{e}" for e in engines])
+
+
+def split_key(key: str) -> tuple[str, Optional[str]]:
+    name, _, target = key.partition("@")
+    return name, (target or None)
 
 
 class Stop(Exception):
@@ -88,14 +101,16 @@ class Pipeline:
         job.m["status"] = RUNNING
         job.save()
         try:
-            for stage in ORDER:
-                if job.stage_done(stage):
+            for key in stage_order(self.spec.engines):
+                if job.stage_done(key):
                     continue
-                self.say(f"[{job.m['asset']}] {stage} ...")
-                job.set_stage(stage, RUNNING, started=time.time())
-                getattr(self, f"_stage_{stage}")()
-                if job.stage(stage)["status"] == RUNNING:
-                    job.set_stage(stage, DONE, finished=time.time())
+                self.say(f"[{job.m['asset']}] {key} ...")
+                job.set_stage(key, RUNNING, started=time.time())
+                name, target = split_key(key)
+                fn = getattr(self, f"_stage_{name}")
+                fn(target) if target else fn()
+                if job.stage(key)["status"] == RUNNING:
+                    job.set_stage(key, DONE, finished=time.time())
         except Stop as s:
             self.say(f"[{job.m['asset']}] paused: {s}")
             return job.m["status"]
@@ -110,6 +125,10 @@ class Pipeline:
         self.job.save()
         raise Stop(f"waiting for review '{checkpoint}': {why}. "
                    f"Approve with: forge review {self.job.root} --checkpoint {checkpoint} --approve")
+
+    def _tspec(self, key: str) -> AssetSpec:
+        _, target = split_key(key)
+        return self.spec.for_target(target) if target else self.spec
 
     def _fail(self, stage: str, why: str) -> None:
         self.job.set_stage(stage, FAILED, error=why)
@@ -157,85 +176,99 @@ class Pipeline:
     def _stage_final_review(self) -> None:
         def packet() -> Path:
             d = self.job.path("review", "final", ".keep").parent
-            imgs = self.job.artifact("previews") or []
-            for p in imgs:
-                shutil.copy(p, d / Path(p).name)
+            previews = self.job.artifact("previews") or {}
             refs = [self.job.m["source_image"]] + list((self.job.artifact("concept_views") or {}).values())
-            critique = self.sup.critique(imgs, refs, self.spec.notes)
+            primary = previews.get(self.spec.primary_engine, [])
+            critique = self.sup.critique(primary, refs, self.spec.notes)
             self.job.set_artifact("ai_critique", critique)
-            warnings = [i for s in self.job.m["stages"].values() for a in s.get("attempts", [])[-1:]
-                        for i in a.get("issues", []) if i.get("severity") == "warn"]
             lines = [f"# Final review: {self.spec.name}", "",
-                     f"Type **{self.spec.type}** / tier **{self.spec.tier}** / style **{self.spec.style}**  ",
-                     f"Budget {self.spec.effective_tris} tris, textures {self.spec.texture.size}px", "",
-                     "## Renders", *[f"![{Path(p).stem}]({Path(p).name})" for p in imgs], "",
-                     "## Warnings (not blocking)", *([f"- {w['code']} ({w.get('part')}): {w['message']}"
-                                                      for w in warnings] or ["- none"]), ""]
+                     f"Type **{self.spec.type}** / tier **{self.spec.tier}** / style **{self.spec.style}**", ""]
             if critique:
                 lines += [f"## AI critique ({critique.get('model')}): {critique['verdict']}",
                           *[f"- {o}" for o in critique["observations"]], ""]
-            metrics = (self.job.stage("metrics").get("attempts") or [{}])[-1].get("result")
-            lines += ["## Metrics", "```json", json.dumps(metrics, indent=2), "```"]
+            for engine in self.spec.engines:
+                t = self.spec.for_target(engine)
+                sub = d / engine
+                sub.mkdir(exist_ok=True)
+                for p in previews.get(engine, []):
+                    shutil.copy(p, sub / Path(p).name)
+                warnings = [i for k, st in self.job.m["stages"].items() if k.endswith(f"@{engine}")
+                            for a in st.get("attempts", [])[-1:] for i in a.get("issues", [])
+                            if i.get("severity") == "warn"]
+                metrics = (self.job.stage(f"metrics@{engine}").get("attempts") or [{}])[-1].get("result")
+                lines += [f"## {engine} ({t.platform})",
+                          f"Budget {t.effective_tris} tris, textures {t.texture.size}px, "
+                          f"{t.rig.max_influences} bone influences", "",
+                          *[f"![{engine} {Path(p).stem}]({engine}/{Path(p).name})" for p in previews.get(engine, [])],
+                          "", "Warnings (not blocking):",
+                          *([f"- {w['code']} ({w.get('part')}): {w['message']}" for w in warnings] or ["- none"]),
+                          "", "<details><summary>metrics</summary>", "", "```json",
+                          json.dumps(metrics, indent=2), "```", "</details>", ""]
             (d / "REVIEW.md").write_text("\n".join(lines), encoding="utf-8")
             return d
         self._checkpoint("final", self.spec.review.final_checkpoint, packet)
 
     # ------------------------------------------------------------------ blender stages
-    def _input_blend(self, stage: str) -> Optional[str]:
-        idx = BLENDER_STAGES.index(stage)
+    def _input_blend(self, key: str) -> Optional[str]:
+        name, target = split_key(key)
         blends = self.job.m["artifacts"].get("blend", {})
-        for prev in reversed(BLENDER_STAGES[:idx]):
-            if prev in blends:
-                return blends[prev]
-        return None
+        if target:
+            idx = TARGET_STAGES.index(name) if name in TARGET_STAGES else len(TARGET_STAGES)
+            for prev in reversed(TARGET_STAGES[:idx]):
+                if f"{prev}@{target}" in blends:
+                    return blends[f"{prev}@{target}"]
+        return blends.get("cleanup")
 
-    def _fixed_args(self, stage: str, attempt: int) -> dict:
-        job, spec = self.job, self.spec
+    def _fixed_args(self, key: str, attempt: int) -> dict:
+        job = self.job
+        name, target = split_key(key)
+        spec = self._tspec(key)
+        tdir = target or "shared"
         a: dict[str, Any] = {}
-        if stage != "cleanup":
-            a["load_blend"] = self._input_blend(stage)
-        if stage not in ("metrics", "previews"):
-            a["save_blend"] = str(job.path("blend", f"{BLENDER_STAGES.index(stage):02d}_{stage}_a{attempt}.blend"))
-        if stage == "cleanup":
+        if name != "cleanup":
+            a["load_blend"] = self._input_blend(key)
+        if name not in ("metrics", "previews"):
+            a["save_blend"] = str(job.path("blend", tdir, f"{STAGE_NAMES.index(name):02d}_{name}_a{attempt}.blend"))
+        if name == "cleanup":
             a["source"] = job.artifact("tripo")["source_for_blender"]
-        elif stage == "uv":
+        elif name == "uv":
             a["texture_size"] = spec.texture.size
-        elif stage == "bake":
-            uv_res = job.stage("uv")["attempts"][-1]["result"]
-            a.update(texture_size=spec.texture.size, texture_dir=str(job.path("textures", ".keep").parent),
+        elif name == "bake":
+            uv_res = job.stage(f"uv@{target}")["attempts"][-1]["result"]
+            a.update(texture_size=spec.texture.size, texture_dir=str(job.path("textures", tdir, ".keep").parent),
                      maps=spec.texture.maps, margin_px=spec.uv.margin_px, device=spec.texture.device,
                      uv_utilization={p: r.get("utilization", 0.7) for p, r in uv_res.get("parts", {}).items()})
-        elif stage == "skin":
-            parts = job.stage("cleanup")["attempts"][-1]["result"].get("parts", [])
-            a.update(sockets=spec.rig.sockets,
-                     rigid_parts=[])      # detachable props keep Tripo's weights (usually 100% to the hand)
-            a["_parts"] = parts
-        elif stage == "metrics":
+        elif name == "skin":
+            a.update(sockets=spec.rig.sockets, rigid_parts=[])
+        elif name == "metrics":
             a.update(texture_size=spec.texture.size, max_influences=spec.rig.max_influences)
-        elif stage == "previews":
-            a["preview_dir"] = str(job.path("previews", ".keep").parent)
+        elif name == "previews":
+            a["preview_dir"] = str(job.path("previews", tdir, ".keep").parent)
         return a
 
-    def _blender(self, stage: str, args: dict, attempt: int) -> dict:
-        log_path = self.job.path("logs", f"{stage}_a{attempt}.log")
-        return run_stage(stage, {k: v for k, v in args.items() if not k.startswith("_")}, log_path,
+    def _blender(self, key: str, args: dict, attempt: int) -> dict:
+        name, _ = split_key(key)
+        log_path = self.job.path("logs", f"{key.replace('@', '_')}_a{attempt}.log")
+        return run_stage(name, {k: v for k, v in args.items() if not k.startswith("_")}, log_path,
                          blender=self.blender)
 
-    def _supervised_stage(self, stage: str) -> None:
-        job, spec = self.job, self.spec
-        st = job.stage(stage)
-        params = dict(st.get("params") or tunables(stage, spec))
+    def _supervised_stage(self, key: str) -> None:
+        job = self.job
+        name, target = split_key(key)
+        spec = self._tspec(key)
+        st = job.stage(key)
+        params = dict(st.get("params") or tunables(name, spec))
         history: list[dict] = []
         last_decision_id: Optional[str] = None
         max_tries = spec.supervisor.max_retries_per_stage + 1
         for attempt in range(1, max_tries + 1):
-            args = {**params, **self._fixed_args(stage, attempt)}
+            args = {**params, **self._fixed_args(key, attempt)}
             try:
-                result = self._blender(stage, args, attempt)
+                result = self._blender(key, args, attempt)
             except BlenderError as exc:
-                job.add_attempt(stage, {"attempt": attempt, "params": params, "error": str(exc)[:2000]})
-                self._fail(stage, str(exc).splitlines()[0])
-            issues = [i.to_dict() for i in qa.check(stage, result, spec)]
+                job.add_attempt(key, {"attempt": attempt, "params": params, "error": str(exc)[:2000]})
+                self._fail(key, str(exc).splitlines()[0])
+            issues = [i.to_dict() for i in qa.check(name, result, spec)]
             if last_decision_id:
                 errors = [i for i in issues if i["severity"] == "error"]
                 self.rec.record_outcome(last_decision_id, {
@@ -243,73 +276,78 @@ class Pipeline:
                     "error_count": len(errors),
                     "resolved": not errors})
             obs = Observation(
-                asset=spec.name, stage=stage, attempt=attempt, params=params, result=result, issues=issues,
+                asset=spec.name, stage=name, attempt=attempt, params=params, result=result, issues=issues,
                 history=history, notes=spec.notes,
-                budget={"tris": spec.effective_tris, "texture": spec.texture.size, "tier": spec.tier,
-                        "type": spec.type, "texel_density": spec.uv.texel_density_px_per_m})
+                budget={"platform": spec.platform, "engine": target or "shared", "tris": spec.effective_tris,
+                        "texture": spec.texture.size, "tier": spec.tier, "type": spec.type,
+                        "texel_density": spec.uv.texel_density_px_per_m})
             decision: Decision = self.sup.decide(obs)
             last_decision_id = self.rec.record_decision(str(job.root), obs.to_dict(), decision.to_dict())
-            job.add_attempt(stage, {"attempt": attempt, "params": params, "result": result,
-                                    "issues": issues, "decision": decision.to_dict(),
-                                    "blend": args.get("save_blend")})
+            job.add_attempt(key, {"attempt": attempt, "params": params, "result": result,
+                                  "issues": issues, "decision": decision.to_dict(),
+                                  "blend": args.get("save_blend")})
             self.say(f"   attempt {attempt}: {len(issues)} issue(s) -> {decision.action} ({decision.decided_by}): "
                      f"{decision.reason}")
             if decision.action == "accept":
                 if args.get("save_blend"):
-                    job.m["artifacts"].setdefault("blend", {})[stage] = args["save_blend"]
-                job.set_stage(stage, DONE, params=params, finished=time.time())
+                    job.m["artifacts"].setdefault("blend", {})[key] = args["save_blend"]
+                job.set_stage(key, DONE, params=params, finished=time.time())
                 return
             if decision.action == "escalate":
-                job.set_stage(stage, AWAITING_REVIEW, params=params)
-                self._pause(f"escalation_{stage}", decision.reason)
+                job.set_stage(key, AWAITING_REVIEW, params=params)
+                self._pause(f"escalation_{key}", decision.reason)
             history.append({"attempt": attempt, "action": decision.action,
                             "issue_codes": sorted({i["code"] for i in issues})})
             params = decision.new_params or params
-        job.set_stage(stage, AWAITING_REVIEW, params=params)
-        self._pause(f"escalation_{stage}", f"still failing after {max_tries} attempts")
+        job.set_stage(key, AWAITING_REVIEW, params=params)
+        self._pause(f"escalation_{key}", f"still failing after {max_tries} attempts")
 
     def _stage_cleanup(self): self._supervised_stage("cleanup")
-    def _stage_retopo(self): self._supervised_stage("retopo")
-    def _stage_uv(self): self._supervised_stage("uv")
-    def _stage_bake(self): self._supervised_stage("bake")
-    def _stage_metrics(self): self._supervised_stage("metrics")
+    def _stage_retopo(self, t): self._supervised_stage(f"retopo@{t}")
+    def _stage_uv(self, t): self._supervised_stage(f"uv@{t}")
+    def _stage_bake(self, t): self._supervised_stage(f"bake@{t}")
+    def _stage_metrics(self, t): self._supervised_stage(f"metrics@{t}")
 
-    def _stage_skin(self):
+    def _stage_skin(self, t):
         if not self.spec.rig.enabled:
-            self.job.set_stage("skin", SKIPPED)
+            self.job.set_stage(f"skin@{t}", SKIPPED)
             return
-        self._supervised_stage("skin")
+        self._supervised_stage(f"skin@{t}")
 
-    def _stage_lods(self):
-        args = {**tunables("lods", self.spec), **self._fixed_args("lods", 1)}
-        res = self._blender("lods", args, 1)
-        self.job.m["artifacts"].setdefault("blend", {})["lods"] = args["save_blend"]
-        self.job.add_attempt("lods", {"attempt": 1, "result": res})
+    def _stage_lods(self, t):
+        key = f"lods@{t}"
+        args = {**tunables("lods", self._tspec(key)), **self._fixed_args(key, 1)}
+        res = self._blender(key, args, 1)
+        self.job.m["artifacts"].setdefault("blend", {})[key] = args["save_blend"]
+        self.job.add_attempt(key, {"attempt": 1, "result": res})
 
-    def _stage_previews(self):
-        args = {**tunables("previews", self.spec), **self._fixed_args("previews", 1)}
+    def _stage_previews(self, t):
+        key = f"previews@{t}"
+        args = {**tunables("previews", self._tspec(key)), **self._fixed_args(key, 1)}
         try:
-            res = self._blender("previews", args, 1)
+            res = self._blender(key, args, 1)
         except BlenderError:          # no GPU / OpenGL (servers, CI): fall back to Cycles on CPU
             args["engine"] = "CYCLES"
-            res = self._blender("previews", args, 2)
-        self.job.set_artifact("previews", res["images"])
-        self.job.add_attempt("previews", {"attempt": 1, "result": res})
+            res = self._blender(key, args, 2)
+        previews = dict(self.job.artifact("previews") or {})
+        previews[t] = res["images"]
+        self.job.set_artifact("previews", previews)
+        self.job.add_attempt(key, {"attempt": 1, "result": res})
 
-    def _stage_export(self):
-        spec, job = self.spec, self.job
-        bake = job.stage("bake")["attempts"][-1]["result"]
+    def _stage_export(self, t):
+        job, spec = self.job, self.spec.for_target(t)
+        bake = job.stage(f"bake@{t}")["attempts"][-1]["result"]
         tex_maps = {p: r["maps"] for p, r in bake.get("parts", {}).items() if "maps" in r}
         parts = job.stage("cleanup")["attempts"][-1]["result"].get("parts", [])
         detachable = match_parts(spec.detachable_parts, parts)
-        exports = {}
-        for engine in spec.engines:
-            args = {"load_blend": self._input_blend("previews"), "engine": engine, "asset_name": spec.name,
-                    "export_dir": str(job.path("export", engine, ".keep").parent),
-                    "texture_maps": tex_maps, "detachable_parts": detachable,
-                    "unity_pipeline": spec.export.unity_pipeline}
-            exports[engine] = self._blender("export", args, 1)
+        args = {"load_blend": self._input_blend(f"previews@{t}"), "engine": t, "asset_name": spec.name,
+                "export_dir": str(job.path("export", t, ".keep").parent),
+                "texture_maps": tex_maps, "detachable_parts": detachable,
+                "unity_pipeline": spec.export.unity_pipeline,
+                "ao_into_basecolor": spec.export.ao_into_basecolor}
+        exports = dict(job.artifact("exports") or {})
+        exports[t] = self._blender(f"export@{t}", args, 1)
         job.set_artifact("exports", exports)
-        missing = sorted(set(spec.detachable_parts) - {w for w in spec.detachable_parts if match_parts([w], parts)})
+        missing = [w for w in spec.detachable_parts if not match_parts([w], parts)]
         if missing:
             self.say(f"   note: detachable parts not found among generated parts {parts}: {missing}")

@@ -167,7 +167,8 @@ def _channel(maps, key, default, shape):
     return np.full(shape, default, dtype=np.float32)
 
 
-def _pack_textures(part_name: str, maps: dict, engine: str, out_dir: str, asset: str, unity_pipeline: str) -> dict:
+def _pack_textures(part_name: str, maps: dict, engine: str, out_dir: str, asset: str, unity_pipeline: str,
+                   ao_into_basecolor: bool = False) -> dict:
     os.makedirs(out_dir, exist_ok=True)
     out = {}
     ref = maps.get("basecolor") or maps.get("normal")
@@ -194,7 +195,25 @@ def _pack_textures(part_name: str, maps: dict, engine: str, out_dir: str, asset:
         dst = os.path.join(out_dir, f"T_{stem}_ORM.png"); _save_pixels(orm, size, dst); out["orm"] = dst
     else:  # unity
         if "basecolor" in maps:
-            dst = os.path.join(out_dir, f"{stem}_BaseMap.png"); copy_color(maps["basecolor"], dst); out["basecolor"] = dst
+            dst = os.path.join(out_dir, f"{stem}_BaseMap.png")
+            if ao_into_basecolor and "ao" in maps:
+                # mobile: darken the base colour by AO (sRGB pixels; AO is linear 0-1) - saves a texture
+                img = bpy.data.images.load(maps["basecolor"], check_existing=False)
+                w, h = img.size
+                px = np.empty(w * h * 4, dtype=np.float32)
+                img.pixels.foreach_get(px)
+                bpy.data.images.remove(img)
+                px = px.reshape(h, w, 4)
+                px[..., :3] *= ao[..., None]
+                bc = bpy.data.images.new(os.path.basename(dst), w, h, alpha=True)
+                bc.pixels.foreach_set(px.ravel())
+                bc.filepath_raw = dst
+                bc.file_format = "PNG"
+                bc.save()
+                bpy.data.images.remove(bc)
+            else:
+                copy_color(maps["basecolor"], dst)
+            out["basecolor"] = dst
         if "normal" in maps:
             n, _ = _load_pixels(maps["normal"])                # Unity is OpenGL already
             dst = os.path.join(out_dir, f"{stem}_Normal.png"); _save_pixels(n, size, dst); out["normal"] = dst
@@ -205,8 +224,9 @@ def _pack_textures(part_name: str, maps: dict, engine: str, out_dir: str, asset:
         else:                          # URP/Built-in: R metal, A smoothness (+ separate AO)
             mask = np.stack([metal, metal, metal, smooth], axis=-1)
             dst = os.path.join(out_dir, f"{stem}_MetallicSmoothness.png")
-            aom = np.stack([ao, ao, ao, np.ones(shape, np.float32)], axis=-1)
-            ao_dst = os.path.join(out_dir, f"{stem}_Occlusion.png"); _save_pixels(aom, size, ao_dst); out["ao"] = ao_dst
+            if not ao_into_basecolor:
+                aom = np.stack([ao, ao, ao, np.ones(shape, np.float32)], axis=-1)
+                ao_dst = os.path.join(out_dir, f"{stem}_Occlusion.png"); _save_pixels(aom, size, ao_dst); out["ao"] = ao_dst
         _save_pixels(mask, size, dst); out["mask"] = dst
     return out
 
@@ -235,7 +255,8 @@ def export(args: dict) -> dict:
     out_dir = args["export_dir"]
     tex_maps = args.get("texture_maps", {})          # part -> {map: path}
     detachable = set(args.get("detachable_parts", []))
-    unity_pipeline = args.get("unity_pipeline", "hdrp")
+    unity_pipeline = args.get("unity_pipeline", "urp")
+    ao_into_basecolor = bool(args.get("ao_into_basecolor", False))
     os.makedirs(out_dir, exist_ok=True)
 
     arm = C.find_armature()
@@ -272,7 +293,8 @@ def export(args: dict) -> dict:
             files["meshes"][part] = path
         if part in tex_maps:
             files["textures"][part] = _pack_textures(part, tex_maps[part], engine,
-                                                     os.path.join(out_dir, "Textures"), asset, unity_pipeline)
+                                                     os.path.join(out_dir, "Textures"), asset, unity_pipeline,
+                                                     ao_into_basecolor)
     for o in lows:
         o.name = f"{o.get(C.PART_PROP)}_low"
     return files
