@@ -34,24 +34,83 @@ def regions(src_me, mask: np.ndarray, min_verts: int = 40) -> list:
     return out
 
 
-def extract(src_me, region: np.ndarray, grow_rings: int = 6, name: str = "forge_rescue"):
-    """A closed mesh of the region, grown into the body so its root sits inside it."""
+def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_rescue"):
+    """A closed mesh of the region whose root continues as a tapered plug INTO the body.
+
+    The cut is kept tight (a couple of rings past the lost area) and the open root is
+    extruded inward, so the boolean union meets the body along a clean crossing line
+    instead of two surfaces lying on top of each other (which leaves cracks and flaps)."""
+    from mathutils import Vector
     grown = _dilate(region, src_me, grow_rings)
     bm = bmesh.new()
     bm.from_mesh(src_me)
     bm.verts.ensure_lookup_table()
     bmesh.ops.delete(bm, geom=[v for v in bm.verts if not grown[v.index]], context="VERTS")
     open_edges = [e for e in bm.edges if e.is_boundary]
-    if open_edges:
-        res = bmesh.ops.holes_fill(bm, edges=open_edges, sides=100000)
+    if open_edges and bm.verts:
+        ring = {v for e in open_edges for v in e.verts}
+        root = sum((v.co for v in ring), Vector()) / len(ring)
+        centre = sum((v.co for v in bm.verts), Vector()) / len(bm.verts)
+        tip = max(bm.verts, key=lambda v: (v.co - root).length).co.copy()
+        out = (tip - root).normalized() if (tip - root).length > 1e-9 else (centre - root).normalized()
+        radius = max(sum((v.co - root).length for v in ring) / len(ring), 1e-6)
+        # plug: two rings going into the body, narrowing, then closed
+        edges = open_edges
+        for depth, shrink in ((0.6, 0.85), (1.2, 0.6)):
+            res = bmesh.ops.extrude_edge_only(bm, edges=edges)
+            new_v = [g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)]
+            for v in new_v:
+                rel = v.co - root
+                rel -= out * rel.dot(out)                    # radial part
+                v.co = root - out * (radius * depth) + rel * shrink
+            edges = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge)
+                     and all(x in new_v for x in g.verts)]
+        plug = (root, out, radius)
+        res = bmesh.ops.holes_fill(bm, edges=[e for e in bm.edges if e.is_boundary], sides=100000)
         ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
         if ng:
             bmesh.ops.triangulate(bm, faces=ng)
+    else:
+        plug = None
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     me = bpy.data.meshes.new(name)
     bm.to_mesh(me)
     bm.free()
+    if plug:
+        me["forge_plug"] = [*plug[0], *plug[1], plug[2]]
     return me
+
+
+def retract_stub(target, piece_obj, plug) -> int:
+    """The remesher's collapsed stub (what is left of the tail on the body) lies around and
+    partly outside the rebuilt part; fused as it is, it pokes through and leaves a crack or a
+    flap. Pull every target vertex on or near the rebuilt part deep into its plug, where the
+    union swallows it."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    root = Vector(plug[0:3])
+    out = Vector(plug[3:6])
+    radius = float(plug[6])
+    deep = root - out * radius * 0.9
+    pm = piece_obj.data
+    tree = BVHTree.FromPolygons([v.co.copy() for v in pm.vertices], [tuple(p.vertices) for p in pm.polygons])
+    n = 0
+    for v in target.data.vertices:
+        along = (v.co - root).dot(out)
+        if along < -radius * 0.3:                      # body side of the cut: leave the body alone
+            continue
+        radial = ((v.co - root) - out * along).length
+        if along < radius * 0.5 and radial > radius * 1.6:
+            continue                                   # body surface around the root
+        hit = tree.find_nearest(v.co)
+        if hit[0] is None or hit[3] > radius * 1.2:
+            continue                                   # far from the rebuilt part
+        inside = (v.co - hit[0]).dot(hit[1]) < 0
+        if inside or hit[3] < radius * 0.35:
+            v.co = deep + (v.co - deep) * 0.25
+            n += 1
+    target.data.update()
+    return n
 
 
 def area(me) -> float:
@@ -60,12 +119,39 @@ def area(me) -> float:
     return float(a.sum())
 
 
-def fuse(target, piece_obj) -> None:
+def seal(me) -> int:
+    """Close any hole in a remeshed piece (remeshers sometimes leave one at a thin end)."""
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    open_e = [e for e in bm.edges if e.is_boundary]
+    n = 0
+    if open_e:
+        res = bmesh.ops.holes_fill(bm, edges=open_e, sides=100000)
+        n = len(res.get("faces", []))
+        ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+        if ng:
+            bmesh.ops.triangulate(bm, faces=ng)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        bm.to_mesh(me)
+        me.update()
+    bm.free()
+    return n
+
+
+def fuse(target, piece_obj, plug=None) -> str:
     """Boolean-union piece_obj into target's mesh (exact solver), one closed surface."""
+    seal(piece_obj.data)                 # a leaky piece makes the union leak too
+    before = target.data.copy()
+    faces_before = len(before.polygons)
+    if plug:
+        retract_stub(target, piece_obj, plug)
     mod = target.modifiers.new("forge_rescue_union", "BOOLEAN")
     mod.operation = "UNION"
     mod.solver = "EXACT"
     mod.object = piece_obj
+    for k, v in (("use_self", True), ("use_hole_tolerant", True)):   # the pulled-in stub crosses itself
+        if hasattr(mod, k):
+            setattr(mod, k, v)
     others = [m for m in target.modifiers if m.name != mod.name and m.show_viewport]
     for m in others:
         m.show_viewport = False
@@ -78,6 +164,117 @@ def fuse(target, piece_obj) -> None:
         m.show_viewport = True
     old = target.data
     new.name = old.name
+    if len(new.polygons) < 0.8 * faces_before:
+        # the union failed (it lost most of the body): keep the body as it was and attach the
+        # rebuilt part as an overlapping piece instead - still skinnable, never destroyed
+        bpy.data.meshes.remove(new)
+        target.data = before
+        if old.users == 0:
+            bpy.data.meshes.remove(old)
+        _join(target, piece_obj)
+        return "joined"
     target.data = new
     if old.users == 0:
         bpy.data.meshes.remove(old)
+    bpy.data.meshes.remove(before)
+    clean_seam(target.data, piece_obj)
+    return "fused"
+
+
+def _join(target, piece_obj) -> None:
+    bm = bmesh.new()
+    bm.from_mesh(target.data)
+    m = target.matrix_world.inverted() @ piece_obj.matrix_world
+    tmp = piece_obj.data.copy()
+    tmp.transform(m)
+    bm.from_mesh(tmp)
+    bpy.data.meshes.remove(tmp)
+    bm.to_mesh(target.data)
+    bm.free()
+    target.data.update()
+
+
+def clean_seam(me, piece_obj) -> None:
+    """After the union: weld near-duplicates, drop slivers and loose bits, and relax the
+    vertices along the new seam so the joint is smooth instead of cracked."""
+    from mathutils.bvhtree import BVHTree
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    size = max((max(v.co[i] for v in bm.verts) - min(v.co[i] for v in bm.verts)) for i in range(3)) \
+        if bm.verts else 1.0
+    bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=size * 2e-4)
+    bmesh.ops.dissolve_degenerate(bm, dist=size * 2e-4, edges=bm.edges)
+    loose = [v for v in bm.verts if not v.link_faces]
+    if loose:
+        bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    # seam = vertices of the result lying on the piece's surface AND on the body's (the
+    # crossing line): those close to the piece surface whose faces mix both origins
+    pm = piece_obj.data
+    tree = BVHTree.FromPolygons([v.co.copy() for v in pm.vertices], [tuple(p.vertices) for p in pm.polygons])
+    near = set()
+    tol = size * 0.004
+    for v in bm.verts:
+        hit = tree.find_nearest(v.co)
+        if hit[0] is not None and hit[3] < tol:
+            near.add(v)
+    seam = [v for v in near if any(n not in near for n in (e.other_vert(v) for e in v.link_edges))]
+    band = set(seam)
+    for _ in range(2):                                   # a couple of rings around the crossing
+        band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
+    if band:
+        for _ in range(3):
+            bmesh.ops.smooth_vert(bm, verts=list(band), factor=0.5, use_axis_x=True, use_axis_y=True,
+                                  use_axis_z=True)
+    ng = [f for f in bm.faces if len(f.verts) > 4]
+    if ng:
+        bmesh.ops.triangulate(bm, faces=ng)
+    # needle triangles along the crossing line shade badly: collapse their shortest edge
+    import math
+    for _ in range(3):
+        bm.faces.ensure_lookup_table()
+        short = set()
+        for f in bm.faces:
+            if len(f.verts) != 3 or not any(v in band for v in f.verts):
+                continue
+            angles = [l.calc_angle() for l in f.loops]
+            if min(angles) < math.radians(4):
+                short.add(min(f.edges, key=lambda e: e.calc_length()))
+        if not short:
+            break
+        bmesh.ops.collapse(bm, edges=list(short), uvs=True)
+        band = {v for v in band if v.is_valid}
+    # holes or broken (3+ face) edges the union or the collapses can leave on the crossing
+    # line: cut the faces around them out and fill the opening cleanly
+    for _ in range(3):
+        loose = [v for v in bm.verts if not v.link_faces]
+        if loose:
+            bmesh.ops.delete(bm, geom=loose, context="VERTS")
+        bad = [e for e in bm.edges if len(e.link_faces) > 2]
+        if bad:
+            kill = {f for e in bad for v in e.verts for f in v.link_faces}
+            bmesh.ops.delete(bm, geom=list(kill), context="FACES")
+            loose = [v for v in bm.verts if not v.link_faces]
+            if loose:
+                bmesh.ops.delete(bm, geom=loose, context="VERTS")
+        open_e = [e for e in bm.edges if e.is_boundary]
+        if not open_e and not bad:
+            break
+        if open_e:
+            res = bmesh.ops.holes_fill(bm, edges=open_e, sides=200)
+            ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+            if ng:
+                bmesh.ops.triangulate(bm, faces=ng)
+            still = [e for e in bm.edges if e.is_boundary]
+            if still:                                   # a tangled little hole: weld its rim first
+                rim = list({v for e in still for v in e.verts})
+                bmesh.ops.remove_doubles(bm, verts=rim, dist=size * 3e-3)
+                still = [e for e in bm.edges if e.is_valid and e.is_boundary]
+                if still:
+                    res = bmesh.ops.holes_fill(bm, edges=still, sides=0)
+                    ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+                    if ng:
+                        bmesh.ops.triangulate(bm, faces=ng)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(me)
+    bm.free()
+    me.update()

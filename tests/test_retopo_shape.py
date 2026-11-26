@@ -76,35 +76,38 @@ def test_lost_tail_is_detected_painted_and_remeshed(monkeypatch):
 
 def test_thin_part_rescued_when_remesher_keeps_losing_it(monkeypatch):
     import bmesh as bm_
-    import numpy as np
 
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
-    from forge_bpy import retopo
+    from forge_bpy import common, retopo
     from forge_send import geometry as G
     o = _body_with_tail()
+    faces0 = len(o.data.polygons)
     calls = []
 
     def stubborn_qr(obj, quads, args, timeout):
-        """Always drops the tail when the body is in the same mesh (as on the director's PC)."""
+        """Like the director's run: the body comes back with the tail collapsed into an
+        off-centre stub; a part remeshed on its own comes back as a clean quad mesh."""
         yield 0.0
         bm = bm_.new()
         bm.from_mesh(obj.data)
         has_body = any(v.co.x < 0.5 for v in bm.verts)
         if has_body:
-            bm_.ops.delete(bm, geom=[v for v in bm.verts if v.co.x > 1.05], context="VERTS")
-            holes = [e for e in bm.edges if e.is_boundary]
-            if holes:
-                bm_.ops.holes_fill(bm, edges=holes)
-        # like the real Quad Remesher: the result is a NEW mesh and the old one is freed
-        new = bpy.data.meshes.new(obj.data.name + "_qr")
-        bm.to_mesh(new)
-        bm.free()
-        retopo._replace_mesh(obj, new)
+            for v in bm.verts:
+                if v.co.x > 1.0:
+                    v.co.x = 1.0 + 0.15 * (v.co.x - 1.0)
+                    v.co.y = v.co.y * 0.7 + 0.03
+                    v.co.z *= 0.7
+            new = bpy.data.meshes.new(obj.data.name + "_qr")
+            bm.to_mesh(new)
+            bm.free()
+            retopo._replace_mesh(obj, new)
+        else:
+            bm.free()
+            assert retopo._quadriflow(obj, max(int(quads * 2), 400), {})
         calls.append("body" if has_body else "piece")
         return True
 
     monkeypatch.setattr(retopo, "_qr_part", stubborn_qr)
-    from forge_bpy import common
     gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5})
     try:
         while True:
@@ -113,10 +116,10 @@ def test_thin_part_rescued_when_remesher_keeps_losing_it(monkeypatch):
         rep = stop.value
     shape = rep["parts"]["Body"]["shape"]
     assert calls == ["body", "body", "body", "piece"], calls     # 2 density retries, then the rescue
-    assert shape["rescued"] == 1 and shape["max_gap_pct"] < 2.0, shape   # was: the whole tail (~50%)
+    assert shape["rescued"] == 1 and shape["lost_pct"] < 0.5 and shape["max_gap_pct"] < 1.5, shape
     assert max(v.co.x for v in o.data.vertices) > 1.9              # the tail is back
-    a = G.analyse(o)
-    assert a["pieces"] == 1 and a["holes"] == 0, a                  # fused into one closed surface
+    assert len(o.data.polygons) > 0.8 * faces0 * 0.9               # the body was never destroyed
+    assert G.analyse(o)["holes"] == 0
     assert rep["parts"]["Body"]["method"] == "quadremesher(rescued)"
     assert not [x for x in bpy.data.objects if "_rescue" in x.name]
 

@@ -393,6 +393,7 @@ def _run_qr(args: dict):
                 rescued = 0
                 for ri, region in enumerate(rescue.regions(backup, shape["mask"])[:4]):
                     piece_me = rescue.extract(backup, region)
+                    plug = list(piece_me["forge_plug"]) if "forge_plug" in piece_me else None
                     quads = max(150, int(target * 3 * rescue.area(piece_me) / total_area))
                     piece = bpy.data.objects.new(f"{obj.name}_rescue{ri}", piece_me)
                     piece.matrix_world = obj.matrix_world.copy()   # its mesh is in obj's space
@@ -401,7 +402,7 @@ def _run_qr(args: dict):
                         col.objects.link(piece)
                     ok3 = yield from _qr_part(piece, quads, args, timeout)
                     if ok3:
-                        rescue.fuse(obj, piece)
+                        rescue.fuse(obj, piece, plug)
                         rescued += 1
                     # the remesher swaps the piece's mesh (and frees the old one): look both up by name
                     mesh_names = {piece.data.name}
