@@ -62,3 +62,12 @@ def deliver(remesh=None):
     if src is not None:
         src.hide_set(True)                   # hide_input
     return res
+
+
+def uninstall():
+    """Other tests must not see a Quad Remesher that never delivers."""
+    if hasattr(bpy.types.Scene, "qremesher"):
+        del bpy.types.Scene.qremesher
+        bpy.utils.unregister_class(QREMESHER_OT_remesh)
+        bpy.utils.unregister_class(_Props)
+    Engine.jobs.clear()

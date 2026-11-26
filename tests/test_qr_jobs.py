@@ -27,6 +27,7 @@ def engine(monkeypatch):
     retopo.STATUS["text"] = ""
     yield eng
     retopo._QR_JOBS.clear()
+    fake_qr.uninstall()
 
 
 def _low(name, size=1.0):
