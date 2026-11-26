@@ -181,7 +181,7 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
                     for a in _mod("appendages").from_object(p, J):
                         mask[a["vert_idx"]] = True
                     if mask.any():
-                        dens.boost(me, mask, rings=2)
+                        dens.boost(me, mask, rings=2, edge_factor=2.0)   # 4x the quads
                 except Exception as exc:              # noqa: BLE001 - the map still works without
                     print(f"[forge] appendage search skipped: {exc}")
             n += 1

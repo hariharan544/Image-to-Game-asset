@@ -479,6 +479,13 @@ def _retopo_rows(rep):
         out.append((icon, f"{part}: {r.get('tris_before', 0):,} > {r.get('tris_after', 0):,} tris"))
         if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
             out.append(("BLANK1", f"    method: {m}"))
+        cr = r.get("creases") or {}
+        if "left_pct" in cr or "right_pct" in cr:
+            low_side = min(cr.get("left_pct", 100), cr.get("right_pct", 100))
+            out.append(("BLANK1" if low_side >= 80 else WARN,
+                        f"    face creases kept: left {cr.get('left_pct', '-')}%, "
+                        f"right {cr.get('right_pct', '-')}%"
+                        + (f" (+{cr.get('carved_tris', 0)} tris carved)" if cr.get("carved_tris") else "")))
         if "symmetry" in r:
             if r["symmetry"] and r.get("asymmetry_pct", 0) >= 1:
                 out.append(("BLANK1", f"    mirrored, then fitted ({r['asymmetry_pct']}% one-sided)"))

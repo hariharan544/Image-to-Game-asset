@@ -401,3 +401,98 @@ def test_flattened_face_detail_is_refined_not_rebuilt(monkeypatch):
     assert calls == [False, True], calls
     assert r["method"] == "quadremesher(face-refined)" and r["shape"]["rescued"] == 0, r
     assert r["shape"]["face_lost_pct"] < 0.4
+
+
+def _grooved_head(depth_rel=0.003, w=0.02):
+    """Icosphere with a smile-shaped groove on BOTH sides of the front; front marked strict."""
+    import math
+
+    import bmesh as bm_
+    import numpy as np
+
+    from forge_bpy import density
+    bpy.ops.wm.read_homefile(use_empty=True)
+    bm = bm_.new()
+    bm_.ops.create_icosphere(bm, subdivisions=7, radius=1.0)
+    size = 2 * math.sqrt(3)
+    depth = depth_rel * size
+    floor = []
+    for v in bm.verts:
+        x, y, z = v.co
+        ax = abs(x)
+        if 0.15 < ax < 0.6 and y < 0:
+            z0 = -0.25 + 0.6 * (ax - 0.15) ** 2          # the smile curve
+            d = abs(z - z0)
+            if d < w:
+                v.co *= (1.0 - depth * (1 - (d / w) ** 2))
+                if d < 0.25 * w:
+                    floor.append(v.index)
+    me = bpy.data.meshes.new("Head")
+    bm.to_mesh(me)
+    bm.free()
+    co = np.array([v.co[:] for v in me.vertices])
+    density.write_strict(me, np.where(co[:, 1] < 0, 0.35, 1.0))
+    return me, np.array(floor), size
+
+
+def _rotated_quad_sphere(edge):
+    """A coarse quad sphere rotated 25 deg about Y: its rows cross the groove diagonally."""
+    import math
+
+    import bmesh as bm_
+    from mathutils import Matrix
+    bm = bm_.new()
+    segs = max(8, int(round(2 * math.pi / edge)))
+    bm_.ops.create_uvsphere(bm, u_segments=segs, v_segments=segs // 2, radius=1.0,
+                            matrix=Matrix.Rotation(math.radians(25), 4, "Y"))
+    me = bpy.data.meshes.new("qr")
+    bm.to_mesh(me)
+    bm.free()
+    return me
+
+
+@pytest.mark.parametrize("carve", [False, True])
+def test_narrow_groove_survives_on_both_sides(monkeypatch, carve):
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+
+    from forge_bpy import common, retopo
+    src, floor, size = _grooved_head()
+    o = bpy.data.objects.new("Head_low", src.copy())
+    bpy.context.scene.collection.objects.link(o)
+    o["forge_role"], o["forge_part"] = "low", "Head"
+    counts = []
+
+    def qr(obj, quads, args, timeout):
+        """Ignores the density map entirely (worst case): a coarse rotated quad sphere."""
+        yield 0.0
+        new = _rotated_quad_sphere(4 * 0.02)
+        retopo._replace_mesh(obj, new)
+        counts.append(common.tri_count(obj))
+        return True
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": 100000, "qr_timeout": 5, "carve": carve, "shape_check": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    me = o.data
+    tree = BVHTree.FromPolygons([v.co.copy() for v in me.vertices], [tuple(p.vertices) for p in me.polygons])
+    co = np.array([v.co[:] for v in src.vertices])
+
+    def kept(sel):
+        pts = co[floor[sel]]
+        return np.mean([tree.find_nearest(Vector(p))[3] <= 0.001 * size for p in pts])
+    left, right = kept(co[floor, 0] > 0), kept(co[floor, 0] < 0)
+    if carve:
+        assert left >= 0.9 and right >= 0.9, (left, right)
+        assert common.tri_count(o) <= 1.07 * counts[-1]
+        assert max(len(p.vertices) for p in me.polygons) <= 4
+        assert "decimate" not in rep["parts"]["Head"]["method"]
+        cr = rep["parts"]["Head"]["creases"]
+        assert cr["left_pct"] > 0 and cr["right_pct"] > 0 and cr["carved_tris"] > 0
+    else:
+        assert min(left, right) < 0.5, (left, right)     # control: without carving it is lost

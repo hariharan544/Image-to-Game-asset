@@ -380,7 +380,19 @@ def _run_qr(args: dict):
         budget = budgets[obj.name]
         before = C.tri_count(obj)
         backup = obj.data.copy()
-        target = budget / 2                      # quads
+        target = budget * float(args.get("carve_headroom", 0.94)) / 2   # quads; room left for carving
+        fit = {"tree": None, "fitted": False, "carve": {}}
+
+        def _fit():
+            """Fit to the original, then cut narrow face creases in (local, adds only)."""
+            from .density import carve, conform, source_tree
+            if args.get("conform", True):
+                conform(obj.data, backup, relax=int(args.get("conform_relax", 2)))
+            if args.get("carve", True):
+                if fit["tree"] is None:
+                    fit["tree"] = source_tree(backup)
+                fit["carve"] = carve(obj.data, backup, fit["tree"])
+            fit["fitted"] = True
         STATUS["text"] = f"{obj.name}: Quad Remesher"
         ok = yield from _qr_part(obj, target, args, timeout)
         used = "quadremesher"
@@ -395,10 +407,9 @@ def _run_qr(args: dict):
             used = "quadremesher(rerun)"
         if ok and args.get("conform", True):
             # fit to the original: after a symmetric remesh this restores one-sided details
-            from .density import conform
-            STATUS["text"] = f"{obj.name}: fitting to the original"
+            STATUS["text"] = f"{obj.name}: fitting to the original, carving face creases"
             yield 0.05
-            conform(obj.data, backup)
+            _fit()
         shape = None
         if ok and args.get("shape_check", True):
             # did a thin part (tail, tuft, nail tip) collapse? paint it denser and run again
@@ -419,9 +430,7 @@ def _run_qr(args: dict):
                 ok2 = yield from _qr_part(obj, target, args, timeout)
                 if ok2:
                     bpy.data.meshes.remove(keep)
-                    if args.get("conform", True):
-                        from .density import conform
-                        conform(obj.data, backup)
+                    _fit()
                     shape = shape_loss(backup, obj.data, tol)
                     shape["refined"], shape["rescued"] = 1, 0
                     used = "quadremesher(no-mirror)"
@@ -441,11 +450,11 @@ def _run_qr(args: dict):
                     _replace_mesh(obj, keep)
                     break
                 bpy.data.meshes.remove(keep)
-                if face_only and args.get("conform", True):
+                fit["fitted"] = False
+                if face_only:
                     # (with a thin part lost, fitting would pull the stub towards it before the
-                    # rebuild; only face refinement is fitted here)
-                    from .density import conform
-                    conform(obj.data, backup)
+                    # rebuild; only face refinement is fitted here - the rest at the end)
+                    _fit()
                 refined = shape["refined"] + 1
                 shape = shape_loss(backup, obj.data, tol)
                 shape["refined"] = refined
@@ -488,8 +497,17 @@ def _run_qr(args: dict):
         if not ok:
             _replace_mesh(obj, backup.copy())
             used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
+        if ok and not fit["fitted"] and args.get("carve", True):
+            from .density import carve, source_tree       # rescued / unfitted result: carve only
+            fit["carve"] = carve(obj.data, backup, fit["tree"] or source_tree(backup))
+        crease = {}
+        if ok and args.get("carve", True):
+            from .density import crease_kept
+            crease = crease_kept(backup, obj.data)
         bpy.data.meshes.remove(backup)
         _finish_part(obj, budget, used, before, report, True)
+        if crease or fit["carve"]:
+            report[obj.get(C.PART_PROP)]["creases"] = {**crease, "carved_tris": fit["carve"].get("added", 0)}
         if shape is not None:
             report[obj.get(C.PART_PROP)]["shape"] = {
                 "lost_pct": round(100 * shape["lost_ratio"], 2), "max_gap_pct": round(100 * shape["max_rel"], 2),

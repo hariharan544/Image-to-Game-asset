@@ -84,7 +84,7 @@ def _check_density(S, body):
     co = np.array([v.co[:] for v in me.vertices])[lv]
     tail_tip = np.linalg.norm(co - (0, 0.5, 0.6), axis=1) < 0.05
     belly = np.linalg.norm(co - (0, -0.16, 1.1), axis=1) < 0.04
-    assert tail_tip.any() and np.allclose(c[tail_tip, :3].mean(0), (1, 0, 0), atol=0.05)   # full red
+    assert tail_tip.any() and np.allclose(c[tail_tip, :3].mean(0), (1, 2 / 3, 2 / 3), atol=0.05)   # 4x the quads
     assert belly.any() and c[belly, 1].mean() > 0.5                                       # not red
 
 

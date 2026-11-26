@@ -242,8 +242,9 @@ def _dilate(mask: np.ndarray, me, rings: int) -> np.ndarray:
     return m
 
 
-def boost(me, mask: np.ndarray, rings: int = 3) -> int:
-    """Paint the masked area (grown by a few rings) full red = 4x denser quads."""
+def boost(me, mask: np.ndarray, rings: int = 3, edge_factor: float = 4.0) -> int:
+    """Paint the masked area (grown by a few rings) denser. edge_factor is Quad Remesher's own
+    scale (edges that many times shorter): 4 = full red = 16x the quads, 2 = 4x the quads."""
     mask = _dilate(mask, me, rings)
     attr = me.color_attributes.get(QR_ATTR)
     nl = len(me.loops)
@@ -256,7 +257,7 @@ def boost(me, mask: np.ndarray, rings: int = 3) -> int:
     lv = np.empty(nl, np.int32)
     me.loops.foreach_get("vertex_index", lv)
     hit = mask[lv]
-    col[hit] = (1.0, 0.0, 0.0, 1.0)
+    col[hit] = qr_colours(np.array([float(edge_factor)]))[0]
     attr.data.foreach_set("color_srgb", col.ravel())
     return int(mask.sum())
 
@@ -433,3 +434,156 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
     low_me.vertices.foreach_set("co", co.astype(np.float32).ravel())
     low_me.update()
     return {"moved": int(moved)}
+
+
+# ----------------------------------------------------------------------------- carve creases
+
+def source_tree(src_me):
+    from mathutils.bvhtree import BVHTree
+    return BVHTree.FromPolygons([v.co.copy() for v in src_me.vertices],
+                                [tuple(p.vertices) for p in src_me.polygons])
+
+
+def _poly_strict(src_me) -> "np.ndarray | None":
+    """Strict factor per source polygon (from its first vertex), or None without the attribute."""
+    a = src_me.attributes.get(STRICT_ATTR)
+    if a is None or a.domain != "POINT":
+        return None
+    sv = np.empty(len(src_me.vertices), np.float32)
+    a.data.foreach_get("value", sv)
+    ls = np.empty(len(src_me.polygons), np.int32)
+    src_me.polygons.foreach_get("loop_start", ls)
+    lv = np.empty(len(src_me.loops), np.int32)
+    src_me.loops.foreach_get("vertex_index", lv)
+    return sv[lv[ls]]
+
+
+def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, samples: int = 5,
+          max_add: float = 0.06, min_edge_rel: float = 0.0015, reach_rel: float = 0.02) -> dict:
+    """Cut narrow creases (mouth line, lid crease, corner pocket) into the new mesh.
+
+    A remesher keeps a groove narrower than one quad only if an edge happens to run along it;
+    otherwise quads bridge it and the groove is gone. Here every edge of the new mesh in the
+    strict (face) region is compared with the original at a few points; where it bridges a
+    groove by more than tol_rel of the size, the edge is split at the groove floor and the new
+    points are joined face by face, so the valley becomes a continuous edge line - on both
+    sides, whatever direction the remesher chose. Only adds detail; never moves existing
+    vertices. Capped at max_add (share of the triangles)."""
+    import bmesh
+    from mathutils import Vector
+    pstrict = _poly_strict(src_me)
+    if pstrict is None:
+        return {"added": 0, "splits": 0, "skipped": "no strict region"}
+    tree = tree or source_tree(src_me)
+    bm = bmesh.new()
+    bm.from_mesh(low_me)
+    if not bm.verts:
+        bm.free()
+        return {"added": 0, "splits": 0}
+    co = np.array([v.co[:] for v in bm.verts])
+    size = float(np.linalg.norm(co.max(axis=0) - co.min(axis=0))) or 1.0
+    tol, reach, min_edge = tol_rel * size, reach_rel * size, min_edge_rel * size
+    tris0 = sum(len(f.verts) - 2 for f in bm.faces)
+    allowance = int(max_add * tris0)
+    added = splits = 0
+
+    def hit_at(p, n):
+        best = None
+        for s in (1.0, -1.0):
+            h = tree.ray_cast(p, n * s, reach)
+            if h[0] is not None and (best is None or h[3] < best[3]):
+                best = h
+        return best
+
+    for _ in range(passes):
+        bm.normal_update()
+        marks = []
+        for e in bm.edges:
+            a, b = e.verts
+            if (b.co - a.co).length < min_edge:
+                continue
+            best = None
+            for k in range(1, samples + 1):
+                t = k / (samples + 1)
+                p = a.co.lerp(b.co, t)
+                n = a.normal.lerp(b.normal, t)
+                if n.length < 1e-9:
+                    continue
+                h = hit_at(p, n.normalized())
+                if h is None or pstrict[h[2]] >= 0.999 or h[3] <= tol:
+                    continue
+                if best is None or h[3] > best[0]:
+                    best = (h[3], t, Vector(h[0]))
+            if best is not None:
+                marks.append((best[0], e, best[1], best[2]))
+        if not marks:
+            break
+        marks.sort(key=lambda m: -m[0])
+        room = max(0, allowance - added) // 3          # an edge split + face splits ~ 3 triangles
+        marks = marks[:room]
+        if not marks:
+            break
+        new_verts = set()
+        for _gap, e, t, hit in marks:
+            if not e.is_valid:
+                continue
+            _ne, nv = bmesh.utils.edge_split(e, e.verts[0], t)
+            nv.co = hit
+            new_verts.add(nv)
+            splits += 1
+        # join the crossing points face by face: the groove becomes an edge chain
+        for f in list({f for v in new_verts for f in v.link_faces}):
+            if not f.is_valid:
+                continue
+            nvs = [v for v in f.verts if v in new_verts]
+            if len(nvs) < 2:
+                continue
+            a, b = nvs[0], nvs[1]
+            if any(b in (e.other_vert(a),) for e in a.link_edges):
+                continue                                 # already adjacent
+            try:
+                bmesh.utils.face_split(f, a, b)
+            except (ValueError, RuntimeError):
+                pass
+        ng = [f for f in bm.faces if len(f.verts) > 4]
+        if ng:
+            bmesh.ops.triangulate(bm, faces=ng)
+        added = sum(len(f.verts) - 2 for f in bm.faces) - tris0
+        if added >= allowance:
+            break
+    bm.normal_update()
+    bm.to_mesh(low_me)
+    bm.free()
+    low_me.update()
+    return {"added": int(added), "splits": int(splits)}
+
+
+def crease_kept(src_me, low_me, tol_rel: float = 0.0012, max_samples: int = 200_000) -> dict:
+    """Share of the face (strict region) kept within tol_rel of size, left (+X) and right (-X)."""
+    from mathutils import Vector
+    a = src_me.attributes.get(STRICT_ATTR)
+    if a is None:
+        return {}
+    n = len(src_me.vertices)
+    sv = np.empty(n, np.float32)
+    a.data.foreach_get("value", sv)
+    co = np.empty(n * 3, np.float32)
+    src_me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    size = float(np.linalg.norm(co.max(axis=0) - co.min(axis=0))) or 1.0
+    idx = np.nonzero(sv < 0.999)[0]
+    if len(idx) == 0:
+        return {}
+    idx = idx[:: max(1, len(idx) // max_samples)]
+    tree = source_tree(low_me)
+    ok = np.zeros(len(idx), bool)
+    for j, i in enumerate(idx):
+        h = tree.find_nearest(Vector(co[i]))
+        ok[j] = h[0] is not None and h[3] <= tol_rel * size
+    left = co[idx, 0] > 0
+    out = {}
+    if left.any():
+        out["left_pct"] = round(100.0 * ok[left].mean(), 1)
+    if (~left).any():
+        out["right_pct"] = round(100.0 * ok[~left].mean(), 1)
+    return out
