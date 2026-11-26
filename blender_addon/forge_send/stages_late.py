@@ -268,7 +268,7 @@ class FORGE_OT_step(bpy.types.Operator):
             st.symmetry = side
 
     def do_retopo_map(self, context, st):
-        S.ensure_detail_maps(st.detail)
+        S.prepare_maps(st.detail)
         on = not st.get("detail_view", False)
         st["detail_view"] = on
         S.show_detail_map(on)
@@ -279,18 +279,14 @@ class FORGE_OT_step(bpy.types.Operator):
                 sh.color_type = "VERTEX" if on else "MATERIAL"
 
     def do_retopo_map_reset(self, context, st):
-        n = S.ensure_detail_maps(st.detail, recompute=True)
-        try:
-            S.plan_parts(recompute=True)
-        except Exception as exc:                          # noqa: BLE001
-            print(f"[forge] parts plan skipped: {exc}")
+        n = S.prepare_maps(st.detail, recompute=True)
         self.report({"INFO"}, f"Detail map made again for {n} part(s)")
 
     def do_retopo_map_paint(self, context, st):
         o = context.active_object
         if o is None or o not in S.parts():
             o = S.G.body_of(S.parts())
-        S.ensure_detail_maps(st.detail)
+        S.prepare_maps(st.detail)
         S.show_detail_map(True)
         st["detail_view"] = True
         S.C().select_only(o)
@@ -672,6 +668,12 @@ def _draw_retopo(col, st):
     r.operator("forge.step", text="Show / hide", icon="HIDE_OFF").action = "retopo_map"
     r.operator("forge.step", text="Paint", icon="BRUSH_DATA").action = "retopo_map_paint"
     r.operator("forge.step", text="Reset", icon="FILE_REFRESH").action = "retopo_map_reset"
+    plan = S.plan_rows()
+    if plan:
+        c = col.column(align=True)
+        c.label(text="Extra parts found:", icon="OUTLINER_OB_ARMATURE")
+        for line in plan:
+            c.label(text="   " + line)
     _btn(col, "retopo_run", "Run retopology", "MOD_REMESH", 1.3)
     rep = json.loads(st.retopo_rep or "{}")
     if st.retopo == "review" and rep:

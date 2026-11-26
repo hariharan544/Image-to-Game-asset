@@ -211,7 +211,8 @@ def plan_parts(recompute: bool = False) -> dict:
             if a["kind"] == "horn":
                 horn[a["vert_idx"]] = True
         if horn.any() and dens.QR_ATTR in me.color_attributes:
-            dens.boost(me, horn, rings=1, edge_factor=0.7)      # edges 1.4x longer: half the quads
+            # rings=2 reaches the base too, which the head weighting would otherwise paint red
+            dens.boost(me, horn, rings=2, edge_factor=0.7)      # edges 1.4x longer: half the quads
         p["forge_plan"] = out
     return out
 
@@ -252,14 +253,33 @@ def show_detail_map(on: bool) -> None:
         o.hide_set(on)
 
 
+def prepare_maps(detail: float, recompute: bool = False) -> int:
+    """Detail map AND parts plan together, so the map the director sees (Show / Paint) is the
+    map Quad Remesher gets: the plan paints the horns lighter on top of the detail map."""
+    n = ensure_detail_maps(detail, recompute=recompute) if detail > 0 else 0
+    try:
+        plan_parts(recompute=recompute or n > 0)       # a fresh map needs the plan painted again
+    except Exception as exc:                          # noqa: BLE001 - remeshing still works without
+        print(f"[forge] parts plan skipped: {exc}")
+    return n
+
+
+def plan_rows() -> list:
+    """The parts plan as short panel lines (read-only: safe in draw)."""
+    body = None
+    for p in parts():
+        if G.kind(p) == "body":
+            body = p
+    plan = dict(body.get("forge_plan", {})) if body is not None else {}
+    groups: dict = {}
+    for name, what in plan.items():
+        groups.setdefault(str(what), []).append(str(name))
+    return [f"{', '.join(sorted(v))}: {k}" for k, v in sorted(groups.items())]
+
+
 def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: str = "auto"):
-    if use_qr and detail > 0:
-        ensure_detail_maps(detail)
     if use_qr:
-        try:
-            plan_parts()
-        except Exception as exc:                      # noqa: BLE001 - remeshing still works without
-            print(f"[forge] parts plan skipped: {exc}")
+        prepare_maps(detail)
     for p in parts():                                  # a side preview must not reach the remesher
         show_side(p, "")
     prepare_retopo()

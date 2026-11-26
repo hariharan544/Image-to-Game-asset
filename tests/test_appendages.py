@@ -93,6 +93,11 @@ def _check_density(S, body):
     lv = np.array([l.vertex_index for l in me.loops])
     horn_tip = np.linalg.norm(co[lv] - (0.16, 0, 1.95), axis=1) < 0.04
     assert horn_tip.any() and c[horn_tip, 0].mean() < 0.95                       # cyan-ish: fewer quads
+    # Reset makes the map again: the horns must stay light (what the director sees = what QR gets)
+    S.prepare_maps(0.8, recompute=True)
+    me.color_attributes["QR_Density"].data.foreach_get("color_srgb", c.ravel())
+    assert c[horn_tip, 0].mean() < 0.95
+    assert any("horn" in line for line in S.plan_rows()), S.plan_rows()
 
 def test_resample_chain_even_spacing():
     from forge_bpy.arp_rig import _resample
@@ -118,3 +123,37 @@ def test_budget_goes_to_head_hands_and_joints():
     assert head >= 1.5 and hand > 1.3 and elbow >= 1.3 and belly < 0.8, (head, hand, elbow, belly)
     reg = density.region_tris(body, J)
     assert {"head", "body", "arms", "legs"} <= set(reg) and sum(reg.values()) > 0
+
+
+def test_flat_upright_ears_and_sideways_horns():
+    """Shape decides, not direction: flat sheets pointing up are ears (rabbit), round cones
+    going out and up are horns (bull)."""
+    import bmesh
+    from mathutils import Matrix, Vector
+
+    from forge_bpy import appendages, fixture, joints
+    fixture.humanoid({"out": "/tmp/_forge_creature2.glb"})
+    body = bpy.data.objects["Body"]
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    for x in (1, -1):
+        # rabbit ear: a flat slab standing up from the side of the head
+        m = Matrix.Translation((0.07 * x, 0.0, 1.88)) @ Matrix.Diagonal((0.012, 0.05, 0.14, 1))
+        bmesh.ops.create_cube(bm, size=2.0, matrix=m)
+        # bull horn: a cone going out more than up
+        a, b = Vector((0.1 * x, -0.03, 1.66)), Vector((0.3 * x, -0.03, 1.78))
+        d = b - a
+        m = Matrix.Translation((a + b) / 2) @ d.to_track_quat("Z", "Y").to_matrix().to_4x4()
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=12, radius1=0.035, radius2=0.004,
+                              depth=d.length, matrix=m)
+    bm.to_mesh(body.data)
+    bm.free()
+    m = body.modifiers.new("v", "REMESH")
+    m.mode, m.voxel_size = "VOXEL", 0.008
+    dg = bpy.context.evaluated_depsgraph_get()
+    dg.update()
+    body.data = bpy.data.meshes.new_from_object(body.evaluated_get(dg))
+    body.modifiers.remove(m)
+    J = joints.estimate(body)
+    kinds = sorted(a["kind"] for a in appendages.from_object(body, J))
+    assert kinds.count("ear") == 2 and kinds.count("horn") == 2, kinds

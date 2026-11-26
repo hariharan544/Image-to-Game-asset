@@ -159,7 +159,18 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
             proj = (V[touch_v] - root) @ axis
             if float(proj.max() - proj.min()) > 0.5 * length:
                 continue
-        kind = _classify(c, root, tip, pelvis, head, head_top, head_r, front, H)
+        # flat (an ear is a thin sheet) or round (a horn is a cone): the cross-section shape
+        # tells them apart better than the direction (rabbit ears point up, bull horns sideways)
+        flat = bool(ev_[2] < 0.25 * max(ev_[1], 1e-12))
+        # pointed: a horn narrows to a tip, an ear stays blunt
+        ax = (tip - root) / max(np.linalg.norm(tip - root), 1e-9)
+        t = (P - root) @ ax
+        rad = np.linalg.norm((P - root) - t[:, None] * ax, axis=1)
+        lo, hi = np.percentile(t, 25), np.percentile(t, 85)
+        base_r = np.percentile(rad[t <= lo], 75) if (t <= lo).any() else 0.0
+        tip_r = np.percentile(rad[t >= hi], 75) if (t >= hi).any() else 0.0
+        pointed = bool(base_r > 0 and tip_r < 0.35 * base_r)
+        kind = _classify(c, root, tip, pelvis, head, head_top, head_r, front, H, flat, pointed)
         out.append({"kind": kind, "chain": [tuple(map(float, p)) for p in chain],
                     "verts": len(verts), "vert_idx": np.asarray(verts), "length": length,
                     "width": float(width), "thin": bool(width < 0.06 * H and kind != "horn"), "centre": tuple(map(float, c))})
@@ -173,11 +184,13 @@ def _seg_dist(p, a, b) -> float:
     return float(np.linalg.norm(p - (a + t * ab)))
 
 
-def _classify(c, root, tip, pelvis, head, head_top, head_r, front, H) -> str:
+def _classify(c, root, tip, pelvis, head, head_top, head_r, front, H, flat=False, pointed=False) -> str:
     behind = (c[1] - pelvis[1]) * front < 0          # opposite side to the face
     way = (tip - root) / max(np.linalg.norm(tip - root), 1e-9)
     if _seg_dist(root, head, head_top) < 2.0 * head_r:
-        if way[2] > 0.5:                             # pointing up: horn / antenna
+        if flat and abs(c[0] - head[0]) > 0.3 * head_r:
+            return "ear"                             # a sheet on the side of the head, any angle
+        if not flat and (way[2] > 0.5 or (way[2] > 0.1 and pointed)):   # a round cone: horn
             return "horn"
         if abs(c[0] - head[0]) > 0.8 * head_r:
             return "ear"
