@@ -364,6 +364,12 @@ def _run_qr(args: dict):
             STATUS["text"] = f"{obj.name}: Quad Remesher again (triangle count)"
             ok = yield from _qr_part(obj, target, args, timeout)
             used = "quadremesher(rerun)"
+        if ok and args.get("conform", True):
+            # fit to the original: after a symmetric remesh this restores one-sided details
+            from .density import conform
+            STATUS["text"] = f"{obj.name}: fitting to the original"
+            yield 0.05
+            conform(obj.data, backup)
         shape = None
         if ok and args.get("shape_check", True):
             # did a thin part (tail, tuft, nail tip) collapse? paint it denser and run again

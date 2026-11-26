@@ -431,7 +431,7 @@ def run_iter(args: dict):
         plain = diag * extrusion_ratio                     # the old fixed distance
         extrusion = plain
         cage = None
-        if args.get("fitted_cage", True):
+        if args.get("fitted_cage", False):           # step-by-step panel turns it on
             STATUS["text"] = f"{part}: fitting the bake cage"
             yield 0.05
             cage, reach = build_cage(low, high)

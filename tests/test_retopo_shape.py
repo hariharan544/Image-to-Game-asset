@@ -273,3 +273,36 @@ def test_texels_the_cage_misses_are_baked_again_no_pink(tmp_path):
     assert bake._sentinel_mask(img)[16:48, 16:48].sum() == 0      # no pink left inside
     px = np.array(img.pixels[:]).reshape(64, 64, 4)[16:48, 16:48, :3]
     assert (px[..., 0] > px[..., 2]).mean() > 0.95                 # the right (red) colour
+
+
+def test_fit_to_original_restores_one_sided_notch():
+    """Symmetric remesh copies the right ear to the left; fitting to the original puts the
+    left ear's notch back."""
+    import bmesh as bm_
+    import numpy as np
+
+    from forge_bpy import density
+    bm = bm_.new()
+    bm_.ops.create_icosphere(bm, subdivisions=6, radius=1.0)
+    for v in bm.verts:                                  # the original: a dent on +X only
+        if v.co.x > 0.7 and abs(v.co.z) < 0.35 and abs(v.co.y) < 0.35:
+            v.co *= 0.9
+    src = bpy.data.meshes.new("orig")
+    bm.to_mesh(src)
+    bm.free()
+    bm = bm_.new()
+    bm_.ops.create_icosphere(bm, subdivisions=4, radius=1.0)   # the symmetric remesh
+    low = bpy.data.meshes.new("low")
+    bm.to_mesh(low)
+    bm.free()
+
+    def dent_depth(me):
+        co = np.array([v.co[:] for v in me.vertices])
+        sel = (co[:, 0] > 0.5) & (np.abs(co[:, 1]) < 0.15) & (np.abs(co[:, 2]) < 0.15)
+        return 1.0 - np.linalg.norm(co[sel], axis=1).min()
+    assert dent_depth(low) < 0.02
+    density.conform(low, src)
+    assert dent_depth(low) > 0.07                         # the notch is back
+    co = np.array([v.co[:] for v in low.vertices])
+    other = co[co[:, 0] < -0.7]
+    assert np.allclose(np.linalg.norm(other, axis=1), 1.0, atol=0.02)   # the other side unchanged

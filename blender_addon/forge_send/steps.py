@@ -143,7 +143,9 @@ def prepare_retopo() -> list:
         centred = abs((lo.x + hi.x) / 2) < 0.02 * size
         asym = _mod("density").asymmetry(p.data) if centred else 1.0
         low["forge_asymmetry"] = round(asym, 4)
-        low["forge_symmetry_x"] = centred and asym < 0.01
+        # mostly symmetric (a notch in one ear, a scar): remesh symmetric for even topology,
+        # then "fit to original" puts the one-sided details back
+        low["forge_symmetry_x"] = centred and asym < 0.10
         p.hide_set(True)
         out.append(low)
     return out
@@ -320,7 +322,7 @@ def run_bake(texture_size: int, samples: int = 16, device: str = "GPU"):
     c, bake = C(), _mod("bake")
     tex_dir = work_dir() / "textures"
     args = {"texture_size": int(texture_size), "texture_dir": str(tex_dir), "samples": samples,
-            "device": device, "cage_extrusion_ratio": 0.01, "margin_px": 16}
+            "device": device, "cage_extrusion_ratio": 0.01, "margin_px": 16, "fitted_cage": True}
     swapped = {}
     for h in c.meshes_with_role("high"):
         src = bpy.data.meshes.get(h.get(G.BACKUP, "")) if h.get(G.BACKUP) else None

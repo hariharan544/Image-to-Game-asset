@@ -480,8 +480,11 @@ def _retopo_rows(rep):
         if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
             out.append(("BLANK1", f"    method: {m}"))
         if "symmetry" in r:
-            out.append(("BLANK1", "    mirrored (symmetric)" if r["symmetry"]
-                        else f"    not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)"))
+            if r["symmetry"] and r.get("asymmetry_pct", 0) >= 1:
+                out.append(("BLANK1", f"    mirrored, then fitted ({r['asymmetry_pct']}% one-sided)"))
+            else:
+                out.append(("BLANK1", "    mirrored (symmetric)" if r["symmetry"]
+                            else f"    not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)"))
         if sh:
             if sh.get("lost_pct", 0) > 0.5:
                 out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))

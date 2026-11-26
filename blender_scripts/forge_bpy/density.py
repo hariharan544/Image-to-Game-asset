@@ -273,25 +273,51 @@ def region_of(key: str) -> str:
     return base
 
 
+REGION_NAMES = ["body", "head", "arms", "hands", "legs", "feet"]
+REGION_W = {"body": 0.7, "head": 1.5, "arms": 0.9, "hands": 1.5, "legs": 0.85, "feet": 1.15}
+
+
+def region_labels(V: np.ndarray, J: dict) -> np.ndarray:
+    """Body region per point from the body layout (not the nearest bone: on a round cartoon
+    torso the chest is nearest to the neck bone and would count as head).
+    head: above the neck (inside the shoulders); arms/hands: out past the shoulders;
+    legs/feet: below the hips and out to the side of the centre line; body: the rest."""
+    def p(k, i=0):
+        return np.array(J[k][i][:])
+    neck_z = p("neck")[2]
+    sh_x = abs(p("upperarm_l")[0])
+    wr_x = abs(p("hand_l")[0])
+    hip_z = p("thigh_l")[2]
+    ank_z = p("foot_l")[2]
+    leg_x = abs(p("thigh_l")[0])
+    ax = np.abs(V[:, 0])
+    lab = np.zeros(len(V), np.int8)                                   # body
+    lab[(V[:, 2] > neck_z) & (ax < sh_x)] = 1                         # head
+    arm = ax > sh_x * 1.05
+    lab[arm] = 2
+    lab[arm & (ax > wr_x)] = 3                                        # hands
+    leg = (V[:, 2] < hip_z) & (ax > 0.35 * leg_x) & ~arm
+    lab[leg] = 4
+    lab[leg & (V[:, 2] < ank_z + 0.02 * (V[:, 2].max() - V[:, 2].min()))] = 5   # feet
+    return lab
+
+
 def region_factors(V: np.ndarray, J: dict):
-    """Per-vertex importance multiplier and region name index, from the guessed joints."""
-    from .appendages import _dist_to_segments, _segments
-    segs = _segments(J)
-    d, which, where = _dist_to_segments(V, segs)
-    names = [region_of(k) for _a, _b, k in segs]
-    f = np.array([REGION_WEIGHT.get(n, 1.0) for n in names])[which]
-    # rings of extra quads where joints bend: near the head (t~0) of the joint's bone
+    """Per-vertex importance multiplier and region label, from the guessed joints."""
+    lab = region_labels(V, J)
+    f = np.array([REGION_W[n] for n in REGION_NAMES])[lab]
+    # rings of extra quads where joints bend
     H = float(V[:, 2].max() - V[:, 2].min()) or 1.0
-    for i, (a, _b, k) in enumerate(segs):
-        if region_of(k) in JOINTS:
-            near = np.linalg.norm(V - a, axis=1) < 0.06 * H
+    for k in ("upperarm_l", "upperarm_r", "lowerarm_l", "lowerarm_r", "hand_l", "hand_r",
+              "thigh_l", "thigh_r", "calf_l", "calf_r", "foot_l", "foot_r", "neck"):
+        if k in J:
+            near = np.linalg.norm(V - np.array(J[k][0][:]), axis=1) < 0.06 * H
             f[near] = np.maximum(f[near], JOINT_WEIGHT)
-    return f, which, names
+    return f, lab, REGION_NAMES
 
 
 def region_tris(low_obj, J: dict) -> dict:
     """Triangles per body region of the new mesh (for the director's budget view)."""
-    from .appendages import _dist_to_segments, _segments
     me = low_obj.data
     me.calc_loop_triangles()
     n = len(me.loop_triangles)
@@ -305,12 +331,76 @@ def region_tris(low_obj, J: dict) -> dict:
     cen = co[tv.reshape(-1, 3)].mean(axis=1)
     m = np.array(low_obj.matrix_world)
     P = cen @ m[:3, :3].T + m[:3, 3]
-    segs = _segments(J)
-    _d, which, _w = _dist_to_segments(P, segs)
+    lab = region_labels(P, J)
     out: dict = {}
-    for i, (_a, _b, k) in enumerate(segs):
-        r = region_of(k)
-        r = {"lowerarm": "arms", "upperarm": "arms", "thigh": "legs", "calf": "legs", "foot": "feet",
-             "ball": "feet", "hand": "hands", "pelvis": "body", "neck": "head", "head": "head"}.get(r, r)
-        out[r] = out.get(r, 0) + int((which == i).sum())
+    for i, name in enumerate(REGION_NAMES):
+        n_i = int((lab == i).sum())
+        if n_i:
+            out[name] = n_i
     return out
+
+
+# ----------------------------------------------------------------------------- fit to original
+
+def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
+    """Move every vertex of the new mesh onto the original surface. After a SYMMETRIC remesh
+    this puts one-sided details back (a notch in one ear) and pulls the mesh into grooves
+    (mouth line). Projection along the vertex normal (both ways) keeps the quads even; where
+    that finds nothing (the notch: there is no surface along the normal) the nearest surface
+    point is used. A light relax keeps the quads from bunching, then they are projected again."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    tree = BVHTree.FromPolygons([v.co.copy() for v in src_me.vertices],
+                                [tuple(p.vertices) for p in src_me.polygons])
+    n = len(low_me.vertices)
+    if n == 0:
+        return {"moved": 0}
+    co = np.empty(n * 3, np.float32)
+    low_me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    size = float(np.linalg.norm(co.max(axis=0) - co.min(axis=0))) or 1.0
+    limit = max_rel * size
+    ev = np.empty(len(low_me.edges) * 2, np.int32)
+    low_me.edges.foreach_get("vertices", ev)
+    a, b = ev[0::2].astype(np.int64), ev[1::2].astype(np.int64)
+    deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)[:, None]
+
+    def project(pts, nrm):
+        out = pts.copy()
+        moved = 0
+        for i in range(n):
+            p = Vector(pts[i])
+            d = Vector(nrm[i])
+            best = None
+            for s in (1.0, -1.0):
+                hit = tree.ray_cast(p, d * s, limit)
+                if hit[0] is not None and (best is None or hit[3] < best[1]):
+                    best = (hit[0], hit[3])
+            if best is None:
+                near = tree.find_nearest(p, limit)
+                if near[0] is not None:
+                    best = (near[0], near[3])
+            if best is not None:
+                out[i] = best[0][:]
+                moved += best[1] > 1e-6 * size
+        return out, moved
+
+    def normals(pts):
+        low_me.vertices.foreach_set("co", pts.astype(np.float32).ravel())
+        low_me.update()
+        nr = np.empty(n * 3, np.float32)
+        low_me.vertices.foreach_get("normal", nr)
+        return nr.reshape(-1, 3).astype(np.float64)
+
+    co, moved = project(co, normals(co))
+    for _ in range(relax):
+        avg = (np.stack([np.bincount(a, weights=co[b, k], minlength=n) + np.bincount(b, weights=co[a, k], minlength=n)
+                         for k in range(3)], axis=1)) / deg
+        nrm = normals(co)
+        delta = avg - co
+        delta -= nrm * (delta * nrm).sum(axis=1, keepdims=True)   # slide along the surface only
+        co = co + 0.5 * delta
+        co, _m = project(co, normals(co))
+    low_me.vertices.foreach_set("co", co.astype(np.float32).ravel())
+    low_me.update()
+    return {"moved": int(moved)}
