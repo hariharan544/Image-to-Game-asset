@@ -112,9 +112,20 @@ def run_background(stage: str, args: dict, result_path: str) -> int:
         return _error(stage, result_path, exc)
 
 
+def _in_view3d(fn):
+    """Timer callbacks get no editor area, so operators that need one (modifier_move_to_index,
+    add-on operators, ...) fail their poll. Run inside the 3D viewport's context."""
+    from forge_bpy.addon_trial import view3d_override
+    ov = view3d_override()
+    if not ov:
+        return fn()
+    with bpy.context.temp_override(**ov):
+        return fn()
+
+
 def run_windowed(stage: str, args: dict, result_path: str) -> None:
     """Drive the stage from a persistent timer so Blender's UI/event loop keeps running."""
-    state: dict = {"gen": None}
+    state: dict = {"gen": None, "loaded": not args.get("load_blend")}
 
     def quit_now(code: int) -> None:
         sys.stdout.flush()
@@ -122,15 +133,23 @@ def run_windowed(stage: str, args: dict, result_path: str) -> None:
 
     def tick():
         try:
+            if not state["loaded"]:
+                # load first and give the UI a tick to rebuild its screens before using them
+                bpy.ops.wm.open_mainfile(filepath=args["load_blend"])
+                state["loaded"] = True
+                return 0.5
             if state["gen"] is None:
-                out = _start(stage, args)
+                if args.get("ensure_addons"):
+                    _ensure_addons([n.lower() for n in args["ensure_addons"]])
+                out = _in_view3d(lambda: STAGES[stage](args))
                 if not inspect.isgenerator(out):
-                    quit_now(_finish(args, stage, result_path, out))
+                    quit_now(_in_view3d(lambda: _finish(args, stage, result_path, out)))
                 state["gen"] = out
-            return float(next(state["gen"]) or 0.1)
+            return float(_in_view3d(lambda: next(state["gen"])) or 0.1)
         except StopIteration as stop:
-            quit_now(_finish(args, stage, result_path, stop.value or {}))
+            quit_now(_in_view3d(lambda: _finish(args, stage, result_path, stop.value or {})))
         except Exception as exc:
+            traceback.print_exc()
             quit_now(_error(stage, result_path, exc))
         return None
 

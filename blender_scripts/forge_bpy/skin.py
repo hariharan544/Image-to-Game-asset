@@ -141,14 +141,15 @@ def run(args: dict) -> dict:
                 rep = arp_rig.build(args)
                 return {"rig_system": "auto_rig_pro", "arp": rep, "parts": _weight_report(),
                         "sockets": rep.get("sockets", {}), "bones": rep["bones"]}
-            except Exception as exc:              # fall back on the untouched scene
+            except Exception as exc:
+                import traceback
+                print("[forge] Auto-Rig Pro path failed:")
+                traceback.print_exc()
                 why = f"{type(exc).__name__}: {exc}"[:400]
-                if args.get("load_blend"):
-                    bpy.ops.wm.open_mainfile(filepath=args["load_blend"])
-        res = _run_transfer(args)
-        res["rig_system"] = "transfer"
-        res["arp_fallback_reason"] = why
-        return res
+        # Do not save the half-built scene: the orchestrator reruns this stage with
+        # rig_method "transfer" in a fresh Blender (reloading in-process is unsafe when windowed).
+        args["save_blend"] = None
+        return {"rig_system": "arp_failed", "arp_fallback_reason": why}
     res = _run_transfer(args)
     res["rig_system"] = "transfer"
     return res

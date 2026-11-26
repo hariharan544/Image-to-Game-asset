@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import time
 from pathlib import Path
 from typing import Optional
@@ -64,6 +65,10 @@ def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False,
     if use_arp:
         skin_args.update(rig_method="auto_rig_pro", detachable_parts=["Sword"], ensure_addons=["auto-rig pro"])
         skin = stage("skin", skin_args, windowed=True, factory_startup=False)
+        if skin.get("rig_system") == "arp_failed":
+            reason = skin.get("arp_fallback_reason")
+            skin = stage("skin", {**skin_args, "rig_method": "transfer", "ensure_addons": []})
+            skin["arp_fallback_reason"] = reason
         a = skin.get("arp", {})
         say(f"             rig: {skin.get('rig_system')} "
             f"{('- ' + str(a.get('deform_bones')) + ' deform bones, refs placed ' + str(a.get('placed'))) if a else ''}"
@@ -224,6 +229,7 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
 
     if not skip_smoke and ok:
         say("Running the pipeline smoke test inside your Blender ...")
+        shutil.rmtree(work / "smoke", ignore_errors=True)      # never leave stale results behind
         try:
             report["smoke"] = _smoke(blender, work / "smoke", bool(gpu), say,
                                      use_qr=info["addons"]["quad_remesher"]["installed"],

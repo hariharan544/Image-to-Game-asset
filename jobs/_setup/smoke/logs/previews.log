@@ -1,8 +1,0 @@
-00:01.515  blend            | Read blend: "C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\smoke\6.blend"
-00:02.000  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\smoke\previews\front.png'
-00:02.031  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\smoke\previews\right.png'
-00:02.046  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\smoke\previews\back.png'
-00:02.078  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\smoke\previews\left.png'
-00:02.109  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\smoke\previews\three_quarter.png'
-00:02.140  render           | Saved: 'C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\smoke\previews\clay.png'
-Blender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:33:43)

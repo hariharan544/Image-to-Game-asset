@@ -263,8 +263,18 @@ class Pipeline:
         needs_addons = bool(addons)
         if needs_addons:
             args = {**args, "ensure_addons": addons}
-        return run_stage(name, {k: v for k, v in args.items() if not k.startswith("_")}, log_path,
-                         blender=self.blender, windowed=needs_addons, factory_startup=not needs_addons)
+        result = run_stage(name, {k: v for k, v in args.items() if not k.startswith("_")}, log_path,
+                           blender=self.blender, windowed=needs_addons, factory_startup=not needs_addons)
+        if name == "skin" and result.get("rig_system") == "arp_failed":
+            # Auto-Rig Pro failed and saved nothing: rebuild skinning with the AI skeleton
+            reason = result.get("arp_fallback_reason")
+            fb = {k: v for k, v in args.items() if k != "ensure_addons"}
+            fb["rig_method"] = "transfer"
+            result = run_stage(name, {k: v for k, v in fb.items() if not k.startswith("_")},
+                               self.job.path("logs", f"{key.replace('@', '_')}_a{attempt}_transfer.log"),
+                               blender=self.blender)
+            result["arp_fallback_reason"] = reason
+        return result
 
     def _supervised_stage(self, key: str) -> None:
         job = self.job

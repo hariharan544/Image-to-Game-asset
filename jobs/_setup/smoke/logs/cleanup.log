@@ -1,6 +1,0 @@
-14:10:37 | INFO: Data are loaded, start creating Blender stuff
-14:10:37 | INFO: Blender create Mesh node Cylinder
-14:10:37 | INFO: Blender create Mesh node Cube.002
-14:10:37 | INFO: glTF import finished in 0.06s
-Blender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:33:43)
-Info: Saved as "1.blend"
