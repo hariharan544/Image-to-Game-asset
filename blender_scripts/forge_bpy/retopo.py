@@ -408,24 +408,28 @@ def _run_qr(args: dict):
         full_backup = None
         split_pieces = []
         side = str(args.get("symmetry", "auto"))
+        # the director's side applies to parts that straddle the body's middle (body, collar,
+        # bell on the chest). A part off to one side (a prop laid out beside the body, an
+        # earring) has no mirror twin across X = 0: mirroring it would make a second copy
+        mirror = side in ("left", "right") and _dens.straddles_middle(backup)
         ids = _dens.read_split(backup) if args.get("split_thin", True) else None
-        if side in ("left", "right"):
+        if mirror:
             # whatever mirroring would duplicate or delete (a tail curling to one side) is
             # split off too and keeps its own shape
             import numpy as np
             extra = _dens.one_sided_parts(backup, ids)
             if extra.any():
                 ids = np.where(extra > 0, extra, ids if ids is not None else 0).astype(np.int32)
-        if ids is not None or side in ("left", "right"):
+        if ids is not None or mirror:
             full_backup = backup
             backup = full_backup.copy()
             if ids is not None:
                 split_pieces = _rescue.split_off(backup, ids)
-            if side in ("left", "right"):
+            if mirror:
                 _dens.symmetrize(backup, side)
                 obj["forge_symmetry_x"] = True
             _replace_mesh(obj, backup.copy())
-        if side == "none":
+        if side == "none" or (side in ("left", "right") and not mirror):
             obj["forge_symmetry_x"] = False
         if split_pieces:                          # their share comes out of the body's budget
             total_area = max(_rescue.area(full_backup), 1e-9)
@@ -532,7 +536,7 @@ def _run_qr(args: dict):
                     shape["refined"], shape["rescued"] = refined, rescued
                     used = "quadremesher(rescued)"
             if (shape["lost_ratio"] >= max_lost and obj.get("forge_symmetry_x") and not shape.get("rescued")
-                    and side not in ("left", "right")):          # never override the director's side
+                    and not mirror):                             # never override the director's side
                 # last resort: the thin-part rebuild could not bring it back. A run WITHOUT
                 # mirroring (it re-rolls the whole mesh: the mirrored face is usually better,
                 # which is why this comes last)

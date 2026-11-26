@@ -541,3 +541,41 @@ def test_planned_flow_split_tail_symmetric_body_attached(monkeypatch):
     body = v[v[:, 0] < 0.98]
     assert abs(body[:, 0].min() + 1.0) < 0.02, body[:, 0].min()
     assert not [x for x in bpy.data.objects if x.get("forge_rescue")]
+
+
+def test_side_choice_never_mirrors_a_prop_beside_the_body(monkeypatch):
+    """Symmetry 'left' is for parts across the body's middle. A hair tuft laid out beside the
+    body must come back as ONE tuft, not a second copy on the other side."""
+    import bmesh
+    import numpy as np
+
+    from forge_bpy import common, density, retopo
+    bpy.ops.wm.read_homefile(use_empty=True)
+    bm = bmesh.new()
+    from mathutils import Matrix
+    bmesh.ops.create_icosphere(bm, subdivisions=4, radius=0.15, matrix=Matrix.Translation((1.5, 0, 1.0)))
+    me = bpy.data.meshes.new("Hair")
+    bm.to_mesh(me)
+    bm.free()
+    o = bpy.data.objects.new("Hair_low", me)
+    bpy.context.scene.collection.objects.link(o)
+    o["forge_role"], o["forge_part"] = "low", "Hair"
+    assert not density.straddles_middle(me)
+    seen = []
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        seen.append(bool(obj.get("forge_symmetry_x")))
+        return True
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": 600, "qr_timeout": 5, "symmetry": "left", "carve": False,
+                          "conform": False, "shape_check": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration:
+        pass
+    v = np.array([x.co[:] for x in o.data.vertices])
+    assert v[:, 0].min() > 1.2, v[:, 0].min()          # still one tuft, at +X only
+    assert seen and not any(seen)                       # and the remesher never mirrored it

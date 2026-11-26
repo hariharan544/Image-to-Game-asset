@@ -595,6 +595,24 @@ def crease_kept(src_me, low_me, tol_rel: float = 0.0012, max_samples: int = 200_
 SPLIT_ATTR = "forge_split"       # per vertex: 0 = body, k = thin part k (retopologized separately)
 
 
+def straddles_middle(me, cell: float = 0.02, min_share: float = 0.5) -> bool:
+    """The part is its own mirror image across X = 0 for most of its surface (a body, a
+    collar, a bell on the chest): it can be made symmetric from one side. A part off to one
+    side (a prop beside the body, a hair tuft, an earring) has no twin there: mirroring it
+    would make a second copy. Measured on the surface, not the box (a curled tail or one
+    raised arm moves the box, not the middle)."""
+    n = len(me.vertices)
+    if n == 0:
+        return False
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    if n > 300_000:                             # the share is a statistic: a sample is enough
+        co = co[:: n // 300_000 + 1]
+    size = float((co.max(axis=0) - co.min(axis=0)).max()) or 1.0
+    return float(np.mean(~_mirror_far(co, cell * size))) >= min_share
+
+
 def symmetrize(me, side: str) -> None:
     """Make the mesh symmetric from one side: 'left' keeps the character's left (+X) and
     mirrors it over, 'right' keeps -X. One-sided parts must be split off first."""
