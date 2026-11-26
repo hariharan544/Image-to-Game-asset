@@ -148,12 +148,29 @@ def test_panel_buttons_in_order():
 
         # draw the panel in every state with a recording layout; every icon must exist in Blender
         valid = {i.identifier for i in bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"].enum_items}
-        src = (Path(F.__file__).parent / "stages_ui.py").read_text()
+        src = "".join(p.read_text() for p in Path(F.__file__).parent.glob("*.py"))
         icons = set(re.findall(r'icon="([A-Z0-9_]+)"', src)) | set(re.findall(r'"(COLORSET_\d+_VEC)"', src))
         assert icons <= valid, icons - valid
         for a, r in (("todo", "todo"), ("review", "todo"), ("approved", "review"), ("approved", "approved")):
             st.assemble, st.repair = a, r
             fake = mock.MagicMock()
             F.stages_ui.FORGE_PT_stages.draw(fake, bpy.context)
+        for stage in ("retopo", "uv", "bake", "colour", "rig", "export"):
+            for status in ("todo", "review", "approved"):
+                st.repair = "approved"
+                setattr(st, stage, status)
+                for phase in ("", "joints", "built"):
+                    st.rig_phase = phase
+                    F.stages_ui.FORGE_PT_stages.draw(mock.MagicMock(), bpy.context)
+
+        # a part collected by add-on 1.1 (kind stored in forge_role): drawing must not write
+        # to it - Blender forbids ID writes while drawing and the whole panel goes blank
+        legacy = bpy.data.objects["TripoBody"]
+        legacy["forge_role"] = "body"
+        if "forge_kind" in legacy:
+            del legacy["forge_kind"]
+        F.stages_ui.FORGE_PT_stages.draw(mock.MagicMock(), bpy.context)
+        assert "forge_kind" not in legacy and legacy["forge_role"] == "body"
+        assert G.kind(legacy) == "body" and G.body_of(G.mesh_parts(bpy.context.scene)) == legacy
     finally:
         F.unregister()

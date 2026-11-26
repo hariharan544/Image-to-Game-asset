@@ -29,16 +29,21 @@ def mesh_parts(scene) -> list:
     col = bpy.data.collections.get(PARTS_COLLECTION)
     if not col:
         return []
-    parts = [o for o in col.objects if o.type == "MESH"]
-    for o in parts:                       # files from add-on 1.1 stored the kind in forge_role
-        if ROLE not in o and o.get("forge_role") in ("body", "prop"):
-            o[ROLE] = o["forge_role"]
-            del o["forge_role"]
-    return parts
+    return [o for o in col.objects if o.type == "MESH"]
+
+
+def kind(o):
+    """'body' / 'prop'. Read-only (the panel calls it while drawing, where writes are not
+    allowed); files from add-on 1.1 stored the kind in forge_role."""
+    k = o.get(ROLE)
+    if k:
+        return k
+    legacy = o.get("forge_role")
+    return legacy if legacy in ("body", "prop") else None
 
 
 def body_of(parts: list):
-    return next((o for o in parts if o.get(ROLE) == "body"), None)
+    return next((o for o in parts if kind(o) == "body"), None)
 
 
 def apply_transform(obj) -> None:
@@ -106,6 +111,8 @@ def collect(objs: list, target_height: float = 0.0) -> dict:
     for o in parts:
         if o.name != body.name:
             o[ROLE] = "prop"
+        else:
+            o[ROLE] = "body"
 
     # body: feet on the floor, centred, requested height
     lo, hi = world_bounds(body)
@@ -171,7 +178,7 @@ def mirror(obj) -> object:
     dup.name = base + swap[tail]
     for c in obj.users_collection:
         c.objects.link(dup)
-    dup[ROLE] = obj.get(ROLE, "prop")
+    dup[ROLE] = kind(obj) or "prop"
     dup["forge_placed"] = True
     return dup
 
@@ -257,7 +264,7 @@ def analyse(obj) -> dict:
     }
     rep["ok"] = rep["holes"] == 0 and rep["bad_edges"] == 0 and rep["loose"] == 0 and rep["tiny_bits"] == 0
     # several big overlapping pieces (e.g. horns pushed into the head) = not one welded solid
-    rep["needs_weld"] = big > 1 and obj.get(ROLE) == "body"
+    rep["needs_weld"] = big > 1 and kind(obj) == "body"
     return rep
 
 

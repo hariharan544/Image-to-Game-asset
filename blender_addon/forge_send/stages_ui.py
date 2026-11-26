@@ -193,7 +193,7 @@ class FORGE_OT_mirror(bpy.types.Operator):
     @classmethod
     def poll(cls, context):
         o = context.active_object
-        return o is not None and o.type == "MESH" and o.get(G.ROLE) == "prop"
+        return o is not None and o.type == "MESH" and G.kind(o) == "prop"
 
     def execute(self, context):
         _object_mode(context)
@@ -217,7 +217,7 @@ class FORGE_OT_approve_layout(bpy.types.Operator):
         st = _st(context)
         st.assemble = "approved"
         _log(context, "assemble", "approve",
-             {"parts": {o.name: o.get(G.ROLE) for o in parts}, "height_m": st.height_m})
+             {"parts": {o.name: G.kind(o) for o in parts}, "height_m": st.height_m})
         _save(self)
         return {"FINISHED"}
 
@@ -399,7 +399,7 @@ class FORGE_PT_stages(bpy.types.Panel):
             col = box.column(align=True)
             for o in parts:
                 row = col.row(align=True)
-                is_body = o.get(G.ROLE) == "body"
+                is_body = G.kind(o) == "body"
                 op = row.operator("forge.stage_select_part", text=o.name,
                                   icon="OUTLINER_OB_MESH" if is_body else "OBJECT_DATA", emboss=False)
                 op.name = o.name

@@ -74,7 +74,7 @@ def lows():
 
 
 def body_low():
-    return next((o for o in lows() if o.get(G.ROLE) == "body"), None)
+    return next((o for o in lows() if G.kind(o) == "body"), None)
 
 
 def _clear(role: str) -> None:
@@ -110,13 +110,14 @@ def prepare_retopo() -> list:
     for p in parts():
         p.location.x = 0.0                     # "Compare with original" may have moved it aside
         part = c.safe_name(p.name)
+        p[G.ROLE] = G.kind(p) or "prop"        # keep body/prop before forge_role becomes "high"
         p[c.PART_PROP] = part
         p[c.ROLE_PROP] = "high"
         low = c.duplicate(p, f"{part}_low")
         c.move_to_collection(low, low_col)
         low[c.ROLE_PROP] = "low"
         low[c.PART_PROP] = part
-        low[G.ROLE] = p.get(G.ROLE, "prop")
+        low[G.ROLE] = p[G.ROLE]
         lo, hi = G.world_bounds(p)
         size = max(hi - lo)
         # mirror symmetry only for parts centred on the body's middle (body, bell, collar)
@@ -394,8 +395,8 @@ def build_rig(max_influences: int = 8) -> dict:
     if rig is None:
         raise RuntimeError("place the joints first")
     C().ensure_object_mode()
-    body = [o for o in lows() if o.get(G.ROLE) == "body"]
-    props = [o for o in lows() if o.get(G.ROLE) != "body"]
+    body = [o for o in lows() if G.kind(o) == "body"]
+    props = [o for o in lows() if G.kind(o) != "body"]
     rep = _mod("arp_rig").finish(rig, body, props, {"max_influences": max_influences})
     arm = bpy.data.objects.get(rep["rig"])
     if arm is not None and "forge_ref_rig" in arm:

@@ -479,7 +479,7 @@ def _draw_retopo(col, st):
     if st.retopo == "review" and rep:
         _rows(col.column(align=True), _retopo_rows(rep))
         row = col.row(align=True)
-        row.operator("forge.step", text="Compare with original", icon="SPLITSCREEN").action = "retopo_compare"
+        row.operator("forge.step", text="Compare with original", icon="MOD_MIRROR").action = "retopo_compare"
         col.label(text="Press Z > Wireframe to see the quads.", icon="INFO")
         _approve_btn(col, "retopo")
         _btn(col, "retopo_undo", "Undo retopology", "CANCEL", alert=True)
