@@ -95,8 +95,11 @@ def test_thin_part_rescued_when_remesher_keeps_losing_it(monkeypatch):
             holes = [e for e in bm.edges if e.is_boundary]
             if holes:
                 bm_.ops.holes_fill(bm, edges=holes)
-        bm.to_mesh(obj.data)
+        # like the real Quad Remesher: the result is a NEW mesh and the old one is freed
+        new = bpy.data.meshes.new(obj.data.name + "_qr")
+        bm.to_mesh(new)
         bm.free()
+        retopo._replace_mesh(obj, new)
         calls.append("body" if has_body else "piece")
         return True
 

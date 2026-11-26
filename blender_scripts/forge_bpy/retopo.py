@@ -357,17 +357,22 @@ def _run_qr(args: dict):
                 rescued = 0
                 for region in rescue.regions(backup, shape["mask"])[:4]:
                     piece_me = rescue.extract(backup, region)
+                    quads = max(150, int(target * 3 * rescue.area(piece_me) / total_area))
                     piece = bpy.data.objects.new(f"{obj.name}_rescue", piece_me)
+                    piece["forge_rescue"] = True
                     for col in obj.users_collection:
                         col.objects.link(piece)
-                    quads = max(150, int(target * 3 * rescue.area(piece_me) / total_area))
                     ok3 = yield from _qr_part(piece, quads, args, timeout)
                     if ok3:
                         rescue.fuse(obj, piece)
                         rescued += 1
+                    # the remesher swaps the piece's mesh (and frees the old one): look both up by name
+                    mesh_names = {piece.data.name}
                     bpy.data.objects.remove(piece)
-                    if piece_me.users == 0:
-                        bpy.data.meshes.remove(piece_me)
+                    for name in mesh_names:
+                        m = bpy.data.meshes.get(name)
+                        if m is not None and m.users == 0:
+                            bpy.data.meshes.remove(m)
                 if rescued:
                     refined, shape = shape["refined"], shape_loss(backup, obj.data, tol)
                     shape["refined"], shape["rescued"] = refined, rescued

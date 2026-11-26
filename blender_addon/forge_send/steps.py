@@ -105,6 +105,10 @@ def prepare_retopo() -> list:
     clear_rig()
     _clear("lod")
     _clear("low")
+    # leftovers of a run that stopped half-way (rescue pieces, Quad Remesher results)
+    for o in list(bpy.data.objects):
+        if o.get("forge_rescue") or o.name.endswith("_rescue") or o.name.startswith("Retopo_"):
+            bpy.data.objects.remove(o)
     low_col = c.get_collection(c.LOW_COLLECTION)
     out = []
     ps = parts()
