@@ -376,6 +376,7 @@ def _run_qr(args: dict):
             from .density import boost, shape_loss
             tol = float(args.get("shape_tolerance", 0.008))
             max_lost = float(args.get("shape_max_lost", 0.002))
+            face_max = float(args.get("face_max_lost", 0.004))   # share of the face area
             shape = shape_loss(backup, obj.data, tol)
             shape["refined"] = 0
             shape["rescued"] = 0
@@ -398,28 +399,36 @@ def _run_qr(args: dict):
                 else:
                     _replace_mesh(obj, keep)
             for _ in range(int(args.get("shape_retries", 1))):
-                if shape["lost_ratio"] < max_lost:
+                face_only = shape["lost_ratio"] < max_lost and shape.get("face_lost", 0) >= face_max
+                if shape["lost_ratio"] < max_lost and not face_only:
                     break
-                boost(backup, shape["mask"])
+                boost(backup, shape["mask"])          # includes flattened face details
                 keep = obj.data.copy()
                 _replace_mesh(obj, backup.copy())
-                STATUS["text"] = f"{obj.name}: shape lost, Quad Remesher again with more detail"
+                STATUS["text"] = (f"{obj.name}: face details flattened, Quad Remesher again denser there"
+                                  if face_only else f"{obj.name}: shape lost, Quad Remesher again with more detail")
                 ok2 = yield from _qr_part(obj, target, args, timeout)
                 if not ok2:
                     _replace_mesh(obj, keep)
                     break
                 bpy.data.meshes.remove(keep)
+                if face_only and args.get("conform", True):
+                    # (with a thin part lost, fitting would pull the stub towards it before the
+                    # rebuild; only face refinement is fitted here)
+                    from .density import conform
+                    conform(obj.data, backup)
                 refined = shape["refined"] + 1
                 shape = shape_loss(backup, obj.data, tol)
                 shape["refined"] = refined
                 shape["rescued"] = 0
-                used = "quadremesher(shape-fixed)"
+                used = "quadremesher(face-refined)" if face_only else "quadremesher(shape-fixed)"
+            # the thin-part rebuild is for real thin parts only, never pieces of the face
             if shape["lost_ratio"] >= max_lost and args.get("shape_rescue", True):
                 # still missing: retopologize each lost region on its own and fuse it back
                 from . import rescue
                 total_area = max(rescue.area(backup), 1e-9)
                 rescued = 0
-                for ri, region in enumerate(rescue.regions(backup, shape["mask"])[:4]):
+                for ri, region in enumerate(rescue.regions(backup, shape.get("mask_thin", shape["mask"]))[:4]):
                     piece_me = rescue.extract(backup, region)
                     plug = list(piece_me["forge_plug"]) if "forge_plug" in piece_me else None
                     quads = max(150, int(target * 3 * rescue.area(piece_me) / total_area))
@@ -455,5 +464,6 @@ def _run_qr(args: dict):
         if shape is not None:
             report[obj.get(C.PART_PROP)]["shape"] = {
                 "lost_pct": round(100 * shape["lost_ratio"], 2), "max_gap_pct": round(100 * shape["max_rel"], 2),
+                "face_lost_pct": round(100 * shape.get("face_lost", 0.0), 2),
                 "refined": shape["refined"], "rescued": shape.get("rescued", 0)}
     return {"parts": report, "total_tris": sum(r["tris_after"] for r in report.values())}

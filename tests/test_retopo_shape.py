@@ -346,3 +346,58 @@ def test_mirrored_run_that_loses_a_one_sided_part_reruns_without_mirror(monkeypa
     assert rep["parts"]["Body"]["method"] == "quadremesher(no-mirror)"
     assert rep["parts"]["Body"]["shape"]["lost_pct"] < 0.2
     assert max(v.co.x for v in o.data.vertices) > 1.9
+
+
+def test_flattened_face_detail_is_refined_not_rebuilt(monkeypatch):
+    """A shallow mouth-corner pocket: too small for the normal shape check, caught by the
+    stricter face check -> one denser run (never the thin-part rebuild)."""
+    import bmesh as bm_
+    import numpy as np
+
+    from forge_bpy import common, density, retopo
+    bpy.ops.wm.read_homefile(use_empty=True)
+    bm = bm_.new()
+    bm_.ops.create_icosphere(bm, subdivisions=6, radius=1.0)
+    for v in bm.verts:                         # a shallow pocket (the mouth corner)
+        if (v.co - __import__("mathutils").Vector((0.0, -1.0, 0.0))).length < 0.2:
+            v.co *= 0.98
+    me = bpy.data.meshes.new("Body")
+    bm.to_mesh(me)
+    bm.free()
+    co = np.array([v.co[:] for v in me.vertices])
+    density.write_strict(me, np.where(co[:, 2] > -0.5, 0.35, 1.0))     # "face" = upper part
+    o = bpy.data.objects.new("Body_low", me)
+    bpy.context.scene.collection.objects.link(o)
+    o["forge_role"], o["forge_part"] = "low", "Body"
+    calls = []
+
+    def qr(obj, quads, args, timeout):
+        """Flattens the pocket unless the density map marks it red."""
+        yield 0.0
+        m = obj.data
+        a = m.color_attributes.get(density.QR_ATTR)
+        red = set()
+        if a is not None:
+            col = np.empty(len(m.loops) * 4, np.float32)
+            a.data.foreach_get("color_srgb", col)
+            lv = np.array([l.vertex_index for l in m.loops])
+            red = set(lv[col.reshape(-1, 4)[:, 1] < 0.1].tolist())
+        pocket = [v for v in m.vertices if (v.co - __import__("mathutils").Vector((0, -0.99, 0))).length < 0.2]
+        kept = bool(pocket) and all(v.index in red for v in pocket[:10])
+        if not kept:
+            for v in pocket:
+                v.co = v.co.normalized()
+        calls.append(kept)
+        return True
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "conform": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    r = rep["parts"]["Body"]
+    assert calls == [False, True], calls
+    assert r["method"] == "quadremesher(face-refined)" and r["shape"]["rescued"] == 0, r
+    assert r["shape"]["face_lost_pct"] < 0.4

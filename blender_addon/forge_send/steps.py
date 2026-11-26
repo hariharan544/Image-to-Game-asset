@@ -164,7 +164,11 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
                 try:
                     J = _mod("joints").estimate(p)
                     V = _mod("joints")._verts(p)
-                    factor = dens.region_factors(V, J)[0] ** strength
+                    factor, lab, _names = dens.region_factors(V, J)
+                    factor = factor ** strength
+                    # the shape check is stricter on the face (label 1 = head)
+                    import numpy as np
+                    dens.write_strict(me, np.where(lab == 1, 0.35, 1.0))
                 except Exception as exc:              # noqa: BLE001
                     print(f"[forge] region weights skipped: {exc}")
             dens.write_qr_density(me, dens.detail_score(me), strength, make_active=False, factor=factor)

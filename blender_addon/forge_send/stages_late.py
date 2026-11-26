@@ -491,6 +491,8 @@ def _retopo_rows(rep):
                 out.append(("BLANK1", "    paint the lost part red (Paint), run again"))
             else:
                 fixed = f", fixed {sh['refined']}x" if sh.get("refined") else ""
+                if "face-refined" in m:
+                    fixed += ", face details refined"
                 if sh.get("rescued"):
                     fixed += f", {sh['rescued']} thin part(s) rebuilt"
                 out.append(("BLANK1", f"    shape kept{fixed}"))

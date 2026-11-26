@@ -172,6 +172,17 @@ def only_qr_density(me) -> bool:
 
 # ----------------------------------------------------------------------------- shape check
 
+STRICT_ATTR = "forge_strict"     # per-vertex tolerance factor (< 1 = stricter), e.g. the face
+
+
+def write_strict(me, factor: np.ndarray) -> None:
+    a = me.attributes.get(STRICT_ATTR)
+    if a is not None:
+        me.attributes.remove(a)
+    a = me.attributes.new(STRICT_ATTR, "FLOAT", "POINT")
+    a.data.foreach_set("value", factor.astype(np.float32))
+
+
 def shape_loss(src_me, low_me, tol_rel: float = 0.008, max_samples: int = 300_000) -> dict:
     """How much of the original surface the new mesh lost (a thin tail collapsed, a tuft or
     a nail tip cut off): distance from every original vertex to the new surface.
@@ -193,11 +204,29 @@ def shape_loss(src_me, low_me, tol_rel: float = 0.008, max_samples: int = 300_00
         hit = tree.find_nearest(Vector(co[i]))
         dist[j] = hit[3] if hit[0] is not None else size
     rel = dist / size
-    mask = np.zeros(n, bool)
-    mask[idx[rel > tol_rel]] = True
-    if stride > 1 and mask.any():
-        mask = _dilate(mask, src_me, int(2 * stride ** 0.5) + 1)
-    return {"mask": mask, "lost_ratio": float((rel > tol_rel).mean()) if len(rel) else 0.0,
+    # stricter where it matters (the face: a flattened mouth corner or lid crease counts)
+    scale = np.ones(len(idx))
+    strict_region = np.zeros(len(idx), bool)
+    a = src_me.attributes.get(STRICT_ATTR)
+    if a is not None and a.domain == "POINT" and len(a.data) == n:
+        sv = np.empty(n, np.float32)
+        a.data.foreach_get("value", sv)
+        scale = sv[idx].astype(np.float64)
+        strict_region = scale < 0.999
+    thin = rel > tol_rel
+    strict = rel > tol_rel * scale
+    grow = int(2 * stride ** 0.5) + 1
+
+    def full(sel):
+        m = np.zeros(n, bool)
+        m[idx[sel]] = True
+        if stride > 1 and m.any():
+            m = _dilate(m, src_me, grow)
+        return m
+    face_n = int(strict_region.sum())
+    return {"mask": full(strict), "mask_thin": full(thin),
+            "lost_ratio": float(thin.mean()) if len(rel) else 0.0,
+            "face_lost": float((strict & strict_region).sum()) / face_n if face_n else 0.0,
             "max_rel": float(rel.max()) if len(rel) else 0.0}
 
 
