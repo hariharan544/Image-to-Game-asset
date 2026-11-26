@@ -222,3 +222,28 @@ def boost(me, mask: np.ndarray, rings: int = 3) -> int:
     col[hit] = (1.0, 0.0, 0.0, 1.0)
     attr.data.foreach_set("color_srgb", col.ravel())
     return int(mask.sum())
+
+
+
+def asymmetry(me, tol_rel: float = 0.006, max_samples: int = 60_000) -> float:
+    """Share of the surface that has no mirror twin across X = 0 (a notch in one ear, a scar,
+    a prop on one side). Mirror symmetry in the remesher would copy such details to the
+    other side, so it is only used when this is close to 0."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    n = len(me.vertices)
+    if n == 0:
+        return 0.0
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    size = float(np.linalg.norm(co.max(axis=0) - co.min(axis=0))) or 1.0
+    tree = BVHTree.FromPolygons([v.co.copy() for v in me.vertices], [tuple(p.vertices) for p in me.polygons])
+    idx = np.arange(0, n, max(1, n // max_samples))
+    off = 0
+    for i in idx:
+        x, y, z = co[i]
+        hit = tree.find_nearest(Vector((-x, y, z)))
+        if hit[0] is None or hit[3] > tol_rel * size:
+            off += 1
+    return off / len(idx)

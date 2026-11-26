@@ -217,6 +217,11 @@ class FORGE_OT_step(bpy.types.Operator):
             self.report({"WARNING"}, "Quad Remesher not found: Blender's own remesher is used")
 
         def done(st, rep):
+            for o in S.lows():                    # show whether mirror symmetry was used
+                r = rep.get("parts", {}).get(o.get("forge_part"))
+                if r is not None:
+                    r["symmetry"] = bool(o.get("forge_symmetry_x"))
+                    r["asymmetry_pct"] = round(100 * float(o.get("forge_asymmetry", 1.0)), 1)
             S.clay_lows()
             _save_rep(st, "retopo_rep", rep)
             st.retopo = "review"
@@ -455,6 +460,9 @@ def _retopo_rows(rep):
         out.append((icon, f"{part}: {r.get('tris_before', 0):,} > {r.get('tris_after', 0):,} tris"))
         if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
             out.append(("BLANK1", f"    method: {m}"))
+        if "symmetry" in r:
+            out.append(("BLANK1", "    mirrored (symmetric)" if r["symmetry"]
+                        else f"    not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)"))
         if sh:
             if sh.get("lost_pct", 0) > 0.5:
                 out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))

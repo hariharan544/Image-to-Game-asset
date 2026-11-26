@@ -128,7 +128,12 @@ def prepare_retopo() -> list:
         lo, hi = G.world_bounds(p)
         size = max(hi - lo)
         # mirror symmetry only for parts centred on the body's middle (body, bell, collar)
-        low["forge_symmetry_x"] = abs((lo.x + hi.x) / 2) < 0.02 * size
+        # mirror symmetry only for parts centred on the body AND really symmetric: otherwise the
+        # remesher copies one-sided details (a notch in one ear) to the other side
+        centred = abs((lo.x + hi.x) / 2) < 0.02 * size
+        asym = _mod("density").asymmetry(p.data) if centred else 1.0
+        low["forge_asymmetry"] = round(asym, 4)
+        low["forge_symmetry_x"] = centred and asym < 0.01
         p.hide_set(True)
         out.append(low)
     return out

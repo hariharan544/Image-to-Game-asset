@@ -151,3 +151,21 @@ def test_late_quad_remesher_results_are_never_taken():
         raise AssertionError("should not wait")
     except StopIteration as stop:
         assert stop.value is False
+
+
+def test_one_sided_detail_turns_mirror_symmetry_off():
+    import bmesh as bm_
+
+    from forge_bpy import density
+    bm = bm_.new()
+    bm_.ops.create_icosphere(bm, subdivisions=5, radius=1.0)
+    me = bpy.data.meshes.new("sym")
+    bm.to_mesh(me)
+    assert density.asymmetry(me) < 0.01                  # a sphere is symmetric
+    # a notch on the +X side only (like the cut in the bull's left ear)
+    for v in bm.verts:
+        if v.co.x > 0.6 and abs(v.co.z) < 0.4:
+            v.co *= 0.9
+    bm.to_mesh(me)
+    bm.free()
+    assert density.asymmetry(me) > 0.02
