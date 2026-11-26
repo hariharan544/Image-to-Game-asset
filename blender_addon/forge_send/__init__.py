@@ -1,6 +1,9 @@
 """Forge - Send to Forge (Blender add-on).
 
-The creative director's front end for the Forge pipeline, inside Blender:
+The creative director's front end for the Forge pipeline, inside Blender.
+
+"Forge - step by step" (stages_ui.py): each stage runs here and waits for Approve.
+"Send to Forge (full auto)", below, runs the whole pipeline in the background:
   Tripo Studio --DCC Bridge--> Blender --[Send to Forge]--> game-ready Unreal + Unity assets
 
 3D Viewport > Sidebar (N) > Forge:
@@ -17,7 +20,7 @@ this file (the project folder). The guide is written as JSON, which is valid YAM
 bl_info = {
     "name": "Forge - Send to Forge",
     "author": "Forge pipeline",
-    "version": (1, 0, 0),
+    "version": (1, 1, 0),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar > Forge",
     "description": "Send a model (e.g. from the Tripo DCC Bridge) through the Forge game-asset pipeline",
@@ -34,6 +37,8 @@ from pathlib import Path
 
 import bpy
 from bpy.props import BoolProperty, EnumProperty, FloatProperty, PointerProperty, StringProperty
+
+from . import stages_ui
 
 ADDON_ID = __name__
 GUIDE_NAME = "from_blender.yaml"
@@ -425,11 +430,13 @@ def _wrap(text: str, width: int = 42) -> list:
 
 
 class FORGE_PT_panel(bpy.types.Panel):
-    bl_label = "Send to Forge"
+    bl_label = "Send to Forge (full auto)"
     bl_idname = "FORGE_PT_panel"
     bl_space_type = "VIEW_3D"
     bl_region_type = "UI"
     bl_category = "Forge"
+    bl_order = 1
+    bl_options = {"DEFAULT_CLOSED"}
 
     def draw(self, context):
         s = context.scene.forge
@@ -536,6 +543,7 @@ def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.forge = PointerProperty(type=ForgeSettings)
+    stages_ui.register()
     if not bpy.app.background:
         bpy.app.timers.register(_redraw_forge_panels, first_interval=2.0, persistent=True)
 
@@ -543,6 +551,7 @@ def register():
 def unregister():
     if bpy.app.timers.is_registered(_redraw_forge_panels):
         bpy.app.timers.unregister(_redraw_forge_panels)
+    stages_ui.unregister()
     del bpy.types.Scene.forge
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)

@@ -1,0 +1,159 @@
+"""Stage 2 (Assemble) + Stage 3 (Geometry repair) on deliberately broken meshes."""
+
+import sys
+from pathlib import Path
+
+import pytest
+
+bpy = pytest.importorskip("bpy")
+import bmesh  # noqa: E402
+
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+from forge_send import geometry as G  # noqa: E402
+
+
+def _obj(name, bm):
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    o = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(o)
+    return o
+
+
+def broken_body(name="Body"):
+    """A sphere torn along a crack (duplicate seam vertices), with two holes, floating specks
+    and loose points - the kind of damage AI segmentation leaves."""
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=48, v_segments=24, radius=1.0)
+    # crack: split the mesh along a ring of edges -> duplicate vertices on the seam
+    ring = [e for e in bm.edges if all(abs(v.co.z) < 1e-6 for v in e.verts)]
+    bmesh.ops.split_edges(bm, edges=ring)
+    # two holes (picked by position: Blender's face order is not stable between runs)
+    from mathutils import Vector
+    holes = [f for f in bm.faces
+             if (f.calc_center_median() - Vector((0, -0.85, 0.5))).length < 0.12
+             or (f.calc_center_median() - Vector((0.85, 0, -0.5))).length < 0.12]
+    assert len(holes) >= 2
+    bmesh.ops.delete(bm, geom=holes, context="FACES")
+    # specks + loose points
+    for i in range(3):
+        bmesh.ops.create_cube(bm, size=0.004, matrix=__import__("mathutils").Matrix.Translation((2 + i * 0.1, 0, 0)))
+    for i in range(4):
+        bm.verts.new((0, 3 + i, 0))
+    o = _obj(name, bm)
+    o.location = (5, 2, 1)
+    o.scale = (2, 2, 2)
+    return o
+
+
+def test_analyse_finds_damage_and_repair_fixes_it():
+    o = broken_body()
+    G.apply_transform(o)
+    rep = G.analyse(o)
+    assert rep["holes"] >= 2 and rep["tiny_bits"] == 3 and rep["loose"] == 4 and not rep["ok"]
+    res = G.repair(o)
+    assert res["welded_points"] > 0 and res["removed_bits"] == 3 and res["holes_closed"] >= 2
+    after = G.analyse(o)
+    assert after["ok"], after
+    assert after["pieces"] == 1 and after["open_edges"] == 0
+    # undo brings the damaged original back
+    assert G.restore(o)
+    assert G.analyse(o)["holes"] >= 2
+    G.drop_backup(o)
+    assert not any(m.name.startswith("FORGE_BACKUP_Body") for m in bpy.data.meshes)
+
+
+def test_make_solid_welds_overlapping_pieces():
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=16, radius=1.0)
+    from mathutils import Matrix
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=0.3, radius2=0.0, depth=1.0,
+                          matrix=Matrix.Translation((0.6, 0, 1.0)))      # a horn pushed into the head
+    o = _obj("BullBody", bm)
+    o["forge_role"] = "body"
+    rep = G.analyse(o)
+    assert rep["big_pieces"] == 2 and rep["needs_weld"]
+    G.make_solid(o, resolution=64)
+    after = G.analyse(o)
+    assert after["pieces"] == 1 and after["ok"] and not after["needs_weld"], after
+
+
+def test_collect_sizes_and_lays_out_parts_then_mirror():
+    body = broken_body("BullBody2")
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    bell = _obj("bell", bm)               # generated at "unit" size, as Tripo does
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=0.5, radius2=0.5, depth=0.3)
+    band = _obj("wrist band", bm)
+    info = G.collect([body, bell, band], target_height=1.8)
+    assert body.get("forge_role") == "body" and bell.get("forge_role") == "prop"
+    assert info["body"] == "BullBody2" and set(info["new"]) == {"bell", "wrist band"}
+    lo, hi = G.world_bounds(body)
+    assert abs((hi.z - lo.z) - 1.8) < 1e-3 and abs(lo.z) < 1e-4 and abs(lo.x + hi.x) < 1e-3
+    blo, bhi = G.world_bounds(bell)
+    assert abs(max(bhi - blo) - 0.12 * 1.8) < 1e-3          # bell sized from its name
+    assert blo.x > hi.x                                      # laid out beside the body
+    # the director drags the band onto the right wrist, then mirrors it
+    G.move_to(band, __import__("mathutils").Vector((0.7, 0, 1.0)))
+    dup = G.mirror(band)
+    assert band.name == "wrist band_L" and dup.name == "wrist band_R"
+    a, b = G.world_bounds(band), G.world_bounds(dup)
+    assert abs(a[0].x + b[1].x) < 1e-4 and abs(a[1].x + b[0].x) < 1e-4
+    # mirrored copy still points outward
+    G.repair(dup)
+    assert G.analyse(dup)["ok"]
+    # running Collect again keeps the director's placement
+    before = G.world_bounds(band)
+    G.collect([band], target_height=0)
+    assert (G.world_bounds(band)[0] - before[0]).length < 1e-6
+
+
+def test_panel_buttons_in_order():
+    """The director's clicks: Collect -> Approve layout -> Run repair -> Weld -> Approve geometry."""
+    import importlib
+    import re
+    from unittest import mock
+
+    F = importlib.import_module("forge_send")
+    F.register()
+    try:
+        bpy.ops.wm.read_homefile(use_empty=True)
+        body = broken_body("TripoBody")
+        bm = bmesh.new()
+        bmesh.ops.create_cube(bm, size=1.0)
+        bell = _obj("Bell", bm)
+        bpy.context.view_layer.update()
+        for o in bpy.context.view_layer.objects:
+            o.select_set(o.name in ("TripoBody", "Bell"))
+        st = bpy.context.scene.forge_stage
+        st.height_m = 2.0
+        assert bpy.ops.forge.stage_collect() == {"FINISHED"} and st.assemble == "review"
+        bpy.context.view_layer.objects.active = bell
+        assert bpy.ops.forge.stage_mirror() == {"FINISHED"}
+        assert bpy.ops.forge.stage_approve_layout() == {"FINISHED"} and st.assemble == "approved"
+        assert bpy.ops.forge.stage_repair() == {"FINISHED"} and st.repair == "review"
+        import json
+        rep = json.loads(st.report)
+        assert set(rep) == {"TripoBody", "Bell_L", "Bell_R"} and all(r["ok"] for r in rep.values()), rep
+        assert bpy.ops.forge.stage_show_problems(name="TripoBody") == {"FINISHED"}
+        bpy.ops.object.mode_set(mode="OBJECT")
+        assert bpy.ops.forge.stage_weld(name="TripoBody") == {"FINISHED"}
+        assert json.loads(st.fixed)["TripoBody"]["welded_solid"]
+        assert bpy.ops.forge.stage_approve_repair() == {"FINISHED"} and st.repair == "approved"
+        assert bpy.ops.forge.stage_reopen(stage="repair") == {"FINISHED"}
+        assert bpy.ops.forge.stage_undo_repair() == {"FINISHED"} and st.repair == "todo"
+        assert G.analyse(bpy.data.objects["TripoBody"])["holes"] >= 2     # original is back
+
+        # draw the panel in every state with a recording layout; every icon must exist in Blender
+        valid = {i.identifier for i in bpy.types.UILayout.bl_rna.functions["label"].parameters["icon"].enum_items}
+        src = (Path(F.__file__).parent / "stages_ui.py").read_text()
+        icons = set(re.findall(r'icon="([A-Z0-9_]+)"', src)) | set(re.findall(r'"(COLORSET_\d+_VEC)"', src))
+        assert icons <= valid, icons - valid
+        for a, r in (("todo", "todo"), ("review", "todo"), ("approved", "review"), ("approved", "approved")):
+            st.assemble, st.repair = a, r
+            fake = mock.MagicMock()
+            F.stages_ui.FORGE_PT_stages.draw(fake, bpy.context)
+    finally:
+        F.unregister()
