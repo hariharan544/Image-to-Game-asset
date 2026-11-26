@@ -78,7 +78,13 @@ plain light-grey background, no text, no labels, no grid lines.
 ```
 
 Each 2x2 sheet at 2K gives 1024 px per view, which is enough for Tripo multi-view
-(front / left / back / right). Cut the 4 cells into separate images before upload.
+(front / left / back / right). Cut the sheets into separate views with:
+
+    forge split-sheet sheets/
+
+(every image in the folder -> sheets/views/<name>_front.png, _left, _back, _right; each
+view re-centred, all views of a sheet at the same scale; [!] marks a sheet that is not a
+clean 2x2 grid - regenerate it).
 
 ## Check before generating 3D
 - Same colours and materials as the concept in every view?

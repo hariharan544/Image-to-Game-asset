@@ -239,6 +239,38 @@ def cmd_install_addon(a) -> int:
     return 0
 
 
+def cmd_split_sheet(a) -> int:
+    """Cut 2x2 multi-view sheets into one image per view (front / left / back / right)."""
+    from .sheets import find_sheets, split_sheet
+    rows, _, cols = a.grid.lower().partition("x")
+    names = [n.strip() for n in a.names.split(",")]
+    try:
+        sheets = find_sheets(a.inputs)
+    except FileNotFoundError as exc:
+        print(f"[X] {exc}", file=sys.stderr)
+        return 1
+    if not sheets:
+        print("[X] no images found", file=sys.stderr)
+        return 1
+    bad = 0
+    for sheet in sheets:
+        out = Path(a.out) if a.out else sheet.parent / "views"
+        try:
+            res = split_sheet(sheet, out, int(rows), int(cols), names)
+        except (ValueError, OSError) as exc:
+            print(f"[X] {sheet.name}: {exc}")
+            bad += 1
+            continue
+        mark = "[!]" if res.warnings else "[OK]"
+        print(f"{mark} {sheet.name} -> " + ", ".join(o.name for o in res.outputs) + f"  ({out})")
+        for w in res.warnings:
+            print(f"     {w}")
+        bad += bool(res.warnings)
+    if bad:
+        print("Check the [!] sheets: regenerate them if the views are not in a clean 2x2 grid.")
+    return 0
+
+
 def main(argv=None) -> int:
     _load_dotenv()
     p = argparse.ArgumentParser(prog="forge", description="Image -> game-ready 3D asset pipeline")
@@ -281,6 +313,14 @@ def main(argv=None) -> int:
     ia = sub.add_parser("install-blender-addon", help="install the 'Send to Forge' panel into Blender")
     ia.add_argument("--blender", help="path to blender.exe (default: the one Forge uses)")
     ia.set_defaults(fn=cmd_install_addon)
+
+    ss = sub.add_parser("split-sheet", help="cut 2x2 multi-view sheets into front/left/back/right images")
+    ss.add_argument("inputs", nargs="+", help="sheet images or folders of sheets")
+    ss.add_argument("--out", help="output folder (default: a 'views' folder next to each sheet)")
+    ss.add_argument("--grid", default="2x2", help="rows x columns (default 2x2)")
+    ss.add_argument("--names", default="front,left,back,right",
+                    help="view names in reading order (default front,left,back,right)")
+    ss.set_defaults(fn=cmd_split_sheet)
 
     c = sub.add_parser("check", help="verify the environment")
     c.set_defaults(fn=cmd_check)

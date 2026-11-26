@@ -12,6 +12,7 @@ dependencies = [
   "pydantic>=2.5",
   "pyyaml>=6",
   "httpx>=0.27",
+  "pillow>=10",             # forge split-sheet
 ]
 
 [project.optional-dependencies]
