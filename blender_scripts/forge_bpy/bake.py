@@ -136,7 +136,37 @@ def _uv_coverage(low, size: int) -> np.ndarray:
     return np.kron(small, np.ones((k, k), bool)) if k > 1 else small
 
 
-def _resolve_sentinel(img, cov: np.ndarray, mtype: str, iterations: int = 32) -> float:
+def _fill_colours(rgb: np.ndarray, valid: np.ndarray, miss: np.ndarray, iterations: int,
+                  work_res: int = 1024) -> np.ndarray:
+    """Colours for the missed texels, grown from the valid ones. Done on a block-averaged copy
+    of at most work_res^2 texels (4K maps would otherwise take minutes), then sampled back."""
+    h, w = valid.shape
+    k = max(1, h // work_res)
+    hs, ws = h // k, w // k
+    v = valid[:hs * k, :ws * k].reshape(hs, k, ws, k)
+    c = rgb[:hs * k, :ws * k].reshape(hs, k, ws, k, 3)
+    cnt = v.sum(axis=(1, 3)).astype(np.float32)
+    small = (c * v[..., None]).sum(axis=(1, 3)) / np.maximum(cnt, 1)[..., None]
+    ok = cnt > 0
+    for _ in range(iterations):                  # grow valid colours into the holes
+        if ok.all():
+            break
+        acc = np.zeros_like(small)
+        n = np.zeros(ok.shape, np.float32)
+        for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+            o = np.roll(ok, (dy, dx), axis=(0, 1))
+            acc += np.roll(small, (dy, dx), axis=(0, 1)) * o[..., None]
+            n += o
+        grow = (~ok) & (n > 0)
+        small[grow] = acc[grow] / n[grow][:, None]
+        ok = ok | grow
+    if not ok.all():                             # very large holes: the part's average colour
+        small[~ok] = small[ok].mean(axis=0, dtype=np.float64) if ok.any() else 0.5
+    ys, xs = np.nonzero(miss)
+    return small[np.minimum(ys // k, hs - 1), np.minimum(xs // k, ws - 1)]
+
+
+def _resolve_sentinel(img, cov: np.ndarray, mtype: str, iterations: int = 64) -> float:
     """Count bake misses (sentinel texels inside UV islands) and fill them from neighbouring
     texels; texels outside the islands get a neutral value. Returns the miss ratio."""
     w, h = img.size
@@ -150,28 +180,12 @@ def _resolve_sentinel(img, cov: np.ndarray, mtype: str, iterations: int = 32) ->
     ratio = float(miss.sum()) / max(int(cov.sum()), 1)
     if miss.any():
         rgb = px[..., :3]
-        valid = ~sent
-        todo = miss.copy()
-        for _ in range(iterations):              # grow valid colours into the holes
-            if not todo.any():
-                break
-            acc = np.zeros_like(rgb)
-            cnt = np.zeros(todo.shape, np.float32)
-            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
-                v = np.roll(valid, (dy, dx), axis=(0, 1))
-                acc += np.roll(rgb, (dy, dx), axis=(0, 1)) * v[..., None]
-                cnt += v
-            grow = todo & (cnt > 0)
-            rgb[grow] = acc[grow] / cnt[grow][:, None]
-            valid = valid | grow
-            todo = todo & ~grow
-        if todo.any():                           # very large holes: average colour of the part
-            rgb[todo] = rgb[valid & cov].mean(axis=0) if (valid & cov).any() else 0.5
+        rgb[miss] = _fill_colours(rgb, ~sent, miss, iterations)
         px[..., :3] = rgb
     outside = sent & ~cov
     if outside.any():
         good = (~sent) & cov
-        neutral = NEUTRAL.get(mtype) or (px[..., :3][good].mean(axis=0) if good.any() else (0.5, 0.5, 0.5))
+        neutral = NEUTRAL.get(mtype) or (px[..., :3][good].mean(axis=0, dtype=np.float64) if good.any() else (0.5, 0.5, 0.5))
         px[..., :3][outside] = neutral
     px[..., 3] = 1.0
     img.pixels.foreach_set(px.ravel())
