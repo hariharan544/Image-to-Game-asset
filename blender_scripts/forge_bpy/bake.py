@@ -210,6 +210,49 @@ def _clean_metallic(img, floor: float) -> dict:
             "metal_pct": round(float(100.0 * (covered & (m >= floor)).sum() / n), 2)}
 
 
+def despeckle_array(px: np.ndarray, radius: int = 3, threshold: float = 0.12) -> int:
+    """Remove isolated specks in place: a texel brighter (or darker) than ALL 8 texels at
+    `radius` around it by more than `threshold` (colour distance) is replaced by their mean.
+    Real edges (a pupil, a fur-patch border) have similar colour on at least one side and stay.
+    px: (h, w, >=3) float array. Returns the number of texels fixed."""
+    rgb = px[..., :3]
+    lum = rgb.mean(axis=2)
+    lo = np.full(lum.shape, np.inf, np.float32)          # min over directions of (centre - ring)
+    hi = np.full(lum.shape, -np.inf, np.float32)         # max over directions of (centre - ring)
+    acc = np.zeros_like(rgb)
+    dirs = [(radius, 0), (-radius, 0), (0, radius), (0, -radius),
+            (radius, radius), (radius, -radius), (-radius, radius), (-radius, -radius)]
+    for dy, dx in dirs:
+        ring = np.roll(lum, (dy, dx), axis=(0, 1))
+        d = lum - ring
+        np.minimum(lo, d, out=lo)
+        np.maximum(hi, d, out=hi)
+        acc += np.roll(rgb, (dy, dx), axis=(0, 1))
+    speck = (lo > threshold) | (hi < -threshold)
+    # grow by one texel: a speck's soft rim goes too
+    grow = speck.copy()
+    for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+        grow |= np.roll(speck, (dy, dx), axis=(0, 1))
+    n = int(grow.sum())
+    if n:
+        rgb[grow] = (acc / len(dirs))[grow]
+    return n
+
+
+def _despeckle(img, mtype: str) -> int:
+    if mtype not in ("basecolor", "normal", "roughness"):
+        return 0
+    w, h = img.size
+    px = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)
+    r = max(2, int(round(3 * w / 4096)) + 1)             # about the same physical size at 2K and 4K
+    n = despeckle_array(px, radius=r, threshold=0.12 if mtype != "normal" else 0.18)
+    if n:
+        img.pixels.foreach_set(px.ravel())
+    return n
+
+
 def _miss_ratio(img, covered_hint: float) -> float:
     """Fraction of pure-black texels in a base colour bake (rays that hit nothing)."""
     px = np.empty(img.size[0] * img.size[1] * 4, dtype=np.float32)
@@ -264,6 +307,7 @@ def run(args: dict) -> dict:
 
     report = {}
     cleaned: dict = {}
+    specks: dict = {}
     for low in C.meshes_with_role("low"):
         high = C.high_for(low)
         part = low.get(C.PART_PROP)
@@ -287,6 +331,8 @@ def run(args: dict) -> dict:
             else:
                 _bake(mtype, extrusion, extrusion * 4, margin)
             misses[mtype] = _resolve_sentinel(img, cov, mtype)
+            if args.get("despeckle", True):
+                specks.setdefault(part, {})[mtype] = _despeckle(img, mtype)
             if mtype == "metallic":
                 cleaned[part] = _clean_metallic(img, float(args.get("metallic_floor", 0.35)))
             path = os.path.join(out_dir, f"T_{part}_{mtype}.png")
@@ -297,6 +343,8 @@ def run(args: dict) -> dict:
         entry = {"maps": {k: os.path.join(out_dir, f"T_{part}_{k}.png") for k in baked}}
         if part in cleaned:
             entry["metallic_cleanup"] = cleaned[part]
+        if specks.get(part):
+            entry["specks_removed"] = specks[part]
         # share of texels inside the UV islands where the bake rays found nothing (now filled)
         entry["bake_miss_ratio"] = round(max(misses.values(), default=0.0), 4)
         entry["bake_misses"] = {k: round(v, 4) for k, v in misses.items()}

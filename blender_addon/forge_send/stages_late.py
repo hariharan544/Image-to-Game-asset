@@ -502,6 +502,9 @@ def _bake_rows(rep):
         miss = r.get("bake_miss_ratio", 0)
         icon = GOOD if miss <= 0.02 else (WARN if miss <= 0.10 else BAD)
         out.append((icon, f"{part}: {len(r.get('maps', {}))} maps, {miss:.1%} filled"))
+        sp = sum((r.get("specks_removed") or {}).values())
+        if sp:
+            out.append(("BLANK1", f"    {sp:,} speck texels cleaned"))
     return out
 
 

@@ -169,3 +169,21 @@ def test_one_sided_detail_turns_mirror_symmetry_off():
     bm.to_mesh(me)
     bm.free()
     assert density.asymmetry(me) > 0.02
+
+
+def test_despeckle_removes_dots_keeps_edges():
+    import numpy as np
+
+    from forge_bpy.bake import despeckle_array
+    px = np.zeros((64, 64, 4), np.float32)
+    px[..., :3] = (0.6, 0.35, 0.2)                 # brown skin
+    px[:, 40:, :3] = (0.3, 0.15, 0.1)              # a darker fur patch: a real edge
+    px[20, 10, :3] = (0.95, 0.9, 0.85)             # light speck
+    px[30:32, 20:22, :3] = (0.9, 0.85, 0.8)        # 2x2 speck
+    px[50, 10, :3] = (0.05, 0.02, 0.01)            # dark speck
+    edge_before = px[:, 38:42].copy()
+    n = despeckle_array(px, radius=3, threshold=0.12)
+    assert n > 0
+    for y, x in ((20, 10), (30, 20), (31, 21), (50, 10)):
+        assert np.allclose(px[y, x, :3], (0.6, 0.35, 0.2), atol=0.05), (y, x, px[y, x])
+    assert np.allclose(px[:, 38:42], edge_before)   # the patch border is untouched

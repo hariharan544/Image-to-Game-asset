@@ -338,6 +338,8 @@ def finish_bake(*reports) -> dict:
             e["bake_misses"].update(r.get("bake_misses", {}))
             if "metallic_cleanup" in r:
                 e["metallic_cleanup"] = r["metallic_cleanup"]
+            for k, v in (r.get("specks_removed") or {}).items():
+                e.setdefault("specks_removed", {})[k] = v
     for low in lows():
         part = low.get(C().PART_PROP)
         e = out.get(part)
