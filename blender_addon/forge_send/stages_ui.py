@@ -23,7 +23,25 @@ ICON = {"todo": "COLORSET_13_VEC", "review": "COLORSET_04_VEC", "approved": "COL
 OK_ICON, BAD_ICON = "COLORSET_03_VEC", "COLORSET_01_VEC"
 
 
+KINDS = [("biped", "Biped character", "Stands on two legs: human, cartoon animal, robot"),
+         ("quadruped", "Four-legged animal", "Dog, horse, bull on four legs"),
+         ("creature", "Creature", "Wings, tentacles, many legs, mythical"),
+         ("prop", "Prop", "Object, weapon, accessory"),
+         ("vehicle", "Vehicle / machine", "Wheels, hard surface, moving parts")]
+STYLES = [("cartoon", "Cartoon / stylized", ""), ("realistic", "Realistic", "")]
+SIDES = [("auto", "Auto", "Mirror when the model is symmetric enough, from the better side"),
+         ("left", "Left side", "Build both sides from the character's LEFT side (+X)"),
+         ("right", "Right side", "Build both sides from the character's RIGHT side (-X)"),
+         ("none", "No mirror", "Keep both sides as they are (asymmetric design)")]
+
+
 class ForgeStageState(bpy.types.PropertyGroup):
+    brief: EnumProperty(items=STATUS, default="todo")
+    concept: StringProperty(name="Concept image", subtype="FILE_PATH",
+                            description="The image the model was generated from (shown next to the model)")
+    asset_kind: EnumProperty(name="What is it", items=KINDS, default="biped")
+    art_style: EnumProperty(name="Style", items=STYLES, default="cartoon")
+    symmetry: EnumProperty(name="Symmetry", items=SIDES, default="auto")
     assemble: EnumProperty(items=STATUS, default="todo")
     repair: EnumProperty(items=STATUS, default="todo")
     height_m: FloatProperty(name="Body height (m)", default=0.0, min=0.0, soft_max=10.0,
@@ -111,6 +129,45 @@ def _reanalyse(context) -> dict:
 
 
 # ----------------------------------------------------------------------------- step 2 operators
+
+class FORGE_OT_concept(bpy.types.Operator):
+    bl_idname = "forge.stage_concept"
+    bl_label = "Show concept next to the model"
+    bl_description = "Put the concept image in the viewport, beside the model, to compare while you work"
+
+    def execute(self, context):
+        st = _st(context)
+        path = bpy.path.abspath(st.concept)
+        if not st.concept or not Path(path).exists():
+            self.report({"ERROR"}, "Pick the concept image first")
+            return {"CANCELLED"}
+        img = bpy.data.images.load(path, check_existing=True)
+        ref = bpy.data.objects.get("Forge concept") or bpy.data.objects.new("Forge concept", None)
+        if ref.name not in context.scene.collection.objects:
+            context.scene.collection.objects.link(ref)
+        ref.empty_display_type = "IMAGE"
+        ref.data = img
+        parts = _parts(context)
+        h = max((max(o.dimensions) for o in parts), default=2.0)
+        ref.empty_display_size = h
+        ref.location = (-1.3 * h, 0.0, h / 2)
+        ref.rotation_euler = (1.5708, 0.0, 0.0)               # facing the front view
+        return {"FINISHED"}
+
+
+class FORGE_OT_approve_brief(bpy.types.Operator):
+    bl_idname = "forge.stage_approve_brief"
+    bl_label = "Approve brief"
+    bl_description = "This is what we are making. Unlocks Assemble"
+
+    def execute(self, context):
+        st = _st(context)
+        st.brief = "approved"
+        _log(context, "brief", "approve", {"kind": st.asset_kind, "style": st.art_style,
+                                           "symmetry": st.symmetry, "concept": st.concept})
+        _save(self)
+        return {"FINISHED"}
+
 
 class FORGE_OT_collect(bpy.types.Operator):
     bl_idname = "forge.stage_collect"
@@ -387,10 +444,32 @@ class FORGE_PT_stages(bpy.types.Panel):
         layout = self.layout
         parts = _parts(context)
 
+        # ---------------------------------------------------------------- step 1
+        box = layout.box()
+        _header(box, 1, "Brief", st.brief, "brief")
+        if st.brief != "approved":
+            c = box.column(align=True)
+            c.label(text="What are we making?", icon="QUESTION")
+            box.prop(st, "concept")
+            box.prop(st, "asset_kind")
+            box.prop(st, "art_style")
+            box.prop(st, "symmetry")
+            r = box.row(align=True)
+            r.operator("forge.stage_concept", icon="IMAGE_REFERENCE")
+            r = box.row()
+            r.scale_y = 1.3
+            r.operator("forge.stage_approve_brief", icon="CHECKMARK")
+        else:
+            box.label(text=f"{dict((k, n) for k, n, _d in KINDS)[st.asset_kind]}, "
+                           f"{dict((k, n) for k, n, _d in STYLES)[st.art_style].lower()}, "
+                           f"symmetry: {dict((k, n) for k, n, _d in SIDES)[st.symmetry].lower()}")
+
         # ---------------------------------------------------------------- step 2
         box = layout.box()
         _header(box, 2, "Assemble", st.assemble, "assemble")
-        if st.assemble != "approved":
+        if st.assemble != "approved" and st.brief != "approved":
+            box.label(text="Fill in the brief first.")
+        elif st.assemble != "approved":
             col = box.column(align=True)
             col.label(text="Import the parts (Tripo Bridge or")
             col.label(text="File > Import), select them all, then:")
@@ -478,7 +557,7 @@ class FORGE_PT_stages(bpy.types.Panel):
         draw_late(layout, context)
 
 
-CLASSES = (ForgeStageState, FORGE_OT_collect, FORGE_OT_set_body, FORGE_OT_select_part, FORGE_OT_to_cursor,
+CLASSES = (ForgeStageState, FORGE_OT_concept, FORGE_OT_approve_brief, FORGE_OT_collect, FORGE_OT_set_body, FORGE_OT_select_part, FORGE_OT_to_cursor,
            FORGE_OT_mirror, FORGE_OT_approve_layout, FORGE_OT_reopen, FORGE_OT_repair, FORGE_OT_weld,
            FORGE_OT_show_problems, FORGE_OT_normals_view, FORGE_OT_undo_repair, FORGE_OT_approve_repair,
            FORGE_PT_stages)

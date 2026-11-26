@@ -54,7 +54,7 @@ def test_tail_ears_horns_found_with_chains():
     assert found["horn_l"]["chain"][-1][2] > 1.9
 
 
-def test_detail_map_gives_extra_parts_full_density():
+def test_parts_plan_splits_tail_lightens_horns():
     import importlib
 
     import numpy as np
@@ -74,19 +74,25 @@ def test_detail_map_gives_extra_parts_full_density():
 
 
 def _check_density(S, body):
+    """The parts plan: tail thin and one-sided -> separate; horns thick and rigid -> fewer
+    quads; ears -> with the body."""
     import numpy as np
     assert S.ensure_detail_maps(0.8) == 1
+    plan = S.plan_parts(recompute=True)
+    assert plan.get("tail") == "separate", plan
+    assert plan.get("horn_l") == "rigid, fewer quads" and plan.get("ear_l") == "with the body", plan
     me = body.data
+    ids = np.empty(len(me.vertices), np.int32)
+    me.attributes["forge_split"].data.foreach_get("value", ids)
+    co = np.array([v.co[:] for v in me.vertices])
+    assert ids[np.linalg.norm(co - (0, 0.5, 0.6), axis=1) < 0.05].min() >= 1     # the tail tip is split
+    assert ids[np.linalg.norm(co - (0, -0.16, 1.1), axis=1) < 0.05].max() == 0   # the belly is not
     c = np.empty(len(me.loops) * 4, np.float32)
     me.color_attributes["QR_Density"].data.foreach_get("color_srgb", c)
     c = c.reshape(-1, 4)
     lv = np.array([l.vertex_index for l in me.loops])
-    co = np.array([v.co[:] for v in me.vertices])[lv]
-    tail_tip = np.linalg.norm(co - (0, 0.5, 0.6), axis=1) < 0.05
-    belly = np.linalg.norm(co - (0, -0.16, 1.1), axis=1) < 0.04
-    assert tail_tip.any() and np.allclose(c[tail_tip, :3].mean(0), (1, 2 / 3, 2 / 3), atol=0.05)   # 4x the quads
-    assert belly.any() and c[belly, 1].mean() > 0.5                                       # not red
-
+    horn_tip = np.linalg.norm(co[lv] - (0.16, 0, 1.95), axis=1) < 0.04
+    assert horn_tip.any() and c[horn_tip, 0].mean() < 0.95                       # cyan-ish: fewer quads
 
 def test_resample_chain_even_spacing():
     from forge_bpy.arp_rig import _resample

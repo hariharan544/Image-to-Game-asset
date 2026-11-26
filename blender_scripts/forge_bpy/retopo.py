@@ -292,6 +292,24 @@ def _is_result_of(o, name: str) -> bool:
     return o.name == r or (o.name.startswith(r + ".") and o.name[len(r) + 1:].isdigit())
 
 
+def _activate_collection_of(obj) -> None:
+    def find(lc, col):
+        if lc.collection == col:
+            return lc
+        for ch in lc.children:
+            hit = find(ch, col)
+            if hit:
+                return hit
+        return None
+    try:
+        col = obj.users_collection[0]
+        lc = find(bpy.context.view_layer.layer_collection, col)
+        if lc is not None:
+            bpy.context.view_layer.active_layer_collection = lc
+    except (IndexError, AttributeError, RuntimeError):
+        pass
+
+
 def _purge_late_results() -> None:
     for name in list(_QR_PENDING):
         late = [o for o in bpy.data.objects if _is_result_of(o, name)]
@@ -328,6 +346,7 @@ def _qr_part(obj, quads: int, args: dict, timeout: float):
     s.symmetry_y = s.symmetry_z = False
     _purge_late_results()
     C.select_only(obj)
+    _activate_collection_of(obj)          # Quad Remesher imports its result into the active one
     before = {o.name for o in bpy.data.objects}
     ov = view3d_override()
     if not ov:
@@ -381,6 +400,31 @@ def _run_qr(args: dict):
         before = C.tri_count(obj)
         backup = obj.data.copy()
         target = budget * float(args.get("carve_headroom", 0.94)) / 2   # quads; room left for carving
+        # ---- plan before remeshing: split off thin one-sided parts (tail...), make the body
+        # symmetric from the chosen side. The remesher then gets a clean symmetric body and
+        # nothing has to be rescued afterwards.
+        from . import density as _dens
+        from . import rescue as _rescue
+        full_backup = None
+        split_pieces = []
+        side = str(args.get("symmetry", "auto"))
+        ids = _dens.read_split(backup) if args.get("split_thin", True) else None
+        if ids is not None or side in ("left", "right"):
+            full_backup = backup
+            backup = full_backup.copy()
+            if ids is not None:
+                split_pieces = _rescue.split_off(backup, ids)
+            if side in ("left", "right"):
+                _dens.symmetrize(backup, side)
+                obj["forge_symmetry_x"] = True
+            _replace_mesh(obj, backup.copy())
+        if side == "none":
+            obj["forge_symmetry_x"] = False
+        if split_pieces:                          # their share comes out of the body's budget
+            total_area = max(_rescue.area(full_backup), 1e-9)
+            piece_quads = [max(120, int(target * float(args.get("split_density", 1.5))
+                                        * _rescue.area(pm) / total_area)) for _k, pm, _p in split_pieces]
+            target = max(target - sum(piece_quads), target * 0.5)
         fit = {"tree": None, "fitted": False, "carve": {}}
 
         def _fit():
@@ -480,7 +524,8 @@ def _run_qr(args: dict):
                     refined, shape = shape["refined"], shape_loss(backup, obj.data, tol)
                     shape["refined"], shape["rescued"] = refined, rescued
                     used = "quadremesher(rescued)"
-            if shape["lost_ratio"] >= max_lost and obj.get("forge_symmetry_x") and not shape.get("rescued"):
+            if (shape["lost_ratio"] >= max_lost and obj.get("forge_symmetry_x") and not shape.get("rescued")
+                    and side not in ("left", "right")):          # never override the director's side
                 # last resort: the thin-part rebuild could not bring it back. A run WITHOUT
                 # mirroring (it re-rolls the whole mesh: the mirrored face is usually better,
                 # which is why this comes last)
@@ -498,8 +543,34 @@ def _run_qr(args: dict):
                 else:
                     _replace_mesh(obj, keep)
         if not ok:
-            _replace_mesh(obj, backup.copy())
+            _replace_mesh(obj, (full_backup or backup).copy())
+            split_pieces = []                     # the fallback keeps the whole original
             used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
+        if ok and split_pieces:
+            from .density import conform
+            for (k, pme, plug), quads in zip(split_pieces, piece_quads):
+                src = pme.copy()
+                piece = bpy.data.objects.new(f"{obj.name}_part{k}", pme)
+                piece.matrix_world = obj.matrix_world.copy()
+                piece["forge_rescue"] = True
+                for col in obj.users_collection:
+                    col.objects.link(piece)
+                piece["forge_symmetry_x"] = False
+                STATUS["text"] = f"{obj.name}: thin part {k} on its own (tail...)"
+                okp = yield from _qr_part(piece, quads, args, timeout)
+                if okp:
+                    conform(piece.data, src, relax=1)
+                else:                              # no remesher result: a reduced copy of the original
+                    _replace_mesh(piece, src.copy())
+                    _decimate(piece, quads * 2)
+                _rescue.attach(obj, piece)
+                names = {piece.data.name, src.name}
+                bpy.data.objects.remove(piece)
+                for n in names:
+                    m = bpy.data.meshes.get(n)
+                    if m is not None and m.users == 0:
+                        bpy.data.meshes.remove(m)
+            used += f"+{len(split_pieces)} part(s) separate"
         if ok and not fit["fitted"] and args.get("carve", True):
             from .density import carve, source_tree       # rescued / unfitted result: carve only
             fit["carve"] = carve(obj.data, backup, fit["tree"] or source_tree(backup))
@@ -508,6 +579,8 @@ def _run_qr(args: dict):
             from .density import crease_kept
             crease = crease_kept(backup, obj.data)
         bpy.data.meshes.remove(backup)
+        if full_backup is not None:
+            bpy.data.meshes.remove(full_backup)
         _finish_part(obj, budget, used, before, report, True)
         if crease or fit["carve"]:
             report[obj.get(C.PART_PROP)]["creases"] = {**crease, "carved_tris": fit["carve"].get("added", 0)}

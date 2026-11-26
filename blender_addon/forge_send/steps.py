@@ -172,20 +172,63 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
                 except Exception as exc:              # noqa: BLE001
                     print(f"[forge] region weights skipped: {exc}")
             dens.write_qr_density(me, dens.detail_score(me), strength, make_active=False, factor=factor)
-            if G.kind(p) == "body" and strength > 0:
-                # thin extra parts (tail, ears, horns) collapse in a retopology: 4x density
-                try:
-                    import numpy as np
-                    J = _mod("joints").estimate(p)
-                    mask = np.zeros(len(me.vertices), bool)
-                    for a in _mod("appendages").from_object(p, J):
-                        mask[a["vert_idx"]] = True
-                    if mask.any():
-                        dens.boost(me, mask, rings=2, edge_factor=2.0)   # 4x the quads
-                except Exception as exc:              # noqa: BLE001 - the map still works without
-                    print(f"[forge] appendage search skipped: {exc}")
             n += 1
     return n
+
+
+def plan_parts(recompute: bool = False) -> dict:
+    """Which extra parts of the body are thin and one-sided (tail, antenna: retopologized on
+    their own, then attached) and which are thick and rigid (horns: fewer quads, they do not
+    bend). Stored on the body mesh; the director sees the result in Step 4."""
+    import numpy as np
+    dens = _mod("density")
+    out = {}
+    for p in parts():
+        if G.kind(p) != "body":
+            continue
+        me = p.data
+        if not recompute and dens.SPLIT_ATTR in me.attributes and p.get("forge_plan"):
+            return dict(p["forge_plan"])
+        J = _mod("joints").estimate(p)
+        apps = _mod("appendages").from_object(p, J)
+        ids = np.zeros(len(me.vertices), np.int32)
+        k = 0
+        for a in apps:
+            # split only thin UNPAIRED parts (tail, antenna, trunk): paired ears stay with the
+            # mirrored body, where they come out symmetric without extra seams near the face
+            if a.get("thin") and a["kind"] not in ("ear", "horn"):
+                k += 1
+                ids[a["vert_idx"]] = k
+                out[a["name"]] = "separate"
+            elif a["kind"] == "horn":
+                out[a["name"]] = "rigid, fewer quads"
+            else:
+                out[a["name"]] = "with the body"
+        dens.write_split(me, ids)
+        # rigid horns: half the quads (they never deform, only their shape matters)
+        horn = np.zeros(len(me.vertices), bool)
+        for a in apps:
+            if a["kind"] == "horn":
+                horn[a["vert_idx"]] = True
+        if horn.any() and dens.QR_ATTR in me.color_attributes:
+            dens.boost(me, horn, rings=1, edge_factor=0.7)      # edges 1.4x longer: half the quads
+        p["forge_plan"] = out
+    return out
+
+
+def show_side(p, side: str) -> None:
+    """Preview: the part as if made from its left (+X) or right side, mirrored ('' = original)."""
+    m = p.modifiers.get("FORGE_side")
+    if not side:
+        if m is not None:
+            p.modifiers.remove(m)
+        return
+    if m is None:
+        m = p.modifiers.new("FORGE_side", "MIRROR")
+    m.use_axis = (True, False, False)
+    m.use_bisect_axis = (True, False, False)
+    m.use_bisect_flip_axis = (side == "right", False, False)
+    m.use_mirror_merge = True
 
 
 def show_detail_map(on: bool) -> None:
@@ -209,9 +252,16 @@ def show_detail_map(on: bool) -> None:
         o.hide_set(on)
 
 
-def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8):
+def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: str = "auto"):
     if use_qr and detail > 0:
         ensure_detail_maps(detail)
+    if use_qr:
+        try:
+            plan_parts()
+        except Exception as exc:                      # noqa: BLE001 - remeshing still works without
+            print(f"[forge] parts plan skipped: {exc}")
+    for p in parts():                                  # a side preview must not reach the remesher
+        show_side(p, "")
     prepare_retopo()
     if not (use_qr and detail > 0):              # no map: QR spreads quads by curvature only
         dens = _mod("density")
@@ -220,6 +270,7 @@ def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8):
             if a is not None:
                 o.data.color_attributes.remove(a)
     args = {"method": "quadremesher" if use_qr else "quadriflow", "target_tris": int(budget),
+            "symmetry": symmetry,
             "min_tris_per_part": 300, "qr_timeout": 900, "shape_retries": 1}
     return _mod("retopo").run(args)
 

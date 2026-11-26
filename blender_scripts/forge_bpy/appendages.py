@@ -161,7 +161,8 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
                 continue
         kind = _classify(c, root, tip, pelvis, head, head_top, head_r, front, H)
         out.append({"kind": kind, "chain": [tuple(map(float, p)) for p in chain],
-                    "verts": len(verts), "vert_idx": np.asarray(verts), "length": length, "centre": tuple(map(float, c))})
+                    "verts": len(verts), "vert_idx": np.asarray(verts), "length": length,
+                    "width": float(width), "thin": bool(width < 0.06 * H and kind != "horn"), "centre": tuple(map(float, c))})
     out.sort(key=lambda a: -a["verts"])
     return _name(out)
 

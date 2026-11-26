@@ -29,7 +29,9 @@ def mesh_parts(scene) -> list:
     col = bpy.data.collections.get(PARTS_COLLECTION)
     if not col:
         return []
-    return [o for o in col.objects if o.type == "MESH"]
+    # never the remesher's temporary results or Forge's own helper pieces
+    return [o for o in col.objects if o.type == "MESH" and not o.name.startswith("Retopo_")
+            and not o.get("forge_rescue") and not o.get("forge_cage")]
 
 
 def kind(o):

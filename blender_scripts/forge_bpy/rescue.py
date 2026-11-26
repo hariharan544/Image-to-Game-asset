@@ -278,3 +278,39 @@ def clean_seam(me, piece_obj) -> None:
     bm.to_mesh(me)
     bm.free()
     me.update()
+
+
+def split_off(me, ids: np.ndarray) -> list:
+    """Planned split (before remeshing): every thin part marked k > 0 in `ids` is taken out of
+    `me` (the hole is capped) and returned as its own closed piece with a plug that reaches
+    back into the body. [(k, piece_mesh, plug)]."""
+    pieces = []
+    for k in sorted(set(int(i) for i in np.unique(ids)) - {0}):
+        region = ids == k
+        piece = extract(me, region, grow_rings=0, name=f"forge_part_{k}")   # exact cut: no overlap band
+        plug = list(piece["forge_plug"]) if "forge_plug" in piece else None
+        pieces.append((k, piece, plug))
+    if pieces:
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bm.verts.ensure_lookup_table()
+        bmesh.ops.delete(bm, geom=[v for v in bm.verts if ids[v.index] > 0], context="VERTS")
+        open_edges = [e for e in bm.edges if e.is_boundary]
+        if open_edges:
+            res = bmesh.ops.holes_fill(bm, edges=open_edges, sides=100000)
+            ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+            if ng:
+                bmesh.ops.triangulate(bm, faces=ng)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        bm.to_mesh(me)
+        bm.free()
+        me.update()
+    return pieces
+
+
+def attach(target, piece_obj) -> None:
+    """Join a remeshed piece to the body as its own shell, root plugged inside the body:
+    no boolean (booleans of overlapping organic shapes leave shards). The hidden plug is
+    inside the body; skinning blends the root."""
+    seal(piece_obj.data)
+    _join(target, piece_obj)

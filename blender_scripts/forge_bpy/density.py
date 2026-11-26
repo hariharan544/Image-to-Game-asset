@@ -587,3 +587,51 @@ def crease_kept(src_me, low_me, tol_rel: float = 0.0012, max_samples: int = 200_
     if (~left).any():
         out["right_pct"] = round(100.0 * ok[~left].mean(), 1)
     return out
+
+
+
+# ----------------------------------------------------------------------------- symmetry and parts plan
+
+SPLIT_ATTR = "forge_split"       # per vertex: 0 = body, k = thin part k (retopologized separately)
+
+
+def symmetrize(me, side: str) -> None:
+    """Make the mesh symmetric from one side: 'left' keeps the character's left (+X) and
+    mirrors it over, 'right' keeps -X. One-sided parts must be split off first."""
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    size = max((max(v.co[i] for v in bm.verts) - min(v.co[i] for v in bm.verts)) for i in range(3)) \
+        if bm.verts else 1.0
+    bmesh.ops.symmetrize(bm, input=bm.verts[:] + bm.edges[:] + bm.faces[:],
+                         direction="X" if side == "left" else "-X", dist=size * 1e-5)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(me)
+    bm.free()
+    me.update()
+
+
+def write_split(me, ids: np.ndarray) -> None:
+    a = me.attributes.get(SPLIT_ATTR)
+    if a is not None:
+        me.attributes.remove(a)
+    a = me.attributes.new(SPLIT_ATTR, "INT", "POINT")
+    a.data.foreach_set("value", ids.astype(np.int32))
+
+
+def read_split(me):
+    a = me.attributes.get(SPLIT_ATTR)
+    if a is None or a.domain != "POINT":
+        return None
+    ids = np.empty(len(me.vertices), np.int32)
+    a.data.foreach_get("value", ids)
+    return ids if ids.any() else None
+
+
+def pick_side(me) -> str:
+    """'left' or 'right': the side with more surface detail (the better kept one)."""
+    s = detail_score(me, scales=(6,))
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    x = co.reshape(-1, 3)[:, 0]
+    return "left" if s[x > 0].sum() >= s[x < 0].sum() else "right"

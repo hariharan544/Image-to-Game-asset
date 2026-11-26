@@ -14,7 +14,7 @@ from bpy.props import StringProperty
 
 from . import steps as S
 
-ORDER = ["assemble", "repair", "retopo", "uv", "bake", "colour", "rig", "export"]
+ORDER = ["brief", "assemble", "repair", "retopo", "uv", "bake", "colour", "rig", "export"]
 TITLES = {"retopo": (4, "Retopology"), "uv": (5, "UVs"), "bake": (6, "Detail bake"),
           "colour": (7, "Colour texture"), "rig": (8, "Rig + pose test"), "export": (9, "Export")}
 ICON = {"todo": "COLORSET_13_VEC", "review": "COLORSET_04_VEC", "approved": "COLORSET_03_VEC"}
@@ -29,6 +29,8 @@ def reopen(st, stage: str) -> None:
     """Re-open `stage` for review; every later step has to be done again."""
     i = ORDER.index(stage)
     setattr(st, stage, "review")
+    if stage == "brief":
+        return                     # the brief guides later runs; it does not undo approved work
     for later in ORDER[i + 1:]:
         setattr(st, later, "todo")
     if i <= ORDER.index("rig"):
@@ -157,6 +159,10 @@ ACTIONS = {
     "retopo_run": "Rebuild every part as a clean quad mesh inside the triangle budget (Quad Remesher). "
                   "The originals are kept hidden for the detail bake",
     "retopo_undo": "Remove the new meshes and show the originals again",
+    "retopo_side_left": "Preview: the whole model built from its LEFT side (+X), mirrored. Uses it",
+    "retopo_side_right": "Preview: the whole model built from its RIGHT side (-X), mirrored. Uses it",
+    "retopo_side_off": "Back to the original model (no preview)",
+    "retopo_side_auto": "Pick the side that keeps more detail and preview it",
     "retopo_map": "Show / hide the detail map on the originals: red = more quads, cyan = fewer, white = normal",
     "retopo_map_reset": "Make the detail map again from the shape (undoes your painting)",
     "retopo_map_paint": "Paint the detail map yourself on the selected part (Vertex Paint)",
@@ -235,7 +241,31 @@ class FORGE_OT_step(bpy.types.Operator):
             _save_rep(st, "retopo_rep", rep)
             st.retopo = "review"
         run(st, "retopology (Quad Remesher)" if qr else "retopology",
-            lambda: S.run_retopo(st.budget, qr, st.detail), done)
+            lambda: S.run_retopo(st.budget, qr, st.detail, st.symmetry), done)
+
+    def do_retopo_side_left(self, context, st):
+        self._side(context, st, "left")
+
+    def do_retopo_side_right(self, context, st):
+        self._side(context, st, "right")
+
+    def do_retopo_side_off(self, context, st):
+        self._side(context, st, "")
+
+    def do_retopo_side_auto(self, context, st):
+        body = S.G.body_of(S.parts())
+        side = S._mod("density").pick_side(body.data) if body else "left"
+        st.symmetry = side
+        self._side(context, st, side)
+        self.report({"INFO"}, f"The {side} side keeps more detail: chosen")
+
+    def _side(self, context, st, side):
+        for p in S.parts():
+            if S.G.kind(p) == "body":
+                S.show_side(p, side)
+                p.hide_set(False)
+        if side:
+            st.symmetry = side
 
     def do_retopo_map(self, context, st):
         S.ensure_detail_maps(st.detail)
@@ -250,6 +280,10 @@ class FORGE_OT_step(bpy.types.Operator):
 
     def do_retopo_map_reset(self, context, st):
         n = S.ensure_detail_maps(st.detail, recompute=True)
+        try:
+            S.plan_parts(recompute=True)
+        except Exception as exc:                          # noqa: BLE001
+            print(f"[forge] parts plan skipped: {exc}")
         self.report({"INFO"}, f"Detail map made again for {n} part(s)")
 
     def do_retopo_map_paint(self, context, st):
@@ -625,6 +659,13 @@ def _approve_btn(col, stage, text="Approve"):
 def _draw_retopo(col, st):
     col.prop(st, "budget")
     col.prop(st, "detail", slider=True)
+    c = col.column(align=True)
+    c.prop(st, "symmetry")
+    r = c.row(align=True)
+    r.operator("forge.step", text="Left", icon="BACK").action = "retopo_side_left"
+    r.operator("forge.step", text="Right", icon="FORWARD").action = "retopo_side_right"
+    r.operator("forge.step", text="Best", icon="AUTO").action = "retopo_side_auto"
+    r.operator("forge.step", text="", icon="X").action = "retopo_side_off"
     c = col.column(align=True)
     c.label(text="Detail map: red = more quads, cyan = fewer")
     r = c.row(align=True)

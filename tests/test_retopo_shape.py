@@ -500,3 +500,44 @@ def test_narrow_groove_survives_on_both_sides(monkeypatch, carve):
         assert cr["left_pct"] > 0 and cr["right_pct"] > 0 and cr["carved_tris"] > 0
     else:
         assert min(left, right) < 0.5, (left, right)     # control: without carving it is lost
+
+
+def test_planned_flow_split_tail_symmetric_body_attached(monkeypatch):
+    """The principled flow: the thin one-sided tail is split off BEFORE remeshing, the body is
+    made symmetric from the chosen side and remeshed mirrored, the tail is remeshed on its own
+    and attached (no boolean). No rescue, no unmirrored re-roll."""
+    import numpy as np
+
+    from forge_bpy import common, density, retopo
+    o = _body_with_tail()
+    me = o.data
+    co = np.array([v.co[:] for v in me.vertices])
+    for v in me.vertices:                         # make the right side (-X) a little bumpy
+        if v.co.x < -0.6 and abs(v.co.z) < 0.3:
+            v.co *= 1.03
+    density.write_split(me, (co[:, 0] > 1.02).astype(np.int32))      # the tail = part 1
+    calls = []
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        whole = any(v.co.x < 0.5 for v in obj.data.vertices)
+        calls.append(("body" if whole else "piece", bool(obj.get("forge_symmetry_x"))))
+        return retopo._quadriflow(obj, max(int(quads * 2), 600), {})
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5,
+                          "symmetry": "left", "carve": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    r = rep["parts"]["Body"]
+    assert calls[0] == ("body", True) and ("piece", False) in calls, calls
+    assert "part(s) separate" in r["method"] and r["shape"]["rescued"] == 0, r
+    v = np.array([x.co[:] for x in o.data.vertices])
+    assert v[:, 0].max() > 1.9                                  # the tail is there
+    # the body was built from the LEFT side: no bump on the right any more
+    body = v[v[:, 0] < 0.98]
+    assert abs(body[:, 0].min() + 1.0) < 0.02, body[:, 0].min()
+    assert not [x for x in bpy.data.objects if x.get("forge_rescue")]
