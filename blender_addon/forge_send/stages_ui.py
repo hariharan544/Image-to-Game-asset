@@ -106,8 +106,27 @@ def _log(context, stage: str, decision: str, data: dict) -> None:
 
 
 def _save(op) -> None:
+    """Save after an approval. A save problem must never undo or block the approval: when
+    Blender cannot write its .blend1 backup (OneDrive or antivirus holding the file), save
+    without the backup copy; if even that fails, say so and carry on."""
     if bpy.data.filepath:
-        bpy.ops.wm.save_mainfile()
+        try:
+            bpy.ops.wm.save_mainfile()
+            return
+        except RuntimeError as exc:
+            first = str(exc)
+        paths = bpy.context.preferences.filepaths
+        old = paths.save_version
+        try:
+            paths.save_version = 0                  # no .blend1 backup this time
+            bpy.ops.wm.save_mainfile()
+            op.report({"WARNING"}, "Saved without the .blend1 backup copy (Blender could not "
+                                   "write it; files inside OneDrive often cause this)")
+        except RuntimeError as exc:
+            op.report({"WARNING"}, f"Approved, but the file could not be saved: {exc or first}. "
+                                   "Save with Ctrl+S, or Save As to a folder outside OneDrive")
+        finally:
+            paths.save_version = old
     else:
         op.report({"WARNING"}, "Approved. Save the file (Ctrl+S) to keep your progress")
 

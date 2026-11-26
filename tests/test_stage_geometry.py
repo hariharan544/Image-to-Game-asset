@@ -213,3 +213,27 @@ def test_concept_image_stands_clear_of_all_parts():
     assert abs(height - 1.8) < 1e-4
     assert ref.location.x + width / 2 < G.world_bounds(prop)[0].x - 0.1      # clear of everything
     assert abs(ref.location.z - 0.9) < 1e-4
+
+
+def test_save_survives_a_blocked_backup(tmp_path):
+    """Blender cannot write the .blend1 backup (OneDrive holds it): the approval still saves."""
+    from forge_send import stages_ui
+    f = tmp_path / "bull.blend"
+    bpy.ops.wm.save_as_mainfile(filepath=str(f))
+    bpy.ops.wm.save_mainfile()                      # a .blend exists, the next save backs it up
+    blocker = tmp_path / "bull.blend1"
+    if blocker.exists():
+        blocker.unlink()
+    blocker.mkdir()
+    (blocker / "keep").write_text("x")              # a folder where the backup should go
+    msgs = []
+
+    class Op:
+        def report(self, kind, text):
+            msgs.append(text)
+    before = f.stat().st_mtime_ns
+    import time
+    time.sleep(0.05)
+    stages_ui._save(Op())
+    assert f.stat().st_mtime_ns > before, msgs
+    assert bpy.context.preferences.filepaths.save_version >= 1
