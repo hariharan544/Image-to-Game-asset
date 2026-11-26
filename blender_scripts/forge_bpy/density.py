@@ -130,7 +130,10 @@ def write_qr_density(me, score: np.ndarray, strength: float = 0.8, make_active: 
     dens = qr_density(score, strength)
     if factor is not None:
         dens = np.clip(dens * factor, 0.25, 4.0)
-    point = qr_colours(dens)
+    # Quad Remesher reads the colour as an EDGE-length factor (measured on the director's
+    # bull: the head took 66% when densities were written directly), so a density d needs
+    # edges sqrt(d) shorter
+    point = qr_colours(np.sqrt(dens))
     nl = len(me.loops)
     lv = np.empty(nl, np.int32)
     me.loops.foreach_get("vertex_index", lv)
@@ -259,7 +262,7 @@ def asymmetry(me, tol_rel: float = 0.006, max_samples: int = 60_000) -> float:
 
 # how much each body region deserves, relative to its surface (games: faces are seen close
 # up and animate; hands gesture; joints bend; a belly or a back is a big smooth area)
-REGION_WEIGHT = {"head": 1.8, "neck": 1.15, "hand": 1.5, "foot": 1.15, "ball": 1.15,
+REGION_WEIGHT = {"head": 1.5, "neck": 1.15, "hand": 1.5, "foot": 1.15, "ball": 1.15,
                  "pelvis": 0.7, "upperarm": 0.85, "lowerarm": 0.9, "thigh": 0.8, "calf": 0.9}
 JOINT_WEIGHT = 1.35
 JOINTS = ("lowerarm", "calf", "upperarm", "thigh", "hand", "foot", "neck")   # bone heads = bends

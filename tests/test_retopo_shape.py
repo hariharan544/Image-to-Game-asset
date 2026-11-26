@@ -248,3 +248,28 @@ def test_fitted_cage_does_not_pick_up_a_neighbouring_surface(tmp_path, fitted):
     else:
         assert red < 0.5, red               # the old fixed distance shows the smear
     assert not [o for o in bpy.data.objects if o.get("forge_cage")]
+
+
+def test_texels_the_cage_misses_are_baked_again_no_pink(tmp_path):
+    import numpy as np
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    low = _plane("Skin_low", 0.0)
+    bpy.context.view_layer.objects.active = low
+    low.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    high = _plane("Skin", 0.004)
+    high.data.materials.append(_flat_material("skin", (0.8, 0.1, 0.1)))
+    mat = bake._bake_material(low)
+    img = bake._new_image("T_Skin_basecolor", 64, False, bake.SENTINEL)   # all "missed" (pink)
+    bake._setup_cycles(1, "CPU")
+    cov = np.ones((64, 64), bool)
+    n = bake._refill_misses(img, high, low, mat, "basecolor", 64, False, 0.03, 4, cov)
+    assert n > 0
+    assert bake._sentinel_mask(img)[16:48, 16:48].sum() == 0      # no pink left inside
+    px = np.array(img.pixels[:]).reshape(64, 64, 4)[16:48, 16:48, :3]
+    assert (px[..., 0] > px[..., 2]).mean() > 0.95                 # the right (red) colour

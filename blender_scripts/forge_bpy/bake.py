@@ -348,7 +348,62 @@ def _final_material(low, maps: dict) -> None:
     low.data.materials.append(mat)
 
 
+STATUS = {"text": ""}          # what the bake is doing, for the panel
+
+
+def _sentinel_mask(img) -> np.ndarray:
+    w, h = img.size
+    px = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)
+    return (px[..., 0] > 0.99) & (px[..., 1] < 0.01) & (px[..., 2] > 0.99)
+
+
+def _refill_misses(img, high, low, mat, mtype, size, non_color, extrusion, margin, cov) -> int:
+    """Second pass for texels the fitted cage missed: bake them the plain way (fixed distance)
+    and copy only those texels in. The cage can then never leave a hole."""
+    miss = _sentinel_mask(img) & (cov if cov.shape == (size, size) else True)
+    n = int(miss.sum())
+    if not n:
+        return 0
+    tmp = _new_image(f"{img.name}_refill", size, non_color, SENTINEL)
+    _set_target(mat, tmp)
+    C.select_only(high, low, active=low)
+    cage, _CAGE["name"] = _CAGE["name"], None
+    try:
+        if mtype == "metallic":
+            with _ChannelAsEmission([high], "Metallic"):
+                _bake(mtype, extrusion, extrusion * 4, margin)
+        else:
+            _bake(mtype, extrusion, extrusion * 4, margin)
+    finally:
+        _CAGE["name"] = cage
+    w, h = img.size
+    a = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(a)
+    a = a.reshape(h, w, 4)
+    b = np.empty(w * h * 4, dtype=np.float32)
+    tmp.pixels.foreach_get(b)
+    b = b.reshape(h, w, 4)
+    a[miss] = b[miss]
+    img.pixels.foreach_set(a.ravel())
+    _set_target(mat, img)
+    bpy.data.images.remove(tmp)
+    return n
+
+
 def run(args: dict) -> dict:
+    """Plain call (headless pipeline): runs every step at once."""
+    gen = run_iter(args)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
+def run_iter(args: dict):
+    """Generator: yields after each map so a UI stays responsive (progress, Stop)."""
     size = int(args.get("texture_size", 2048))
     out_dir = os.path.abspath(args["texture_dir"])
     os.makedirs(out_dir, exist_ok=True)
@@ -365,16 +420,20 @@ def run(args: dict) -> dict:
     report = {}
     cleaned: dict = {}
     specks: dict = {}
-    for low in C.meshes_with_role("low"):
+    lows = C.meshes_with_role("low")
+    for li, low in enumerate(lows):
         high = C.high_for(low)
         part = low.get(C.PART_PROP)
         if high is None:
             report[part] = {"skipped": "no high mesh"}
             continue
         diag = max(low.dimensions.length, 1e-6)
-        extrusion = diag * extrusion_ratio
+        plain = diag * extrusion_ratio                     # the old fixed distance
+        extrusion = plain
         cage = None
         if args.get("fitted_cage", True):
+            STATUS["text"] = f"{part}: fitting the bake cage"
+            yield 0.05
             cage, reach = build_cage(low, high)
             _CAGE["name"] = cage.name
             extrusion = max(reach, diag * 0.002)          # max ray reach beyond the cage
@@ -382,8 +441,11 @@ def run(args: dict) -> dict:
         baked = {}
         cov = _uv_coverage(low, size)
         misses = {}
+        refilled = {}
         try:
-            for mtype in maps_wanted:
+            for mi, mtype in enumerate(maps_wanted):
+                STATUS["text"] = f"{part}: baking {mtype} ({mi + 1}/{len(maps_wanted)})"
+                yield 0.05
                 non_color = mtype != "basecolor"
                 img = _new_image(f"T_{part}_{mtype}", size, non_color, SENTINEL)
                 _set_target(mat, img)
@@ -393,6 +455,9 @@ def run(args: dict) -> dict:
                         _bake(mtype, extrusion, extrusion * 4, margin)
                 else:
                     _bake(mtype, extrusion, extrusion * 4, margin)
+                if cage is not None:
+                    refilled[mtype] = _refill_misses(img, high, low, mat, mtype, size, non_color,
+                                                     plain, margin, cov)
                 misses[mtype] = _resolve_sentinel(img, cov, mtype)
                 if args.get("despeckle", True):
                     specks.setdefault(part, {})[mtype] = _despeckle(img, mtype)
@@ -412,6 +477,8 @@ def run(args: dict) -> dict:
             entry["metallic_cleanup"] = cleaned[part]
         if specks.get(part):
             entry["specks_removed"] = specks[part]
+        if refilled:
+            entry["cage_refilled"] = refilled
         # share of texels inside the UV islands where the bake rays found nothing (now filled)
         entry["bake_miss_ratio"] = round(max(misses.values(), default=0.0), 4)
         entry["bake_misses"] = {k: round(v, 4) for k, v in misses.items()}
@@ -422,4 +489,5 @@ def run(args: dict) -> dict:
     c = bpy.data.collections.get(C.HIGH_COLLECTION)
     if c:
         c.hide_render = True
+    STATUS["text"] = ""
     return {"parts": report}

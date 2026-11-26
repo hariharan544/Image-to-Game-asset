@@ -109,6 +109,6 @@ def test_budget_goes_to_head_hands_and_joints():
         return f[np.argmin(np.linalg.norm(V - np.array(p), axis=1))]
     head, belly = at((0, -0.12, 1.66)), at((0, -0.16, 1.1))
     hand, elbow = at((0.78, 0, 1.42)), at(tuple(J["lowerarm_l"][0]))
-    assert head > 1.5 and hand > 1.3 and elbow >= 1.3 and belly < 0.8, (head, hand, elbow, belly)
+    assert head >= 1.5 and hand > 1.3 and elbow >= 1.3 and belly < 0.8, (head, hand, elbow, belly)
     reg = density.region_tris(body, J)
     assert {"head", "body", "arms", "legs"} <= set(reg) and sum(reg.values()) > 0

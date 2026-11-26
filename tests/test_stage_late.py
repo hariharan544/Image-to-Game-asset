@@ -222,7 +222,7 @@ def test_detail_map_for_quad_remesher():
     col = np.array([d.color_srgb[:] for d in me.color_attributes["QR_Density"].data])
     edge = ((np.abs(co) > 0.97).sum(1) >= 2)[lv]
     flat = ((np.abs(co) < 0.5).sum(1) >= 2)[lv]
-    assert col[edge, 1].mean() < 0.7 and col[edge, 0].mean() > 0.95      # reddish: more quads
+    assert col[edge, 1].mean() < 0.85 and col[edge, 0].mean() > 0.95     # reddish: more quads
     assert col[flat, 0].mean() < 0.85 and col[flat, 2].mean() > 0.95     # cyan-ish: fewer quads
     # before remeshing it must be the only colour layer
     assert D.only_qr_density(me) and [a.name for a in me.color_attributes] == ["QR_Density"]

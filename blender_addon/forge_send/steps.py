@@ -19,6 +19,9 @@ from mathutils import Vector
 from . import geometry as G
 
 
+STATUS = {"text": ""}          # progress text of add-on side jobs (export...)
+
+
 def fb():
     """The forge_bpy package (installed copy first, then the repository)."""
     try:
@@ -107,8 +110,15 @@ def prepare_retopo() -> list:
     _clear("low")
     # leftovers of a run that stopped half-way (rescue pieces, Quad Remesher results)
     for o in list(bpy.data.objects):
-        if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_"):
+        if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_") \
+                or o.get("forge_cage"):
             bpy.data.objects.remove(o)
+    for mod in ("retopo", "bake"):
+        try:
+            _mod(mod).STATUS["text"] = ""
+        except Exception:                             # noqa: BLE001
+            pass
+    STATUS["text"] = ""
     low_col = c.get_collection(c.LOW_COLLECTION)
     out = []
     ps = parts()
@@ -218,9 +228,10 @@ def stop_cleanup() -> None:
         retopo.STATUS["text"] = ""
     except Exception:                                 # noqa: BLE001
         pass
-    for p in parts():
-        p.hide_set(False)
-    for o in lows():
+    new = lows()
+    for p in parts():                     # with new meshes present the originals stay hidden
+        p.hide_set(bool(new))
+    for o in new:
         o.hide_set(False)
 
 
@@ -302,7 +313,7 @@ COLOUR_MAPS = ("basecolor", "roughness", "metallic")
 DETAIL_MAPS = ("normal", "ao")
 
 
-def run_bake(texture_size: int, samples: int = 16, device: str = "GPU") -> dict:
+def run_bake(texture_size: int, samples: int = 16, device: str = "GPU"):
     """Normal + AO from the repaired mesh; colour / roughness / metal from the original
     texture (the pre-repair copy when a part was welded solid, since welding drops UVs)."""
     checker_off()
@@ -315,12 +326,12 @@ def run_bake(texture_size: int, samples: int = 16, device: str = "GPU") -> dict:
         src = bpy.data.meshes.get(h.get(G.BACKUP, "")) if h.get(G.BACKUP) else None
         if src is not None and not h.data.uv_layers and src.uv_layers:
             swapped[h.name] = h.data
-    rep1 = bake.run({**args, "maps": list(DETAIL_MAPS)})
+    rep1 = yield from bake.run_iter({**args, "maps": list(DETAIL_MAPS)})
     for name in swapped:                                  # colour from the original texture
         h = bpy.data.objects[name]
         h.data = bpy.data.meshes[h[G.BACKUP]]
     try:
-        rep2 = bake.run({**args, "maps": list(COLOUR_MAPS)})
+        rep2 = yield from bake.run_iter({**args, "maps": list(COLOUR_MAPS)})
     finally:
         for name, mesh in swapped.items():
             bpy.data.objects[name].data = mesh

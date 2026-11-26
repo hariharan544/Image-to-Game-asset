@@ -389,11 +389,21 @@ class FORGE_OT_step(bpy.types.Operator):
     def do_export_run(self, context, st):
         _start_step(st, "export")
         bake = json.loads(st.bake_rep or "{}")
-        files = {}
-        for engine in ("unreal", "unity"):
-            files[engine] = S.export_engine(engine, bake, st.budget_unity if engine == "unity" else 0)
-        _save_rep(st, "export_rep", files)
-        st.export = "review"
+        budget_unity = st.budget_unity
+
+        def job():
+            files = {}
+            for engine in ("unreal", "unity"):
+                S.STATUS["text"] = f"exporting {engine} (LODs, FBX, textures)"
+                yield 0.05
+                files[engine] = S.export_engine(engine, bake, budget_unity if engine == "unity" else 0)
+            S.STATUS["text"] = ""
+            return files
+
+        def done(st, files):
+            _save_rep(st, "export_rep", files)
+            st.export = "review"
+        run(st, "export", job, done)
 
     def do_export_open(self, context, st):
         S.open_folder(S.work_dir() / "export")
@@ -553,10 +563,13 @@ def draw_late(layout, context):
         box = layout.box()
         box.label(text=f"Working: {busy}...", icon="SORTTIME")
         secs = int(_t.time() - _JOB.get("started", _t.time()))
-        try:
-            now = S._mod("retopo").STATUS.get("text", "")
-        except Exception:                                 # noqa: BLE001
-            now = ""
+        now = ""
+        for mod in ("retopo", "bake"):                    # whichever step is running reports here
+            try:
+                now = now or S._mod(mod).STATUS.get("text", "")
+            except Exception:                             # noqa: BLE001
+                pass
+        now = now or S.STATUS.get("text", "")
         if now:
             box.label(text=now[:60])
         box.label(text=f"{secs // 60} min {secs % 60:02d} s - leave Blender alone")
