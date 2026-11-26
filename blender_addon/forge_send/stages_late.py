@@ -516,8 +516,16 @@ def _uv_rows(rep):
             out.append((BAD, f"{part}: no UVs"))
             continue
         over, cv = r.get("overlap_pct", 0), r.get("texel_density_cv") or 0
-        icon = BAD if over > 0.5 else (WARN if cv > 0.4 or "uvpackmaster" not in str(r.get("packer")) else GOOD)
+        packer = str(r.get("packer", ""))
+        by_uvpm = packer == "uvpackmaster"                # exactly: "uvpackmaster-failed>..." is a fallback
+        icon = BAD if over > 0.5 else (WARN if cv > 0.4 or not by_uvpm else GOOD)
         out.append((icon, f"{part}: {r.get('utilization', 0):.0%} used, stretch {cv:.2f}"))
+        if by_uvpm:
+            out.append(("BLANK1", "    packed by UVPackmaster"))
+        elif "failed" in packer:
+            out.append(("BLANK1", "    Blender packer (UVPackmaster failed)"))
+        else:
+            out.append(("BLANK1", "    Blender packer (UVPackmaster not found)"))
         if over > 0.5:
             out.append(("BLANK1", f"    {over:.1f}% overlapping"))
     return out
