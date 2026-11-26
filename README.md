@@ -49,6 +49,25 @@ It finishes with a smoke test of every Blender stage inside your Blender.
 Then put your Tripo API key (`tsk_...`, from platform.tripo3d.ai) into `.env` and run
 `forge check`. Details and manual steps: [docs/SETUP_BLENDER.md](docs/SETUP_BLENDER.md).
 
+## Two ways to start an asset
+
+| | `image:` (API) | `model:` (your own file) |
+|---|---|---|
+| Who makes the 3D model | Tripo API, automatically (4 views → model → parts → texture → rig) | you, in **Tripo Studio** with your web plan, or any tool |
+| Credits | Tripo **API** credits (separate from the web plan) | your **web plan** credits; no API credits |
+| Creative control | the concept checkpoint | full: pick the generation you like, edit in Studio |
+| What to put in `inputs\` | the concept image | the downloaded model (**GLB with textures**; for characters the **auto-rigged** version) + optionally the image |
+
+Everything after the 3D model is the same for both: Quad Remesher, UVPackmaster, baking,
+Auto-Rig Pro, LODs, and the Unreal/Unity exports. You can mix both in one guide.
+
+Tips for Studio downloads:
+* **Use GLB.** It carries its textures. FBX textures are often separate files that get lost.
+* **Characters must be auto-rigged in Studio first.** Auto-Rig Pro builds its rig from that
+  skeleton. Without one, the run stops and asks you to download the rigged version.
+* **Set `topology: {target_height_m: ...}`** to fix the real-world size. A model that comes in
+  centimetres is detected and scaled automatically.
+
 ## Making assets (the director's workflow)
 
 1. Put concept images in `inputs/`: one object per image, plain background.

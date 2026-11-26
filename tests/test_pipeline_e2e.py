@@ -141,3 +141,47 @@ def test_supervisor_retries_then_escalates_then_director_accepts(tmp_path, fixtu
     job = Job.load(job.root)
     assert Pipeline(job, rec, tripo=FakeTripo(fixture_glb)).run() == "done"
     assert (job.root / "export" / "unity" / "tiny.fbx").exists()
+
+
+def test_user_model_mode_uses_no_tripo_api(tmp_path, fixture_glb, monkeypatch):
+    """Option B: start from a model downloaded from Tripo Studio. The Tripo API must not be
+    touched; the rest of the pipeline runs as usual."""
+    from forge import tripo_stage
+
+    def no_api(*a, **k):
+        raise AssertionError("Tripo API must not be called in model mode")
+    monkeypatch.setattr(tripo_stage, "_client", no_api)
+
+    guide = tmp_path / "guide.yaml"
+    model = tmp_path / "inputs" / "studio_knight.glb"
+    model.parent.mkdir()
+    model.write_bytes(fixture_glb.read_bytes())
+    guide.write_text(f"""
+project: T
+engines: [unity]
+defaults:
+  review: {{auto_approve: true}}
+assets:
+  - name: knight
+    model: inputs/studio_knight.glb
+    type: humanoid
+    tier: background
+    detachable_parts: [sword]
+    overrides:
+      texture: {{size: 128, samples: 1, device: CPU}}
+      qa: {{min_uv_utilization: 0.0, max_texel_density_cv: 5, max_bake_miss_ratio: 1}}
+""")
+    jobs = tmp_path / "jobs"
+    assert cli(["--jobs", str(jobs), "--data", str(tmp_path / "d"), "run", str(guide)]) == 0
+    job = Job.load(jobs / "knight")
+    assert job.m["status"] == "done"
+    assert job.stage("concept")["status"] == "skipped"
+    assert job.artifact("tripo")["source"] == "user_model"
+    assert (job.root / "source" / "studio_knight.glb").exists()
+    assert (jobs / "knight" / "export" / "unity" / "knight.fbx").exists()
+
+
+def test_asset_needs_image_or_model():
+    from forge.spec import resolve_asset
+    with pytest.raises(Exception):
+        resolve_asset({"name": "x", "type": "prop"}, {})

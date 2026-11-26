@@ -93,8 +93,12 @@ def run(args: dict) -> dict:
     lo, hi = _world_bbox(meshes)
     size = hi - lo
     scale = 1.0
+    unit_fix = None
     if target_height and size.z > 1e-9:
         scale = float(target_height) / size.z
+    elif size.z > 30.0:
+        # no target height and taller than 30 m: almost certainly exported in centimetres (FBX)
+        scale = unit_fix = 0.01
     offset = Vector(((lo.x + hi.x) / 2, (lo.y + hi.y) / 2, lo.z))
     for r in roots:
         r.location = (r.location - offset) * scale
@@ -140,6 +144,7 @@ def run(args: dict) -> dict:
         "rigged": arm is not None,
         "bone_count": len(arm.data.bones) if arm else 0,
         "scale_applied": scale,
+        "unit_fix": unit_fix,
         "height_m": size.z * scale,
         "cleanup": stats,
     }

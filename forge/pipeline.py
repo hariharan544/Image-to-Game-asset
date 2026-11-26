@@ -151,7 +151,7 @@ class Pipeline:
     # ------------------------------------------------------------------ cloud stages
     def _stage_concept(self) -> None:
         spec = self.spec
-        if not spec.generation.use_multiview or spec.extra_images:
+        if spec.model or not spec.generation.use_multiview or spec.extra_images:
             self.job.set_stage("concept", SKIPPED)
             return
         if not self.job.artifact("concept_views"):
@@ -171,14 +171,25 @@ class Pipeline:
         self._checkpoint("concept", spec.review.concept_checkpoint, packet)
 
     def _stage_generate(self) -> None:
-        if not self.job.artifact("tripo"):
-            self.job.set_artifact("tripo", self.tripo.run(self.tripo.generate(self.job)))
+        if self.job.artifact("tripo"):
+            return
+        if self.spec.model:
+            # user-supplied model (e.g. Tripo Studio download): keep a copy inside the job
+            src = Path(self.spec.model)
+            dst = self.job.path("source", src.name)
+            if src.resolve() != dst.resolve():
+                shutil.copy(src, dst)
+            self.job.set_artifact("tripo", {"source": "user_model", "generated": str(dst),
+                                            "source_for_blender": str(dst)})
+            return
+        self.job.set_artifact("tripo", self.tripo.run(self.tripo.generate(self.job)))
 
     def _stage_final_review(self) -> None:
         def packet() -> Path:
             d = self.job.path("review", "final", ".keep").parent
             previews = self.job.artifact("previews") or {}
-            refs = [self.job.m["source_image"]] + list((self.job.artifact("concept_views") or {}).values())
+            refs = [r for r in [self.job.m["source_image"]] + list((self.job.artifact("concept_views") or {}).values())
+                    if Path(r).suffix.lower() in (".png", ".jpg", ".jpeg", ".webp")]
             primary = previews.get(self.spec.primary_engine, [])
             critique = self.sup.critique(primary, refs, self.spec.notes)
             self.job.set_artifact("ai_critique", critique)

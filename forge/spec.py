@@ -21,7 +21,7 @@ from pathlib import Path
 from typing import Any, Literal, Optional
 
 import yaml
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 PROFILE_DIR = Path(__file__).resolve().parent.parent / "guides" / "profiles"
 
@@ -133,7 +133,13 @@ class TargetSpec(BaseModel):
 
 class AssetSpec(BaseModel):
     name: str
-    image: str
+    # Two ways in (one asset uses one of them, or both):
+    #   image only  -> the Tripo API generates the model (fully automatic)
+    #   model       -> start from a model you made yourself, e.g. in Tripo Studio with your web
+    #                  plan (download the *rigged* GLB for characters). The image is then
+    #                  optional and only used as the reference in reviews.
+    image: Optional[str] = None
+    model: Optional[str] = None
     extra_images: dict[str, str] = Field(default_factory=dict)   # left/back/right reference views
     type: AssetType = "prop"
     tier: Tier = "standard"
@@ -165,6 +171,12 @@ class AssetSpec(BaseModel):
         t = self.targets[engine]
         upd = {k: getattr(t, k) for k in TECH_SECTIONS}
         return self.model_copy(update={**upd, "engines": [engine], "platform": t.platform, "targets": {}})
+
+    @model_validator(mode="after")
+    def _needs_input(self):
+        if not self.image and not self.model:
+            raise ValueError(f"asset {self.name!r} needs an `image` (Tripo API) or a `model` (your own file)")
+        return self
 
     @field_validator("engines")
     @classmethod

@@ -40,6 +40,18 @@ assets:
     notes: Wooden chest with iron bands. Lid should be a separate part.
     detachable_parts: [lid]
 
+  # --- Option B: start from a model you made in Tripo Studio (uses your web plan credits) ---
+  # Generate + auto-rig it in Studio, download the rigged GLB (textures included) into inputs/.
+  # Forge skips the API and does everything else: retopology, UVs, baking, rig, LODs, export.
+  - name: studio_ranger
+    model: ../inputs/ranger_rigged.glb    # your Studio download
+    image: ../inputs/ranger.png           # optional: the concept image, shown in the review
+    type: humanoid
+    tier: hero
+    detachable_parts: [bow, quiver]
+    overrides:
+      topology: {target_height_m: 1.8}
+
   - name: fire_sword
     image: ../inputs/fire_sword.png
     type: weapon
