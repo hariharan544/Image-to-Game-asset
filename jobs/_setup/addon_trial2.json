@@ -900,7 +900,8 @@
         },
         "settings": {
           "engine": "UNREAL",
-          "rig_type": "UNIVERSAL"
+          "rig_type": "UNIVERSAL",
+          "arp_rename_for_ue": true
         },
         "used": "arp.arp_export_fbx_panel",
         "exists": true,
@@ -976,6 +977,188 @@
             "thigh_twist.r"
           ]
         }
+      },
+      "UNREAL_HUMANOID": {
+        "path": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNREAL_HUMANOID.fbx",
+        "attempts": {
+          "arp.arp_export_fbx_panel": [
+            "FINISHED"
+          ]
+        },
+        "settings": {
+          "engine": "UNREAL",
+          "rig_type": "HUMANOID",
+          "arp_rename_for_ue": true,
+          "arp_mannequin_axes": true
+        },
+        "used": "arp.arp_export_fbx_panel",
+        "exists": true,
+        "size": 198348,
+        "reimported_bones": {
+          "root": [
+            "ik_foot_root",
+            "ik_foot_l",
+            "ik_foot_r",
+            "ik_hand_root",
+            "ik_hand_gun",
+            "ik_hand_l",
+            "ik_hand_r",
+            "pelvis",
+            "spine_01",
+            "spine_02",
+            "clavicle_l",
+            "upperarm_l",
+            "lowerarm_l",
+            "hand_l",
+            "index_metacarpal_l",
+            "index_01_l",
+            "index_02_l",
+            "index_03_l",
+            "middle_metacarpal_l",
+            "middle_01_l",
+            "middle_02_l",
+            "middle_03_l",
+            "pinky_metacarpal_l",
+            "pinky_01_l",
+            "pinky_02_l",
+            "pinky_03_l",
+            "ring_metacarpal_l",
+            "ring_01_l",
+            "ring_02_l",
+            "ring_03_l",
+            "thumb_01_l",
+            "thumb_02_l",
+            "thumb_03_l",
+            "lowerarm_twist_01_l",
+            "upperarm_twist_01_l",
+            "clavicle_r",
+            "upperarm_r",
+            "lowerarm_r",
+            "hand_r",
+            "index_metacarpal_r",
+            "index_01_r",
+            "index_02_r",
+            "index_03_r",
+            "middle_metacarpal_r",
+            "middle_01_r",
+            "middle_02_r",
+            "middle_03_r",
+            "pinky_metacarpal_r",
+            "pinky_01_r",
+            "pinky_02_r",
+            "pinky_03_r",
+            "ring_metacarpal_r",
+            "ring_01_r",
+            "ring_02_r",
+            "ring_03_r",
+            "thumb_01_r",
+            "thumb_02_r",
+            "thumb_03_r",
+            "lowerarm_twist_01_r",
+            "upperarm_twist_01_r",
+            "neck_01",
+            "head",
+            "thigh_l",
+            "calf_l",
+            "calf_twist_01_l",
+            "foot_l",
+            "ball_l",
+            "thigh_twist_01_l",
+            "thigh_r",
+            "calf_r",
+            "calf_twist_01_r",
+            "foot_r",
+            "ball_r",
+            "thigh_twist_01_r"
+          ]
+        }
+      },
+      "UNREAL_HUMANOID_UE4": {
+        "path": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNREAL_HUMANOID_UE4.fbx",
+        "attempts": {
+          "arp.arp_export_fbx_panel": [
+            "FINISHED"
+          ]
+        },
+        "settings": {
+          "engine": "UNREAL",
+          "rig_type": "HUMANOID",
+          "arp_rename_for_ue": true,
+          "arp_ue4": true
+        },
+        "used": "arp.arp_export_fbx_panel",
+        "exists": true,
+        "size": 198444,
+        "reimported_bones": {
+          "root": [
+            "ik_foot_root",
+            "ik_foot_l",
+            "ik_foot_r",
+            "ik_hand_root",
+            "ik_hand_gun",
+            "ik_hand_l",
+            "ik_hand_r",
+            "pelvis",
+            "spine_01",
+            "spine_02",
+            "clavicle_l",
+            "upperarm_l",
+            "lowerarm_l",
+            "hand_l",
+            "index_01_l",
+            "index_02_l",
+            "index_03_l",
+            "middle_01_l",
+            "middle_02_l",
+            "middle_03_l",
+            "pinky_01_l",
+            "pinky_02_l",
+            "pinky_03_l",
+            "ring_01_l",
+            "ring_02_l",
+            "ring_03_l",
+            "thumb_01_l",
+            "thumb_02_l",
+            "thumb_03_l",
+            "lowerarm_twist_01_l",
+            "upperarm_twist_01_l",
+            "clavicle_r",
+            "upperarm_r",
+            "lowerarm_r",
+            "hand_r",
+            "index_01_r",
+            "index_02_r",
+            "index_03_r",
+            "middle_01_r",
+            "middle_02_r",
+            "middle_03_r",
+            "pinky_01_r",
+            "pinky_02_r",
+            "pinky_03_r",
+            "ring_01_r",
+            "ring_02_r",
+            "ring_03_r",
+            "thumb_01_r",
+            "thumb_02_r",
+            "thumb_03_r",
+            "lowerarm_twist_01_r",
+            "upperarm_twist_01_r",
+            "neck_01",
+            "head",
+            "thigh_l",
+            "calf_l",
+            "calf_twist_01_l",
+            "foot_l",
+            "ball_l",
+            "thigh_twist_01_l",
+            "thigh_r",
+            "calf_r",
+            "calf_twist_01_r",
+            "foot_r",
+            "ball_r",
+            "thigh_twist_01_r"
+          ]
+        }
       }
     }
   },
@@ -1031,19 +1214,19 @@
               },
               "lock_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0D558>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72D258>"
               },
               "stack_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0CA18>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72E698>"
               },
               "track_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0C658>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72DC18>"
               },
               "norm_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0EE18>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72E458>"
               }
             }
           },
@@ -1202,7 +1385,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x0000022D3FB0DD98>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000002E64C72D618>"
               }
             }
           },
@@ -1227,7 +1410,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x0000022D3FB0D318>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000002E64C72DF18>"
               }
             }
           },
@@ -1553,27 +1736,27 @@
               },
               "packing": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0D918>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C942218>"
               },
               "editor": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3BFE8E98>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E6491E0E98>"
               },
               "lock_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0CD18>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C940718>"
               },
               "stack_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0C418>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C943A18>"
               },
               "track_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0D498>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C9425D8>"
               },
               "norm_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D4DA75618>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C941258>"
               }
             }
           },
@@ -1586,7 +1769,7 @@
               },
               "packing": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_ScriptContainer(\"\") at 0x0000022D4DA759D8>"
+                "value": "<bpy_struct, UVPM4_ScriptContainer(\"\") at 0x000002E64C942BD8>"
               }
             }
           },
@@ -1611,7 +1794,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x0000022D4DA75CD8>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000002E64C943718>"
               }
             }
           },
@@ -1642,7 +1825,7 @@
               },
               "base": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingOptionsBase(\"\") at 0x0000022D4DA74D18>"
+                "value": "<bpy_struct, UVPM4_GroupingOptionsBase(\"\") at 0x000002E64C941318>"
               },
               "tile_count_per_group": {
                 "type": "INT",
@@ -1817,6 +2000,192 @@
       "uv_editor": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect",
       "uv_editor_no_space": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect"
     },
-    "call_error": "pack could not run in any context"
+    "call_error": "pack could not run in any context",
+    "poll_diagnosis": {
+      "mode": "EDIT_MESH",
+      "class": "bl_ext.user_default.uvpackmaster4.spipeline.operators.pack_operator.UVPM4_OT_Pack",
+      "mro": [
+        "bl_ext.user_default.uvpackmaster4.spipeline.operators.pack_operator.UVPM4_OT_Pack",
+        "bl_ext.user_default.uvpackmaster4.operator.UVPM4_OT_Engine",
+        "bl_ext.user_default.uvpackmaster4.operator_generic.UVPM4_OT_GenericHandler",
+        "bl_ext.user_default.uvpackmaster4.operator_generic.UVPM4_OT_Generic",
+        "_bpy_types.Operator",
+        "builtins.bpy_struct",
+        "bl_ext.user_default.uvpackmaster4.event.DefaultFinishConditionMixin",
+        "bl_ext.user_default.uvpackmaster4.operator.ModeIdAttrMixin",
+        "builtins.object"
+      ],
+      "poll_sources": [
+        {
+          "class": "UVPM4_OT_Engine",
+          "source": "    @classmethod\n    def poll(cls, context):\n        prefs = get_prefs()\n        return prefs.engine_initialized\n"
+        }
+      ],
+      "prefs": {
+        "bl_idname": {
+          "type": "STRING",
+          "value": "\u0006"
+        },
+        "operation_counter": {
+          "type": "INT",
+          "value": -1
+        },
+        "box_rendering": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "boxes_dirty": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "group_scheme_boxes_editing": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "custom_target_box_editing": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "engine_retcode": {
+          "type": "INT",
+          "value": 0
+        },
+        "engine_path": {
+          "type": "STRING",
+          "value": "Engine not detected"
+        },
+        "engine_initialized": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "engine_status_msg": {
+          "type": "STRING",
+          "value": "UVPackmaster engine 4.0.4 not detected. Press the button for help:"
+        },
+        "thread_count": {
+          "type": "INT",
+          "value": 16
+        },
+        "topology_parse_timeout": {
+          "type": "INT",
+          "value": 30
+        },
+        "seed": {
+          "type": "INT",
+          "value": 0
+        },
+        "test_param": {
+          "type": "INT",
+          "value": 0
+        },
+        "write_to_file": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "wait_for_debugger": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "vert_multi_panel_toggles": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "orient_aware_uv_islands": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "allow_inconsistent_islands": {
+          "type": "BOOLEAN",
+          "value": true
+        },
+        "dont_transform_pinned_uvs": {
+          "type": "BOOLEAN",
+          "value": true
+        },
+        "pinned_uvs_as_others": {
+          "type": "BOOLEAN",
+          "value": true
+        },
+        "enable_vulkan": {
+          "type": "BOOLEAN",
+          "value": true
+        },
+        "enable_vulkan_saved": {
+          "type": "BOOLEAN",
+          "value": true
+        },
+        "tdensity_unit": {
+          "type": "ENUM",
+          "items": [],
+          "value": "0"
+        },
+        "tdensity_sync_enable": {
+          "type": "BOOLEAN",
+          "value": true
+        },
+        "disable_tips": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "font_size_text_output": {
+          "type": "INT",
+          "value": 15
+        },
+        "font_size_uv_overlay": {
+          "type": "INT",
+          "value": 20
+        },
+        "box_render_line_width": {
+          "type": "FLOAT",
+          "value": 4.0
+        },
+        "short_island_operator_names": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "ch_panel_mode": {
+          "type": "ENUM",
+          "items": [],
+          "value": "0"
+        },
+        "dis_msgs": {
+          "type": "POINTER",
+          "fields": {
+            "name": {
+              "type": "STRING",
+              "value": ""
+            },
+            "pixel_margin_dismissed": {
+              "type": "BOOLEAN",
+              "value": false
+            },
+            "grouping_pack_dismissed": {
+              "type": "BOOLEAN",
+              "value": false
+            },
+            "grouping_editor_dismissed": {
+              "type": "BOOLEAN",
+              "value": false
+            },
+            "object_options_viewport_dismissed": {
+              "type": "BOOLEAN",
+              "value": false
+            }
+          }
+        },
+        "saved_m_panel_a_settings": {
+          "type": "COLLECTION",
+          "len": 0
+        },
+        "script_allow_execution": {
+          "type": "BOOLEAN",
+          "value": false
+        },
+        "saved_dev_settings": {
+          "type": "COLLECTION",
+          "len": 0
+        }
+      }
+    }
   }
 }

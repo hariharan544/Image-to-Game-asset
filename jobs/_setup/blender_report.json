@@ -1,0 +1,56 @@
+{
+  "time": 1795681895.862276,
+  "blender": "C:\\Program Files\\Blender Foundation\\Blender 5.3\\blender.exe",
+  "sysinfo": {
+    "blender_version": "5.3.0",
+    "version_tuple": [
+      5,
+      3,
+      0
+    ],
+    "python": "3.13.13",
+    "background": true,
+    "cycles_devices": {
+      "OPTIX": [
+        "NVIDIA GeForce RTX 4080 SUPER"
+      ],
+      "CUDA": [
+        "NVIDIA GeForce RTX 4080 SUPER"
+      ]
+    },
+    "best_gpu_backend": "OPTIX",
+    "addons": {
+      "quad_remesher": {
+        "enabled": true,
+        "installed": true,
+        "module": "quad_remesher"
+      },
+      "auto_rig_pro": {
+        "enabled": true,
+        "installed": true,
+        "module": "bl_ext.user_default.ARP_rig_tools"
+      },
+      "uvpackmaster": {
+        "enabled": true,
+        "installed": true,
+        "module": "bl_ext.user_default.uvpackmaster4"
+      }
+    },
+    "enabled_addon_count": 14
+  },
+  "smoke": {
+    "fixture": 2.7,
+    "cleanup": 2.2,
+    "retopo": 14.1,
+    "retopo_methods": [
+      "quadremesher(rerun)"
+    ],
+    "uv": 2.5,
+    "bake": 8.4,
+    "skin": 1.9,
+    "lods": 1.9,
+    "previews": 2.4,
+    "preview_engine": "BLENDER_WORKBENCH",
+    "export": 2.3
+  }
+}
