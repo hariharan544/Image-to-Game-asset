@@ -33,7 +33,9 @@ TECH_SECTIONS = ("topology", "uv", "texture", "rig", "export", "qa")
 
 
 class GenerationSpec(BaseModel):
-    model_version: Optional[str] = None          # None = Tripo SDK default; set the newest from Tripo docs
+    # H3.1: dense detailed geometry (we retopologize ourselves) and the only current model with
+    # generate_parts. Dated wire id required by the API. P2 ("P2-20260801") cannot make parts.
+    model_version: Optional[str] = "v3.1-20260211"
     use_multiview: bool = False                  # ask Tripo for front/left/back/right views first
     texture_quality: Literal["standard", "detailed"] = "detailed"
     geometry_quality: Literal["standard", "detailed"] = "detailed"

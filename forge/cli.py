@@ -100,7 +100,7 @@ def cmd_review(a) -> int:
         idx = next(i for i, k in enumerate(order)
                    if split_key(k)[0] == name and (target is None or split_key(k)[1] in (None, target)))
         if name in ("concept", "generate"):          # new cloud generation (spends credits)
-            keys = ["generate", "segment", "complete", "rig_check", "rig"]
+            keys = ["generate", "segment", "complete", "texture", "rig_check", "rig"]
             if name == "concept":
                 keys.append("multiview")
                 job.m["artifacts"].pop("concept_views", None)
@@ -129,9 +129,11 @@ def cmd_check(a) -> int:
     b = find_blender()
     print(f"Blender         : {b[0] if b else 'NOT FOUND (install Blender or set FORGE_BLENDER)'}")
     ok &= bool(b)
-    key = os.environ.get("TRIPO_API_KEY", "")
-    print(f"TRIPO_API_KEY   : {'set' if key.startswith('tsk_') else 'MISSING (put it in .env)'}")
-    ok &= key.startswith("tsk_")
+    from .tripo_key import resolve
+    key, region, source = resolve()
+    good = bool(key) and key.startswith("tsk_")
+    print(f"Tripo API key   : {('found via ' + source + ', region ' + region) if good else 'MISSING (run: tripo login --region ov, or set TRIPO_API_KEY in .env)'}")
+    ok &= good
     try:
         import tripo3d
         print(f"tripo3d SDK     : {tripo3d.__version__}")

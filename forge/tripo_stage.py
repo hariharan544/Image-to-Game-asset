@@ -3,7 +3,13 @@
 Every task id is written to the job manifest *before* waiting, so a crash or a
 rerun reuses the existing task instead of paying for a new one.
 
-Needs TRIPO_API_KEY (starts with tsk_) in the environment or .env.
+Key: TRIPO_API_KEY, or the Tripo CLI login (`tripo login`) - see tripo_key.py.
+
+Measured / documented API rules this module follows (Tripo apiv3, CLI 0.11 docs):
+  * model ids are dated wire values (H3.1 = "v3.1-20260211"); aliases are rejected
+  * generate_parts=True cannot be combined with texture/pbr (error 1004): parts are generated
+    untextured, then textured by a separate texture task (v3.5, PBR, delight, reference image)
+  * rig spec unity/unreal needs rig model v3.0-20260909
 """
 
 from __future__ import annotations
@@ -21,9 +27,17 @@ class TripoError(RuntimeError):
     pass
 
 
+TEXTURE_MODEL = "v3.5-20260815"
+
+
 def _client():
     from tripo3d import TripoClient   # imported lazily so the rest of Forge works without it
-    return TripoClient()
+
+    from .tripo_key import resolve
+    key, region, source = resolve()
+    if not key:
+        raise TripoError("No Tripo API key: run `tripo login --region ov` or set TRIPO_API_KEY in .env")
+    return TripoClient(api_key=key, IS_GLOBAL=(region != "cn"))
 
 
 async def _run(job: Job, client, key: str, submit: Callable[[], Awaitable[str]], out_sub: str) -> tuple[Any, dict]:
@@ -48,8 +62,10 @@ async def _run(job: Job, client, key: str, submit: Callable[[], Awaitable[str]],
 
 def _gen_kwargs(job: Job) -> dict:
     g = job.spec.generation
-    kw: dict[str, Any] = dict(texture=True, pbr=True, texture_quality=g.texture_quality,
-                              geometry_quality=g.geometry_quality, generate_parts=g.generate_parts)
+    parts = g.generate_parts
+    # parts + texture is rejected by the API: texture in a separate task afterwards
+    kw: dict[str, Any] = dict(texture=not parts, pbr=not parts, texture_quality=g.texture_quality,
+                              geometry_quality=g.geometry_quality, generate_parts=parts)
     if g.model_version:
         kw["model_version"] = g.model_version
     if g.face_limit:
@@ -99,6 +115,21 @@ async def generate(job: Job) -> dict:
                                      "complete")
             model_task_id = done.task_id
             out["generated"] = files.get("model") or out["generated"]
+
+        if spec.generation.generate_parts:
+            # textures for the untextured parts model: PBR, de-lit, guided by the source image
+            async def submit_texture():
+                ref = await client.upload_file(job.m["source_image"])
+                return await client.create_task({
+                    "type": "texture_model", "input": model_task_id, "model": TEXTURE_MODEL,
+                    "texture": True, "pbr": True, "delight": True,
+                    "texture_quality": spec.generation.texture_quality,
+                    "texture_alignment": "original_image",
+                    "texture_prompt": {"image": ref["file_token"]},
+                })
+            tex_task, files = await _run(job, client, "texture", submit_texture, "texture")
+            model_task_id = tex_task.task_id
+            out["generated"] = files.get("pbr_model") or files.get("model") or out["generated"]
 
         if spec.rig.enabled:
             check, _ = await _run(job, client, "rig_check", lambda: client.rig_check(model_task_id), "rig_check")
