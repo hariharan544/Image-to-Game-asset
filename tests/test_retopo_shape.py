@@ -308,9 +308,10 @@ def test_fit_to_original_restores_one_sided_notch():
     assert np.allclose(np.linalg.norm(other, axis=1), 1.0, atol=0.02)   # the other side unchanged
 
 
-def test_mirrored_run_that_loses_a_one_sided_part_reruns_without_mirror(monkeypatch):
-    """The bull's tail curves to one side: a mirrored remesh loses it. The next run must be
-    WITHOUT mirror (not denser and still mirrored)."""
+def test_mirrored_run_that_loses_a_one_sided_part_keeps_the_mirror_and_rebuilds_the_part(monkeypatch):
+    """The bull's tail curves to one side: the mirrored remesh loses it. The mirrored result
+    (good, symmetric face) is KEPT and only the tail is rebuilt - no unmirrored re-run, which
+    re-rolls the whole head (the director saw the right mouth side washed out that way)."""
     import bmesh as bm_
 
     from forge_bpy import common, retopo
@@ -321,8 +322,9 @@ def test_mirrored_run_that_loses_a_one_sided_part_reruns_without_mirror(monkeypa
     def qr(obj, quads, args, timeout):
         yield 0.0
         mirrored = bool(obj.get("forge_symmetry_x"))
-        seen.append(mirrored)
-        if mirrored:                       # a mirror cannot keep a one-sided tail
+        whole = any(v.co.x < 0.5 for v in obj.data.vertices)
+        seen.append("mirrored-body" if (whole and mirrored) else ("body" if whole else "piece"))
+        if whole and mirrored:              # a mirror cannot keep a one-sided tail
             bm = bm_.new()
             bm.from_mesh(obj.data)
             bm_.ops.delete(bm, geom=[v for v in bm.verts if v.co.x > 1.05], context="VERTS")
@@ -333,20 +335,22 @@ def test_mirrored_run_that_loses_a_one_sided_part_reruns_without_mirror(monkeypa
             bm.to_mesh(new)
             bm.free()
             retopo._replace_mesh(obj, new)
+        elif not whole:
+            assert retopo._quadriflow(obj, max(int(quads * 2), 400), {})
         return True
 
     monkeypatch.setattr(retopo, "_qr_part", qr)
-    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "conform": False})
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "conform": False,
+                          "carve": False})
     try:
         while True:
             next(gen)
     except StopIteration as stop:
         rep = stop.value
-    assert seen == [True, False], seen                          # one mirrored run, then one without
-    assert rep["parts"]["Body"]["method"] == "quadremesher(no-mirror)"
-    assert rep["parts"]["Body"]["shape"]["lost_pct"] < 0.2
+    assert seen == ["mirrored-body", "piece"], seen          # no unmirrored whole-body re-run
+    assert o.get("forge_symmetry_x")
+    assert rep["parts"]["Body"]["method"] == "quadremesher(rescued)"
     assert max(v.co.x for v in o.data.vertices) > 1.9
-
 
 def test_flattened_face_detail_is_refined_not_rebuilt(monkeypatch):
     """A shallow mouth-corner pocket: too small for the normal shape check, caught by the

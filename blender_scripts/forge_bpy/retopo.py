@@ -420,26 +420,12 @@ def _run_qr(args: dict):
             shape = shape_loss(backup, obj.data, tol)
             shape["refined"] = 0
             shape["rescued"] = 0
-            if shape["lost_ratio"] >= max_lost and obj.get("forge_symmetry_x"):
-                # mirrored and something got lost: a one-sided part (a tail curving to one side)
-                # cannot survive a mirror. One run WITHOUT mirroring, fitted again
-                obj["forge_symmetry_x"] = False
-                keep = obj.data.copy()
-                _replace_mesh(obj, backup.copy())
-                STATUS["text"] = f"{obj.name}: shape lost while mirrored, Quad Remesher without mirror"
-                ok2 = yield from _qr_part(obj, target, args, timeout)
-                if ok2:
-                    bpy.data.meshes.remove(keep)
-                    _fit()
-                    shape = shape_loss(backup, obj.data, tol)
-                    shape["refined"], shape["rescued"] = 1, 0
-                    used = "quadremesher(no-mirror)"
-                else:
-                    _replace_mesh(obj, keep)
             for _ in range(int(args.get("shape_retries", 1))):
                 face_only = shape["lost_ratio"] < max_lost and shape.get("face_lost", 0) >= face_max
                 if shape["lost_ratio"] < max_lost and not face_only:
                     break
+                if not face_only and obj.get("forge_symmetry_x"):
+                    break      # a thin part lost while mirrored: rebuild just that part (below)
                 boost(backup, shape["mask"])          # includes flattened face details
                 keep = obj.data.copy()
                 _replace_mesh(obj, backup.copy())
@@ -494,6 +480,23 @@ def _run_qr(args: dict):
                     refined, shape = shape["refined"], shape_loss(backup, obj.data, tol)
                     shape["refined"], shape["rescued"] = refined, rescued
                     used = "quadremesher(rescued)"
+            if shape["lost_ratio"] >= max_lost and obj.get("forge_symmetry_x") and not shape.get("rescued"):
+                # last resort: the thin-part rebuild could not bring it back. A run WITHOUT
+                # mirroring (it re-rolls the whole mesh: the mirrored face is usually better,
+                # which is why this comes last)
+                obj["forge_symmetry_x"] = False
+                keep = obj.data.copy()
+                _replace_mesh(obj, backup.copy())
+                STATUS["text"] = f"{obj.name}: shape lost while mirrored, Quad Remesher without mirror"
+                ok2 = yield from _qr_part(obj, target, args, timeout)
+                if ok2:
+                    bpy.data.meshes.remove(keep)
+                    _fit()
+                    shape = shape_loss(backup, obj.data, tol)
+                    shape["refined"], shape["rescued"] = 1, 0
+                    used = "quadremesher(no-mirror)"
+                else:
+                    _replace_mesh(obj, keep)
         if not ok:
             _replace_mesh(obj, backup.copy())
             used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
