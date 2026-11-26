@@ -55,6 +55,19 @@ the same relative scale. Soft even lighting, no shadows, plain light-grey backgr
 no text, no labels, no arrows.
 ```
 
+## B2. Body without props, full size (attach: final concept)
+
+The body is small on the parts sheet; make it once more on its own, full frame.
+```
+Use the attached image as the exact reference. Show the same {CHARACTER} with ALL
+props removed: no {PROP_LIST}. Where a prop covered the body, complete the fur/skin
+naturally with the same colours and patches, no marks, no holes. Keep exactly the same
+T-pose, proportions, face, horns, colours and style. Orthographic front view,
+full body, centred with margin, soft even lighting, no shadows, plain light-grey
+background, no text.
+```
+Attach this image too (with the concept) when making the body multi-view sheet.
+
 ## C. Multi-view sheet, one per part (attach: final concept + parts sheet)
 
 Props:
