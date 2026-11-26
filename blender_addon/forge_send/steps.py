@@ -216,12 +216,14 @@ def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8):
             if a is not None:
                 o.data.color_attributes.remove(a)
     args = {"method": "quadremesher" if use_qr else "quadriflow", "target_tris": int(budget),
-            "min_tris_per_part": 300, "qr_timeout": 900}
+            "min_tris_per_part": 300, "qr_timeout": 900, "shape_retries": 1}
     return _mod("retopo").run(args)
 
 
-def stop_cleanup() -> None:
+def stop_cleanup(label: str = "") -> None:
     """After Stop: drop half-done pieces and results, show the original parts again."""
+    if "retopo" in label:
+        undo_retopo()                     # a half-done retopology is of no use: start clean
     for o in list(bpy.data.objects):
         if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_"):
             bpy.data.objects.remove(o)
@@ -235,6 +237,12 @@ def stop_cleanup() -> None:
         p.hide_set(bool(new))
     for o in new:
         o.hide_set(False)
+    try:                                  # back to normal viewport colours
+        for area in bpy.context.screen.areas:
+            if area.type == "VIEW_3D":
+                area.spaces.active.shading.color_type = "MATERIAL"
+    except (AttributeError, TypeError):
+        pass
 
 
 def clay_lows() -> None:
@@ -479,7 +487,63 @@ def paint_setup(obj) -> str:
     ip = bpy.context.scene.tool_settings.image_paint
     ip.mode = "IMAGE"
     ip.canvas = img
+    pal = texture_palette(img)
+    try:
+        ip.palette = pal
+    except (AttributeError, TypeError):
+        pass
+    if pal.colors:
+        first = tuple(pal.colors[0].color)
+        ups = bpy.context.scene.tool_settings.unified_paint_settings
+        for target in (ups, getattr(ip, "brush", None)):
+            try:
+                target.color = first
+            except (AttributeError, TypeError):
+                pass
     return img.name
+
+
+def palette_colours(px: "np.ndarray", k: int = 12, samples: int = 40000, seed: int = 0) -> list:
+    """The texture's main colours (k-means on a sample of its texels), most used first."""
+    import numpy as np
+    rgb = px.reshape(-1, px.shape[-1])[:, :3]
+    if len(rgb) == 0:
+        return []
+    rng = np.random.default_rng(seed)
+    pts = rgb[rng.choice(len(rgb), min(samples, len(rgb)), replace=False)].astype(np.float64)
+    cen = pts[rng.choice(len(pts), min(k, len(pts)), replace=False)]
+    for _ in range(15):
+        lab = np.argmin(((pts[:, None, :] - cen[None]) ** 2).sum(-1), axis=1)
+        for i in range(len(cen)):
+            sel = pts[lab == i]
+            if len(sel):
+                cen[i] = sel.mean(axis=0)
+    counts = np.bincount(lab, minlength=len(cen))
+    order = np.argsort(-counts)
+    out = []
+    for i in order:
+        c = cen[i]
+        if counts[i] == 0 or any(np.abs(c - np.array(o)).max() < 0.03 for o in out):
+            continue                                  # skip near-duplicates
+        out.append(tuple(float(x) for x in c))
+    return out
+
+
+def texture_palette(img, k: int = 12):
+    """A swatch palette of the part's own colours: the eyedropper in paint mode samples the
+    LIT screen (shadows make every pick darker); swatches are the true texture colours."""
+    import numpy as np
+    w, h = img.size
+    px = np.empty(w * h * 4, np.float32)
+    img.pixels.foreach_get(px)
+    cols = palette_colours(px.reshape(h, w, 4), k)
+    name = "Forge colours"
+    pal = bpy.data.palettes.get(name) or bpy.data.palettes.new(name)
+    while pal.colors:
+        pal.colors.remove(pal.colors[0])
+    for c in cols:
+        pal.colors.new().color = c
+    return pal
 
 
 def save_painted() -> int:

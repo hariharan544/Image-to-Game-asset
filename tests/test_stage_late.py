@@ -226,3 +226,21 @@ def test_detail_map_for_quad_remesher():
     assert col[flat, 0].mean() < 0.85 and col[flat, 2].mean() > 0.95     # cyan-ish: fewer quads
     # before remeshing it must be the only colour layer
     assert D.only_qr_density(me) and [a.name for a in me.color_attributes] == ["QR_Density"]
+
+
+def test_palette_has_the_texture_colours_not_darker_ones():
+    import numpy as np
+    sys.path.insert(0, str(ROOT / "blender_addon"))
+    S = importlib.import_module("forge_send.steps")
+    px = np.zeros((64, 64, 4), np.float32)
+    px[..., :3] = (0.70, 0.40, 0.25)            # fur
+    px[:20, :, :3] = (0.85, 0.65, 0.50)         # belly
+    px[50:, 50:, :3] = (0.35, 0.18, 0.10)       # a dark spot
+    cols = S.palette_colours(px, k=6)
+    assert np.allclose(cols[0], (0.70, 0.40, 0.25), atol=0.02)      # most used first
+    for want in ((0.85, 0.65, 0.50), (0.35, 0.18, 0.10)):
+        assert any(np.allclose(c, want, atol=0.03) for c in cols), cols
+    img = bpy.data.images.new("T_x_basecolor", 64, 64)
+    img.pixels.foreach_set(px.ravel())
+    pal = S.texture_palette(img)
+    assert pal.name == "Forge colours" and 3 <= len(pal.colors) <= 12

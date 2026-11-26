@@ -379,7 +379,25 @@ def _run_qr(args: dict):
             shape = shape_loss(backup, obj.data, tol)
             shape["refined"] = 0
             shape["rescued"] = 0
-            for _ in range(int(args.get("shape_retries", 2))):
+            if shape["lost_ratio"] >= max_lost and obj.get("forge_symmetry_x"):
+                # mirrored and something got lost: a one-sided part (a tail curving to one side)
+                # cannot survive a mirror. One run WITHOUT mirroring, fitted again
+                obj["forge_symmetry_x"] = False
+                keep = obj.data.copy()
+                _replace_mesh(obj, backup.copy())
+                STATUS["text"] = f"{obj.name}: shape lost while mirrored, Quad Remesher without mirror"
+                ok2 = yield from _qr_part(obj, target, args, timeout)
+                if ok2:
+                    bpy.data.meshes.remove(keep)
+                    if args.get("conform", True):
+                        from .density import conform
+                        conform(obj.data, backup)
+                    shape = shape_loss(backup, obj.data, tol)
+                    shape["refined"], shape["rescued"] = 1, 0
+                    used = "quadremesher(no-mirror)"
+                else:
+                    _replace_mesh(obj, keep)
+            for _ in range(int(args.get("shape_retries", 1))):
                 if shape["lost_ratio"] < max_lost:
                     break
                 boost(backup, shape["mask"])

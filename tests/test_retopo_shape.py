@@ -115,7 +115,7 @@ def test_thin_part_rescued_when_remesher_keeps_losing_it(monkeypatch):
     except StopIteration as stop:
         rep = stop.value
     shape = rep["parts"]["Body"]["shape"]
-    assert calls == ["body", "body", "body", "piece"], calls     # 2 density retries, then the rescue
+    assert calls == ["body", "body", "piece"], calls     # 1 density retry, then the rescue
     assert shape["rescued"] == 1 and shape["lost_pct"] < 0.5 and shape["max_gap_pct"] < 1.5, shape
     assert max(v.co.x for v in o.data.vertices) > 1.9              # the tail is back
     assert len(o.data.polygons) > 0.8 * faces0 * 0.9               # the body was never destroyed
@@ -306,3 +306,43 @@ def test_fit_to_original_restores_one_sided_notch():
     co = np.array([v.co[:] for v in low.vertices])
     other = co[co[:, 0] < -0.7]
     assert np.allclose(np.linalg.norm(other, axis=1), 1.0, atol=0.02)   # the other side unchanged
+
+
+def test_mirrored_run_that_loses_a_one_sided_part_reruns_without_mirror(monkeypatch):
+    """The bull's tail curves to one side: a mirrored remesh loses it. The next run must be
+    WITHOUT mirror (not denser and still mirrored)."""
+    import bmesh as bm_
+
+    from forge_bpy import common, retopo
+    o = _body_with_tail()
+    o["forge_symmetry_x"] = True
+    seen = []
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        mirrored = bool(obj.get("forge_symmetry_x"))
+        seen.append(mirrored)
+        if mirrored:                       # a mirror cannot keep a one-sided tail
+            bm = bm_.new()
+            bm.from_mesh(obj.data)
+            bm_.ops.delete(bm, geom=[v for v in bm.verts if v.co.x > 1.05], context="VERTS")
+            holes = [e for e in bm.edges if e.is_boundary]
+            if holes:
+                bm_.ops.holes_fill(bm, edges=holes)
+            new = bpy.data.meshes.new("m")
+            bm.to_mesh(new)
+            bm.free()
+            retopo._replace_mesh(obj, new)
+        return True
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "conform": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    assert seen == [True, False], seen                          # one mirrored run, then one without
+    assert rep["parts"]["Body"]["method"] == "quadremesher(no-mirror)"
+    assert rep["parts"]["Body"]["shape"]["lost_pct"] < 0.2
+    assert max(v.co.x for v in o.data.vertices) > 1.9

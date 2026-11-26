@@ -648,7 +648,7 @@ def _draw_bake(col, st):
 def _draw_colour(col, st):
     _btn(col, "colour_show", "Show textured model", "SHADING_TEXTURE")
     c = col.column(align=True)
-    c.label(text="Fix small spots:", icon="BRUSH_DATA")
+    c.label(text="Fix small spots (swatches = the texture's own colours):", icon="BRUSH_DATA")
     r = c.row(align=True)
     r.operator("forge.step", text="Paint selected part", icon="TPAINT_HLT").action = "colour_paint"
     r.operator("forge.step", text="Save paint", icon="FILE_TICK").action = "colour_save"
@@ -729,14 +729,18 @@ class FORGE_OT_stop_job(bpy.types.Operator):
 
     def execute(self, context):
         gen = _JOB.get("gen")
+        label = _JOB.get("label", "")
         _JOB.clear()                                  # the timer finds no job and stops
         if gen is not None:
             try:
                 gen.close()
             except Exception:                         # noqa: BLE001
                 pass
-        S.stop_cleanup()
+        S.stop_cleanup(label)
         st = st_of(context)
+        if "retopo" in label:
+            st.retopo = "todo"
+            st.retopo_rep = "{}"
         st.error = "Stopped. Run the step again when ready (you can change the settings first)."
         _redraw()
         return {"FINISHED"}
