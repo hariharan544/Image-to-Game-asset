@@ -454,6 +454,13 @@ def place_joints() -> dict:
     clear_rig()
     joints = _mod("joints").estimate(body)
     rig, report = _mod("arp_rig").place(joints, lows(), {"arp_preset": "human"})
+    # tail, ears... found on the body become Auto-Rig Pro limbs; face bones stay off for now
+    try:
+        apps = _mod("appendages").from_object(body, joints)
+    except Exception as exc:                          # noqa: BLE001
+        apps = []
+        report["extras_error"] = str(exc)
+    report["extras"] = _mod("arp_rig").add_extras(rig, apps, {})
     rig["forge_ref_rig"] = True
     report["ref_rig"] = rig.name
     return report

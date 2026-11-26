@@ -86,3 +86,11 @@ def _check_density(S, body):
     belly = np.linalg.norm(co - (0, -0.16, 1.1), axis=1) < 0.04
     assert tail_tip.any() and np.allclose(c[tail_tip, :3].mean(0), (1, 0, 0), atol=0.05)   # full red
     assert belly.any() and c[belly, 1].mean() > 0.5                                       # not red
+
+
+def test_resample_chain_even_spacing():
+    from forge_bpy.arp_rig import _resample
+    pts = _resample([(0, 0, 0), (1, 0, 0), (1, 3, 0)], 4)
+    assert len(pts) == 5 and pts[0].length == 0 and (pts[-1] - pts[0]).length > 3
+    steps = [(pts[i + 1] - pts[i]).length for i in range(4)]
+    assert max(steps) - min(steps) < 0.3            # about 1 unit each along the 4-unit path

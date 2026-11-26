@@ -497,6 +497,13 @@ def _bake_rows(rep):
 
 def _rig_rows(rep):
     out = []
+    ex = rep.get("extras") or {}
+    for k, n in (ex.get("added") or {}).items():
+        out.append((GOOD, f"{k}: {n} bones"))
+    for k, why in (ex.get("skipped") or {}).items():
+        out.append(("INFO", f"{k}: {why}"))
+    for e in (ex.get("errors") or [])[:3]:
+        out.append((BAD, e[:60]))
     if rep.get("bones"):
         out.append((GOOD, f"{rep['bones']} bones ({rep.get('deform_bones', 0)} deform)"))
     for part, w in rep.get("weights", {}).items():
@@ -607,10 +614,11 @@ def _draw_rig(col, st):
         return
     rep = json.loads(st.rig_rep or "{}")
     if st.rig_phase == "joints":
+        _rows(col.column(align=True), _rig_rows(rep))
         c = col.column(align=True)
         c.label(text="Check the joints (front + side view):", icon="INFO")
         c.label(text="  shoulders, elbows, wrists, hips,")
-        c.label(text="  knees, ankles, neck, head.")
+        c.label(text="  knees, ankles, neck, head, tail, ears.")
         _btn(col, "rig_edit", "Adjust joints", "EDITMODE_HLT")
         _btn(col, "rig_build", "Build rig + skin", "ARMATURE_DATA", 1.3)
         _btn(col, "rig_place", "Guess joints again", "FILE_REFRESH")

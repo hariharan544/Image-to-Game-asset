@@ -344,3 +344,105 @@ def build(args: dict) -> dict:
     for o in C.meshes_with_role("weights"):       # rig-file meshes were only a weight source
         bpy.data.objects.remove(o)
     return report
+
+
+# ----------------------------------------------------------------------------- extra limbs
+
+def _resample(chain: list, n: int) -> list:
+    """n+1 points evenly along a polyline (n bones)."""
+    pts = [Vector(p) for p in chain]
+    seg = [(pts[i + 1] - pts[i]).length for i in range(len(pts) - 1)]
+    total = sum(seg) or 1e-9
+    out, acc, i = [pts[0]], 0.0, 0
+    for k in range(1, n):
+        want = total * k / n
+        while i < len(seg) - 1 and acc + seg[i] < want:
+            acc += seg[i]
+            i += 1
+        t = (want - acc) / max(seg[i], 1e-9)
+        out.append(pts[i].lerp(pts[i + 1], min(max(t, 0.0), 1.0)))
+    out.append(pts[-1])
+    return out
+
+
+def _select_ref(rig, name: str) -> bool:
+    eb = rig.data.edit_bones
+    b = eb.get(name)
+    if b is None:
+        return False
+    for x in eb:
+        x.select = x.select_head = x.select_tail = False
+    b.select = b.select_head = b.select_tail = True
+    eb.active = b
+    return True
+
+
+def _place_chain(rig, names: list, pts: list) -> int:
+    eb = rig.data.edit_bones
+    inv = rig.matrix_world.inverted()
+    n = 0
+    for i, name in enumerate(names):
+        b = eb.get(name)
+        if b is None or i + 1 >= len(pts):
+            continue
+        b.head, b.tail = inv @ pts[i], inv @ pts[i + 1]
+        n += 1
+    return n
+
+
+def add_extras(rig, appendages: list, args: dict) -> dict:
+    """Tail and ears from the detected appendages (Auto-Rig Pro limbs), facial bones off
+    until the face has a cut mouth and separate eyes. Never raises: problems are reported."""
+    rep: dict = {"added": {}, "skipped": {}, "errors": []}
+    C.select_only(rig)
+    bpy.ops.object.mode_set(mode="EDIT")
+    ov = _ov()
+
+    def call(fn, **kw):
+        with bpy.context.temp_override(**ov):
+            return fn("EXEC_DEFAULT", **kw)
+
+    if not args.get("facial", False) and _select_ref(rig, "head_ref.x"):
+        try:
+            call(bpy.ops.arp.show_limb_params, limb_type="head", side=".x", facial=False)
+            rep["facial"] = "off"
+        except Exception as exc:                          # noqa: BLE001
+            rep["errors"].append(f"facial off: {exc}")
+    by_kind = {}
+    for a in appendages:
+        by_kind.setdefault(a["kind"], []).append(a)
+
+    tail = (by_kind.get("tail") or [None])[0]
+    if tail is not None:
+        n = int(args.get("tail_bones", 4))
+        try:
+            call(bpy.ops.arp.add_limb, limbs_presets="tail")
+            if _select_ref(rig, "tail_00_ref.x") and n != 4:
+                call(bpy.ops.arp.show_limb_params, limb_type="tail", side=".x", tail_count=n)
+            placed = _place_chain(rig, [f"tail_{i:02d}_ref.x" for i in range(n)], _resample(tail["chain"], n))
+            rep["added"]["tail"] = placed
+        except Exception as exc:                          # noqa: BLE001
+            rep["errors"].append(f"tail: {exc}")
+
+    ears = {a["name"][-1]: a for a in by_kind.get("ear", []) if a["name"] in ("ear_l", "ear_r")}
+    if ears:
+        n = int(args.get("ear_bones", 2))
+        try:
+            call(bpy.ops.arp.add_limb, limbs_presets="ears")
+            if _select_ref(rig, "ear_01_ref.l") and n != 2:
+                call(bpy.ops.arp.show_limb_params, limb_type="ear", side=".l", ear_count=n)
+            placed = 0
+            for s, a in ears.items():
+                placed += _place_chain(rig, [f"ear_{i:02d}_ref.{s}" for i in range(1, n + 1)],
+                                       _resample(a["chain"], n))
+            rep["added"]["ears"] = placed
+        except Exception as exc:                          # noqa: BLE001
+            rep["errors"].append(f"ears: {exc}")
+
+    for kind, items in by_kind.items():
+        if kind not in ("tail", "ear"):
+            for a in items:
+                rep["skipped"][a["name"]] = "rigid (follows its parent bone)" if kind == "horn" \
+                    else "found, not rigged yet"
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return rep
