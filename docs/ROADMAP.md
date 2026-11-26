@@ -29,8 +29,14 @@
   3. props welded to their socket bone;
   4. export through ARP: UE5 Mannequin skeleton for Unreal, Humanoid for Unity.
 
-  Each ARP call was verified on the user's PC. The full chain runs in the setup smoke test. If ARP
-  fails, the stage falls back to transferring Tripo's weights.
+  **Verified end to end on the user's PC** (setup smoke test, run 2):
+  * Unreal: `SK_` file with the UE5 Mannequin skeleton (74 bones, IK bones included);
+  * Unity: Humanoid skeleton (59 bones);
+  * LOD0–2 skinned in both;
+  * sword exported as a static `SM_` mesh with its pivot at the grip;
+  * the character stands upright at the correct height in both files.
+
+  If ARP fails, the stage falls back to transferring Tripo's weights, in a fresh Blender.
 - ⏳ **UVPackmaster**: the add-on loads, but its packing engine (installed separately) is not
   detected. The adapter is built once the engine is installed. Blender's packer is used until then.
 - Bake: optional cage mesh, anti-aliased bakes, texture de-lighting and seam fixing.
