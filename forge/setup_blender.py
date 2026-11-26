@@ -70,7 +70,34 @@ def _smoke(blender: list[str], work: Path, gpu: bool, say) -> dict:
     return t
 
 
-def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: bool, say=print) -> int:
+def _addon_trial(blender: list[str], work: Path, say) -> None:
+    say("Add-on trial: a Blender window opens for a few minutes and closes by itself - do not close it.")
+    try:
+        rep = run_stage("addon_trial", {"qr_timeout": 300}, work / "logs" / "addon_trial.log",
+                        blender=blender, factory_startup=False, windowed=True, timeout=900)
+    except BlenderError as exc:
+        say(f"[X] Add-on trial failed: {str(exc).splitlines()[0]}")
+        return
+    (work / "addon_trial.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
+    probe = rep.get("probe", {}).get("addons", {})
+    uvpm = probe.get("uvpackmaster", {})
+    say(f"   UVPackmaster (windowed): {len(uvpm.get('operators', {}))} operators, "
+        f"{len(uvpm.get('settings', {}))} settings groups")
+    arp = rep.get("auto_rig_pro", {})
+    rigs = arp.get("appended_armatures", {})
+    say(f"   Auto-Rig Pro: append {'ok' if rigs else 'FAILED ' + str(arp.get('append_error', ''))[:120]}"
+        f"; armatures {[(k, v['bones']) for k, v in rigs.items()]}")
+    qr = rep.get("quad_remesher", {})
+    if qr.get("results"):
+        r = qr["results"][0]
+        say(f"   Quad Remesher: {r['faces']} faces, {int(r['quad_ratio'] * 100)}% quads in {qr['elapsed_s']}s")
+    else:
+        say(f"   Quad Remesher: no result ({qr.get('call_error') or qr.get('skipped') or 'timed out'})")
+    say(f"[OK] Add-on trial report -> {work / 'addon_trial.json'}")
+
+
+def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: bool, say=print,
+        addon_trial: bool = False) -> int:
     report: dict = {"time": time.time()}
     if blender_path:
         p = Path(blender_path)
@@ -138,6 +165,9 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
                         say(f"   [!] {f['name']}: could not be loaded (see logs\\addon_probe.log)")
         except BlenderError as exc:
             say(f"[!] Add-on probe failed: {str(exc).splitlines()[0]}")
+
+    if addon_trial:
+        _addon_trial(blender, work, say)
 
     if not skip_smoke and ok:
         say("Running the pipeline smoke test inside your Blender ...")

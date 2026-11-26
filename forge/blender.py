@@ -52,9 +52,12 @@ def find_blender() -> Optional[list[str]]:
 
 
 def run_stage(stage: str, args: dict, log_path: Path, timeout: float = 3600,
-              blender: Optional[list[str]] = None, factory_startup: bool = True) -> dict:
+              blender: Optional[list[str]] = None, factory_startup: bool = True,
+              windowed: bool = False) -> dict:
     """factory_startup=True ignores the user's Blender preferences/add-ons, so pipeline
-    results are reproducible. sysinfo runs with False to see the real setup."""
+    results are reproducible. sysinfo runs with False to see the real setup.
+    windowed=True opens a small Blender window (needed by add-ons that require the GPU/UI,
+    e.g. UVPackmaster, or that run an external engine, e.g. Quad Remesher); it closes itself."""
     cmd_base = blender or find_blender()
     if not cmd_base:
         raise BlenderError("Blender not found. Install Blender 4.2+ or set FORGE_BLENDER to blender.exe")
@@ -65,7 +68,8 @@ def run_stage(stage: str, args: dict, log_path: Path, timeout: float = 3600,
         if cmd_base[0] == sys.executable and "blender" not in Path(cmd_base[0]).name.lower():
             cmd = [*cmd_base, str(SCRIPT), stage, str(a), str(r)]
         else:
-            cmd = [*cmd_base, "-b", *(["--factory-startup"] if factory_startup else []),
+            mode = ["--window-geometry", "40", "40", "960", "600", "--no-window-focus"] if windowed else ["-b"]
+            cmd = [*cmd_base, *mode, *(["--factory-startup"] if factory_startup else []),
                    "-P", str(SCRIPT), "--", stage, str(a), str(r)]
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "w", encoding="utf-8") as log:

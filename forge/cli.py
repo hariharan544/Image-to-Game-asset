@@ -146,7 +146,7 @@ def cmd_check(a) -> int:
 
 def cmd_setup_blender(a) -> int:
     from .setup_blender import run
-    return run(a.blender, a.jobs, Path.cwd() / ".env", a.skip_smoke_test)
+    return run(a.blender, a.jobs, Path.cwd() / ".env", a.skip_smoke_test, addon_trial=a.addon_trial)
 
 
 def main(argv=None) -> int:
@@ -178,6 +178,8 @@ def main(argv=None) -> int:
     b = sub.add_parser("setup-blender", help="find and verify Blender, GPU, add-ons; run a smoke test")
     b.add_argument("--blender", help="path to blender.exe (saved to .env as FORGE_BLENDER)")
     b.add_argument("--skip-smoke-test", action="store_true")
+    b.add_argument("--addon-trial", action="store_true",
+                   help="run Quad Remesher / Auto-Rig Pro / UVPackmaster for real in a windowed Blender")
     b.set_defaults(fn=cmd_setup_blender)
 
     c = sub.add_parser("check", help="verify the environment")
