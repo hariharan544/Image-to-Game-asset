@@ -130,6 +130,28 @@ def _reanalyse(context) -> dict:
 
 # ----------------------------------------------------------------------------- step 2 operators
 
+def place_concept(ref, img, parts: list) -> None:
+    """Stand the concept beside the whole layout (body, arms and props), never overlapping it:
+    as tall as the body, its right edge a clear gap left of the leftmost part."""
+    body = G.body_of(parts) if parts else None
+    if parts:
+        bounds = [G.world_bounds(o) for o in parts]
+        lo_x = min(b[0].x for b in bounds)
+        blo, bhi = G.world_bounds(body or parts[0])
+        height = max(bhi.z - blo.z, 1e-3)
+        mid_z, mid_y = (blo.z + bhi.z) / 2, (blo.y + bhi.y) / 2
+    else:
+        lo_x, height, mid_z, mid_y = -1.0, 2.0, 1.0, 0.0
+    iw, ih = (img.size[0], img.size[1]) if img.size[0] and img.size[1] else (1, 1)
+    size = height * max(iw, ih) / ih            # the empty's size is the image's LONGER side
+    width = size * iw / max(iw, ih)
+    gap = 0.25 * height
+    ref.empty_display_size = size
+    ref.empty_image_offset = (-0.5, -0.5)       # centred on its location
+    ref.location = (lo_x - gap - width / 2, mid_y, mid_z)
+    ref.rotation_euler = (1.5708, 0.0, 0.0)     # facing the front view
+
+
 class FORGE_OT_concept(bpy.types.Operator):
     bl_idname = "forge.stage_concept"
     bl_label = "Show concept next to the model"
@@ -147,11 +169,7 @@ class FORGE_OT_concept(bpy.types.Operator):
             context.scene.collection.objects.link(ref)
         ref.empty_display_type = "IMAGE"
         ref.data = img
-        parts = _parts(context)
-        h = max((max(o.dimensions) for o in parts), default=2.0)
-        ref.empty_display_size = h
-        ref.location = (-1.3 * h, 0.0, h / 2)
-        ref.rotation_euler = (1.5708, 0.0, 0.0)               # facing the front view
+        place_concept(ref, img, _parts(context))
         return {"FINISHED"}
 
 

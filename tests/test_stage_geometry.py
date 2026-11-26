@@ -187,3 +187,29 @@ def test_panel_buttons_in_order():
         assert G.kind(legacy) == "body" and G.body_of(G.mesh_parts(bpy.context.scene)) == legacy
     finally:
         F.unregister()
+
+
+def test_concept_image_stands_clear_of_all_parts():
+    """The concept card is as tall as the body and never overlaps an arm or a prop."""
+    from forge_send import stages_ui
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    body = _obj("ConceptBody", bm)
+    body.scale = (3.0, 0.6, 1.8)                   # T-pose: wider than tall
+    body.location = (0.4, 0, 0.9)
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=0.3)
+    prop = _obj("ConceptProp", bm)
+    prop.location = (-3.0, 0, 0.5)                 # a prop parked far left
+    body["forge_kind"], prop["forge_kind"] = "body", "prop"
+    img = bpy.data.images.new("concept", 1024, 2048)       # portrait sheet
+    ref = bpy.data.objects.new("Forge concept test", None)
+    ref.empty_display_type = "IMAGE"
+    ref.data = img
+    bpy.context.view_layer.update()
+    stages_ui.place_concept(ref, img, [body, prop])
+    width = ref.empty_display_size * 1024 / 2048
+    height = ref.empty_display_size
+    assert abs(height - 1.8) < 1e-4
+    assert ref.location.x + width / 2 < G.world_bounds(prop)[0].x - 0.1      # clear of everything
+    assert abs(ref.location.z - 0.9) < 1e-4
