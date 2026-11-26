@@ -1,0 +1,1485 @@
+{
+  "blender": "5.3.0",
+  "addons": {
+    "quad_remesher": {
+      "found": [
+        {
+          "module": "quad_remesher",
+          "name": "Quad Remesher Bridge",
+          "version": [
+            1,
+            3,
+            0
+          ],
+          "enabled_in_saved_prefs": true,
+          "loaded": true
+        }
+      ],
+      "operators": {
+        "qremesher.facemap_to_materials": null,
+        "qremesher.license_manager": null,
+        "qremesher.remesh": {
+          "params": [],
+          "description": "Remesh the selected mesh.\n It also downloads and installs the RemesherEngine the 1st time, if needed."
+        },
+        "qremesher.reset_scene_prefs": null
+      },
+      "settings": {
+        "Scene.qremesher": {
+          "name": {
+            "type": "STRING",
+            "value": ""
+          },
+          "target_count": {
+            "type": "INT",
+            "value": 5000
+          },
+          "adaptive_size": {
+            "type": "FLOAT",
+            "value": 50.0
+          },
+          "adapt_quad_count": {
+            "type": "BOOLEAN",
+            "value": true
+          },
+          "use_vertex_color": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "painted_quad_density": {
+            "type": "FLOAT",
+            "value": 1.0
+          },
+          "use_materials": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "use_normals": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "autodetect_hard_edges": {
+            "type": "BOOLEAN",
+            "value": true
+          },
+          "symmetry_x": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "symmetry_y": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "symmetry_z": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "progress_value": {
+            "type": "FLOAT",
+            "value": 0.0
+          }
+        }
+      }
+    },
+    "uvpackmaster": {
+      "found": [
+        {
+          "module": "bl_ext.user_default.uvpackmaster4",
+          "name": "UVPackmaster 4",
+          "version": [
+            4,
+            0,
+            4
+          ],
+          "enabled_in_saved_prefs": true,
+          "loaded": false,
+          "loaded_by_probe": false,
+          "enable_errors": [
+            "SystemError: GPU functions for drawing requires the gpu module to be initialized. See gpu.init."
+          ]
+        }
+      ],
+      "operators": {},
+      "settings": {}
+    },
+    "auto_rig_pro": {
+      "found": [
+        {
+          "module": "bl_ext.user_default.auto_rig_pro",
+          "name": "Auto-Rig Pro",
+          "version": [
+            3,
+            79,
+            17
+          ],
+          "enabled_in_saved_prefs": true,
+          "loaded": true
+        },
+        {
+          "module": "bl_ext.user_default.ARP_rig_tools",
+          "name": "Auto-Rig Pro Tools",
+          "version": [
+            3,
+            79,
+            17
+          ],
+          "enabled_in_saved_prefs": true,
+          "loaded": true
+        }
+      ],
+      "operators": {
+        "arp.action_scale_comp_all": null,
+        "arp.actions_linker": null,
+        "arp.actions_linker_add": null,
+        "arp.actions_linker_add_action": null,
+        "arp.actions_linker_remove": null,
+        "arp.actions_linker_remove_action": null,
+        "arp.actions_list_add": null,
+        "arp.actions_list_add_action": null,
+        "arp.actions_list_add_batch_actions": null,
+        "arp.actions_list_move": null,
+        "arp.actions_list_remove": null,
+        "arp.actions_list_remove_action": null,
+        "arp.add_blink_pose": null,
+        "arp.add_corrective_bone": null,
+        "arp.add_corrective_driver": null,
+        "arp.add_fist_ctrl": null,
+        "arp.add_limb": null,
+        "arp.add_picker": null,
+        "arp.align_wings": null,
+        "arp.append_arp": null,
+        "arp.apply_blink_pose": null,
+        "arp.apply_cs_transforms": null,
+        "arp.apply_fist_pose": null,
+        "arp.apply_offset": null,
+        "arp.apply_pose_as_rest": null,
+        "arp.apply_shape": null,
+        "arp.arp_export_fbx_panel": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "untitled"
+            },
+            {
+              "id": "check_existing",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "quick_export",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "filter_glob",
+              "type": "STRING",
+              "default": "*.fbx"
+            }
+          ],
+          "description": "Export the rigged character to Fbx file format "
+        },
+        "arp.arp_export_gltf_panel": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "untitled"
+            },
+            {
+              "id": "check_existing",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "filter_glob",
+              "type": "STRING",
+              "default": "*.glb"
+            },
+            {
+              "id": "quick_export",
+              "type": "BOOLEAN",
+              "default": false
+            }
+          ],
+          "description": "Export the rigged character to Gltf/Glb file format\nRequires Blender 3.4 and higher"
+        },
+        "arp.assign_colors": null,
+        "arp.auto_scale": {
+          "params": [],
+          "description": "Automatic scale of the source armature to fit the target armature height\nMay not work if the rest position is incorrect, the height is calculated on this basis. Scale manually otherwise."
+        },
+        "arp.bake_rot_from_scale": null,
+        "arp.batch_retarget": {
+          "params": [],
+          "description": "Select multiple source animations for retargetting.\nIf \"In Place\" is enabled, process and select only In Place actions"
+        },
+        "arp.bind_ext": {
+          "params": [],
+          "description": "Bind with external addon"
+        },
+        "arp.bind_to_rig": {
+          "params": [
+            {
+              "id": "binding_error",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "binding_time",
+              "type": "FLOAT",
+              "default": 0.0
+            }
+          ],
+          "description": "Bind selected meshes to rig.\nSelect first the meshes, then the armature"
+        },
+        "arp.bone_tag_add": null,
+        "arp.bone_tag_remove": null,
+        "arp.bones_tag_manager": null,
+        "arp.build_bones_list": null,
+        "arp.cancel_corrective_driver": null,
+        "arp.cancel_redefine": null,
+        "arp.check_for_update": null,
+        "arp.check_rig_export": {
+          "params": [],
+          "description": "Check the rig to find possible export related errors"
+        },
+        "arp.childof_keyer": null,
+        "arp.childof_switcher": null,
+        "arp.clean_scene": null,
+        "arp.clear_root_motion": null,
+        "arp.convert_rot_mode": null,
+        "arp.copy_bone_rest": null,
+        "arp.copy_raw_coordinates": null,
+        "arp.create_driver": null,
+        "arp.debug_44": null,
+        "arp.delete_action": null,
+        "arp.delete_arp": null,
+        "arp.delete_bone_collec": null,
+        "arp.disable_limb": null,
+        "arp.dupli_limb": null,
+        "arp.dupli_limb_mirror": null,
+        "arp.edit_custom_shape": null,
+        "arp.edit_ref": null,
+        "arp.exec_rem_armature_presets": null,
+        "arp.exec_rem_custom_limbs": null,
+        "arp.exec_rem_export_presets": {
+          "params": [
+            {
+              "id": "name",
+              "type": "STRING",
+              "default": ""
+            }
+          ],
+          "description": "Remove the export preset"
+        },
+        "arp.export": {
+          "params": [],
+          "description": "Export Auto-Rig Pro character"
+        },
+        "arp.export_colors": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "py"
+            }
+          ],
+          "description": "Export the color set"
+        },
+        "arp.export_config": {
+          "params": [
+            {
+              "id": "filter_glob",
+              "type": "STRING",
+              "default": "*.bmap"
+            },
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "bmap"
+            }
+          ],
+          "description": "Export the bones mapping to file"
+        },
+        "arp.export_data": {
+          "params": [],
+          "description": "Dev mode only! Export internal rig data into file (bone transform constraints values)"
+        },
+        "arp.export_picker": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "py"
+            }
+          ],
+          "description": "Export the picker panel"
+        },
+        "arp.export_prefs": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "prefs"
+            },
+            {
+              "id": "filter_glob",
+              "type": "STRING",
+              "default": "*.prefs"
+            }
+          ],
+          "description": "Export preferences to file"
+        },
+        "arp.export_rig_data": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "py"
+            },
+            {
+              "id": "filter_glob",
+              "type": "STRING",
+              "default": "*.py"
+            }
+          ],
+          "description": "Export rig data"
+        },
+        "arp.export_rig_data_options": {
+          "params": [
+            {
+              "id": "ref_bones",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "ref_bones_settings",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "custom_shapes",
+              "type": "BOOLEAN",
+              "default": true
+            }
+          ],
+          "description": "Export rig data (reference bones, custom shapes)"
+        },
+        "arp.extract_root_motion": null,
+        "arp.fix_rig_export": {
+          "params": [],
+          "description": "Fix the rig issues automatically when possible(set stretch to 0, disable Preserve Volume...)"
+        },
+        "arp.free_lock_ik_fingers": null,
+        "arp.freeze_armature": null,
+        "arp.ge_deselect_allactions": null,
+        "arp.ge_load_preset": null,
+        "arp.ge_remove_preset": null,
+        "arp.ge_save_preset": null,
+        "arp.ge_select_allactions": null,
+        "arp.guess_facial": {
+          "params": [],
+          "description": "Guess facial markers with deep learning.\nStill experimental, works best with standard facial design, may not always output accurate results"
+        },
+        "arp.guess_fingers": {
+          "params": [],
+          "description": "Guess fingers with deep learning.\nLonger to run the first time"
+        },
+        "arp.guess_markers": {
+          "params": [
+            {
+              "id": "symmetry",
+              "type": "BOOLEAN",
+              "default": true
+            }
+          ],
+          "description": "Guess markers with deep learning (symmetrical characters only for now)\nLonger to run the first time"
+        },
+        "arp.import_colors": null,
+        "arp.import_config": null,
+        "arp.import_config_preset": null,
+        "arp.import_picker": null,
+        "arp.import_prefs": null,
+        "arp.import_rig_data": null,
+        "arp.import_rig_data_options": null,
+        "arp.install_ext": null,
+        "arp.layers_add_defaults": null,
+        "arp.layers_set_export": {
+          "params": [
+            {
+              "id": "filter_glob",
+              "type": "STRING",
+              "default": "*.py"
+            },
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "py"
+            }
+          ],
+          "description": "Export the selected preset file"
+        },
+        "arp.layers_set_export_preset": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "py"
+            },
+            {
+              "id": "preset_name",
+              "type": "STRING",
+              "default": "CoolRigLayers"
+            }
+          ],
+          "description": "Export the selected preset file"
+        },
+        "arp.layers_set_import": null,
+        "arp.layers_set_import_preset": null,
+        "arp.layers_sets_add": null,
+        "arp.layers_sets_add_bones": null,
+        "arp.layers_sets_add_collection": null,
+        "arp.layers_sets_add_object": null,
+        "arp.layers_sets_all_toggle": null,
+        "arp.layers_sets_clear_objects": null,
+        "arp.layers_sets_edit": null,
+        "arp.layers_sets_move": null,
+        "arp.layers_sets_remove": null,
+        "arp.layers_sets_remove_bones": null,
+        "arp.match_to_rig": {
+          "params": [
+            {
+              "id": "state_proxy_picker",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "state_xmirror",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "scale_actions",
+              "type": "BOOLEAN",
+              "default": false
+            }
+          ],
+          "description": "Generate the final rig from the reference bones"
+        },
+        "arp.mirror_blink_pose": null,
+        "arp.mirror_bones_list": null,
+        "arp.mirror_custom_shape": null,
+        "arp.mirror_fist_ctrl": null,
+        "arp.mirror_picker": null,
+        "arp.mirror_shape_keys": null,
+        "arp.move_picker_layout": null,
+        "arp.open_folder": null,
+        "arp.open_link_internet": null,
+        "arp.pick_bone": null,
+        "arp.pick_object": null,
+        "arp.prefs_save": null,
+        "arp.preserve_disable_all_actions": null,
+        "arp.preserve_enable_all_actions": null,
+        "arp.property_pin": null,
+        "arp.rebind_scale_fix": {
+          "params": [
+            {
+              "id": "message",
+              "type": "STRING",
+              "default": ""
+            },
+            {
+              "id": "icon_type",
+              "type": "STRING",
+              "default": "INFO"
+            }
+          ],
+          "description": "Rebind with Scale Fix"
+        },
+        "arp.redefine_rest_pose": null,
+        "arp.remap_disable_all_actions": {
+          "params": [],
+          "description": "Disable all actions for retargetting"
+        },
+        "arp.remap_enable_all_actions": {
+          "params": [],
+          "description": "Enable all actions for retargetting"
+        },
+        "arp.remap_export_act_list": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "py"
+            }
+          ],
+          "description": "Export selected actions list"
+        },
+        "arp.remap_export_preset": {
+          "params": [
+            {
+              "id": "preset_name",
+              "type": "STRING",
+              "default": "RemapPreset"
+            }
+          ],
+          "description": "Export as custom preset"
+        },
+        "arp.remap_import_act_list": {
+          "params": [
+            {
+              "id": "filepath",
+              "type": "STRING",
+              "default": "py"
+            }
+          ],
+          "description": "Import selected actions list"
+        },
+        "arp.remap_update": {
+          "params": [],
+          "description": "Update Remap settings to latest version"
+        },
+        "arp.remove_armature_preset": null,
+        "arp.remove_blink_pose": null,
+        "arp.remove_corrective_shape": null,
+        "arp.remove_custom_limbs": null,
+        "arp.remove_fist_ctrl": null,
+        "arp.remove_picker": null,
+        "arp.report_message": null,
+        "arp.reset_pose": null,
+        "arp.retarget": {
+          "params": [
+            {
+              "id": "frame_start",
+              "type": "INT",
+              "default": 0
+            },
+            {
+              "id": "frame_end",
+              "type": "INT",
+              "default": 10
+            },
+            {
+              "id": "freeze_source",
+              "type": "ENUM",
+              "items": [
+                "YES",
+                "NO"
+              ],
+              "default": "NO"
+            },
+            {
+              "id": "freeze_target",
+              "type": "ENUM",
+              "items": [
+                "YES",
+                "NO"
+              ],
+              "default": "NO"
+            },
+            {
+              "id": "show_freeze_warn",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "fake_user_action",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "clean_fk_rot",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "clean_ik_pole",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "clean_ik_pole_angle",
+              "type": "FLOAT",
+              "default": 5.0
+            },
+            {
+              "id": "too_long_bones_names",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "only_existing_keyframes",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "extract_root_motion",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "loc_x",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "loc_y",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "loc_z",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "loc_z_offset",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "rotation",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "forward_axis",
+              "type": "ENUM",
+              "items": [
+                "X",
+                "Y",
+                "Z",
+                "-X",
+                "-Y",
+                "-Z"
+              ],
+              "default": "Z"
+            },
+            {
+              "id": "force_source_freeze",
+              "type": "ENUM",
+              "items": [
+                "YES",
+                "NO"
+              ],
+              "default": "NO"
+            },
+            {
+              "id": "interpolation_type",
+              "type": "ENUM",
+              "items": [
+                "LINEAR",
+                "BEZIER",
+                "CONSTANT"
+              ],
+              "default": "LINEAR"
+            },
+            {
+              "id": "handle_type",
+              "type": "ENUM",
+              "items": [
+                "DEFAULT",
+                "AUTO_CLAMPED",
+                "AUTO",
+                "VECTOR",
+                "ALIGNED",
+                "FREE"
+              ],
+              "default": "DEFAULT"
+            },
+            {
+              "id": "unbind",
+              "type": "BOOLEAN",
+              "default": false
+            }
+          ],
+          "description": "Retarget the source armature action to the target armature"
+        },
+        "arp.retarget_bind_only": {
+          "params": [
+            {
+              "id": "freeze_source",
+              "type": "ENUM",
+              "items": [
+                "YES",
+                "NO"
+              ],
+              "default": "NO"
+            },
+            {
+              "id": "freeze_target",
+              "type": "ENUM",
+              "items": [
+                "YES",
+                "NO"
+              ],
+              "default": "NO"
+            },
+            {
+              "id": "show_freeze_warn",
+              "type": "BOOLEAN",
+              "default": true
+            },
+            {
+              "id": "too_long_bones_names",
+              "type": "BOOLEAN",
+              "default": false
+            },
+            {
+              "id": "unbind",
+              "type": "BOOLEAN",
+              "default": false
+            }
+          ],
+          "description": "Retarget, binding only without baking for quick preview"
+        },
+        "arp.retarget_clear_tweaks": {
+          "params": [],
+          "description": "Clear interactive tweaks"
+        },
+        "arp.retarget_synchro_select": {
+          "params": [],
+          "description": "Select in the bones list the active bone in the viewport"
+        },
+        "arp.save_armature_preset": null,
+        "arp.save_limb": null,
+        "arp.save_pose_rest": null,
+        "arp.screenshot_head_picker": null,
+        "arp.set_bone_tag": null,
+        "arp.set_character_name": null,
+        "arp.set_custom_shape": null,
+        "arp.set_custom_shape_menu": null,
+        "arp.set_eyelids_borders": null,
+        "arp.set_picker_camera": null,
+        "arp.set_pose": null,
+        "arp.set_shape_key_driver": null,
+        "arp.show_limb_params": null,
+        "arp.show_retro_options": null,
+        "arp.show_retro_options_ge": null,
+        "arp.snap_head": null,
+        "arp.snap_rot_from_scale": null,
+        "arp.switch_all_fingers": null,
+        "arp.switch_snap_root_tip": null,
+        "arp.switch_snap_root_tip_all": null,
+        "arp.toggle_action": null,
+        "arp.toggle_action_comp": null,
+        "arp.toggle_action_preserve_pose": null,
+        "arp.toggle_action_remap": {
+          "params": [
+            {
+              "id": "action_name",
+              "type": "STRING",
+              "default": ""
+            }
+          ],
+          "description": "Enable or disable this action from export"
+        },
+        "arp.toggle_lock_rig": null,
+        "arp.unbind_to_rig": {
+          "params": [],
+          "description": "Unbind the selected meshes from the rig"
+        },
+        "arp.unset_bone_tag": null,
+        "arp.update_armature": null,
+        "arp_export_scene.fbx": null
+      },
+      "settings": {
+        "Scene.arp_actions_linker": {
+          "value": false
+        },
+        "Scene.arp_actions_links": {
+          "value": []
+        },
+        "Scene.arp_active_tab": {
+          "value": "CREATE"
+        },
+        "Scene.arp_apply_mods": {
+          "value": true
+        },
+        "Scene.arp_apply_subsurf": {
+          "value": false
+        },
+        "Scene.arp_bake_anim": {
+          "value": true
+        },
+        "Scene.arp_bake_only_active": {
+          "value": true
+        },
+        "Scene.arp_bake_only_active_slot": {
+          "value": true
+        },
+        "Scene.arp_bake_type": {
+          "value": "ACTIONS"
+        },
+        "Scene.arp_bind_VHDS_engine": {
+          "value": "auto_fusion"
+        },
+        "Scene.arp_bind_apply_sk": {
+          "value": false
+        },
+        "Scene.arp_bind_chin": {
+          "value": true
+        },
+        "Scene.arp_bind_engine": {
+          "value": "HEAT_MAP"
+        },
+        "Scene.arp_bind_improve_heels": {
+          "value": true
+        },
+        "Scene.arp_bind_improve_hips": {
+          "value": true
+        },
+        "Scene.arp_bind_improve_twists": {
+          "value": true
+        },
+        "Scene.arp_bind_preserve": {
+          "value": true
+        },
+        "Scene.arp_bind_scale_fix": {
+          "value": false
+        },
+        "Scene.arp_bind_sel_verts": {
+          "value": false
+        },
+        "Scene.arp_bind_selected_bones": {
+          "value": false
+        },
+        "Scene.arp_bind_split": {
+          "value": true
+        },
+        "Scene.arp_body_name": {
+          "value": ""
+        },
+        "Scene.arp_bone_axis_primary_export": {
+          "value": "Y"
+        },
+        "Scene.arp_bone_axis_secondary_export": {
+          "value": "X"
+        },
+        "Scene.arp_bone_tag_show": {
+          "value": "cc"
+        },
+        "Scene.arp_const_bones_idx": {
+          "value": 0
+        },
+        "Scene.arp_const_bones_list": {
+          "value": []
+        },
+        "Scene.arp_corrective_shapes_data": {
+          "value": ""
+        },
+        "Scene.arp_custom_bones_idx": {
+          "value": 0
+        },
+        "Scene.arp_custom_bones_list": {
+          "value": []
+        },
+        "Scene.arp_custom_export_script": {
+          "value": ""
+        },
+        "Scene.arp_data_exp_fp": {
+          "value": ""
+        },
+        "Scene.arp_debug_bind": {
+          "value": false
+        },
+        "Scene.arp_debug_mode": {
+          "value": false
+        },
+        "Scene.arp_disable_smart_fx": {
+          "value": false
+        },
+        "Scene.arp_driver_bone": {
+          "value": ""
+        },
+        "Scene.arp_driver_transform": {
+          "value": "LOC_X"
+        },
+        "Scene.arp_engine_type": {
+          "value": "UNITY"
+        },
+        "Scene.arp_exclude_bones_idx": {
+          "value": 0
+        },
+        "Scene.arp_exclude_bones_list": {
+          "value": []
+        },
+        "Scene.arp_experimental_mode": {
+          "value": false
+        },
+        "Scene.arp_export_act_name": {
+          "value": "DEFAULT"
+        },
+        "Scene.arp_export_actions_links_idx": {
+          "value": 0
+        },
+        "Scene.arp_export_actlist": {
+          "value": []
+        },
+        "Scene.arp_export_actlist_idx": {
+          "value": 0
+        },
+        "Scene.arp_export_bake_axis_convert": {
+          "value": false
+        },
+        "Scene.arp_export_end_frame": {
+          "value": 250
+        },
+        "Scene.arp_export_file_separator": {
+          "value": "_"
+        },
+        "Scene.arp_export_format_copy": {
+          "value": "FBX"
+        },
+        "Scene.arp_export_name_string": {
+          "value": ""
+        },
+        "Scene.arp_export_noparent": {
+          "value": false
+        },
+        "Scene.arp_export_renaming": {
+          "value": false
+        },
+        "Scene.arp_export_rig_name": {
+          "value": "root"
+        },
+        "Scene.arp_export_rig_type": {
+          "value": "UNIVERSAL"
+        },
+        "Scene.arp_export_separate_fbx": {
+          "value": false
+        },
+        "Scene.arp_export_separate_fbx_list": {
+          "value": "FILE_PER_ACTION"
+        },
+        "Scene.arp_export_show_panels": {
+          "value": "RIG"
+        },
+        "Scene.arp_export_slot_separator": {
+          "value": "_"
+        },
+        "Scene.arp_export_start_frame": {
+          "value": 0
+        },
+        "Scene.arp_export_tex": {
+          "value": true
+        },
+        "Scene.arp_export_triangulate": {
+          "value": false
+        },
+        "Scene.arp_export_twist": {
+          "value": true
+        },
+        "Scene.arp_export_use_actlist": {
+          "value": false
+        },
+        "Scene.arp_eyeball_mode": {
+          "value": "AUTO"
+        },
+        "Scene.arp_eyeball_name": {
+          "value": ""
+        },
+        "Scene.arp_eyeball_name_right": {
+          "value": ""
+        },
+        "Scene.arp_eyeball_type": {
+          "value": "SINGLE"
+        },
+        "Scene.arp_facial_markers_save": {
+          "value": []
+        },
+        "Scene.arp_finger_thickness": {
+          "value": 3.0
+        },
+        "Scene.arp_fingers_enable": {
+          "value": true
+        },
+        "Scene.arp_fingers_init_transform": {
+          "value": []
+        },
+        "Scene.arp_fingers_to_detect": {
+          "value": 5
+        },
+        "Scene.arp_fix_fbx_matrix": {
+          "value": true
+        },
+        "Scene.arp_fix_fbx_rot": {
+          "value": false
+        },
+        "Scene.arp_foot_dir_l": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "Scene.arp_foot_dir_r": {
+          "value": [
+            0.0,
+            0.0,
+            0.0
+          ]
+        },
+        "Scene.arp_frame_range_type": {
+          "value": "FULL"
+        },
+        "Scene.arp_full_facial": {
+          "value": false
+        },
+        "Scene.arp_ge_add_dummy_mesh": {
+          "value": true
+        },
+        "Scene.arp_ge_bake_sample": {
+          "value": 1.0
+        },
+        "Scene.arp_ge_export_metacarp": {
+          "value": false
+        },
+        "Scene.arp_ge_export_parent_def": {
+          "value": false
+        },
+        "Scene.arp_ge_force_rest_pose_export": {
+          "value": true
+        },
+        "Scene.arp_ge_fp": {
+          "value": ""
+        },
+        "Scene.arp_ge_gltf_all_inf": {
+          "value": false
+        },
+        "Scene.arp_ge_gltf_anim_start_zero": {
+          "value": false
+        },
+        "Scene.arp_ge_gltf_export_active_vertex_color_when_no_material": {
+          "value": true
+        },
+        "Scene.arp_ge_gltf_export_all_vertex_colors": {
+          "value": true
+        },
+        "Scene.arp_ge_gltf_export_frame_step": {
+          "value": 1
+        },
+        "Scene.arp_ge_gltf_export_image_add_webp": {
+          "value": false
+        },
+        "Scene.arp_ge_gltf_export_image_format": {
+          "value": "AUTO"
+        },
+        "Scene.arp_ge_gltf_export_image_quality": {
+          "value": 75
+        },
+        "Scene.arp_ge_gltf_export_image_webp_fallback": {
+          "value": false
+        },
+        "Scene.arp_ge_gltf_export_materials": {
+          "value": "EXPORT"
+        },
+        "Scene.arp_ge_gltf_export_sampling_interpolation_fallback": {
+          "value": "LINEAR"
+        },
+        "Scene.arp_ge_gltf_export_unused_images": {
+          "value": false
+        },
+        "Scene.arp_ge_gltf_export_unused_textures": {
+          "value": false
+        },
+        "Scene.arp_ge_gltf_export_vertex_color": {
+          "value": "MATERIAL"
+        },
+        "Scene.arp_ge_gltf_export_vertex_color_name": {
+          "value": "Color"
+        },
+        "Scene.arp_ge_gltf_format": {
+          "value": "GLB"
+        },
+        "Scene.arp_ge_gltf_sample_anim": {
+          "value": true
+        },
+        "Scene.arp_ge_gltf_sk_normals": {
+          "value": true
+        },
+        "Scene.arp_ge_gltf_sk_tangents": {
+          "value": false
+        },
+        "Scene.arp_ge_gltf_unitsx100": {
+          "value": false
+        },
+        "Scene.arp_ge_master_traj": {
+          "value": false
+        },
+        "Scene.arp_ge_parent_fallback": {
+          "value": true
+        },
+        "Scene.arp_ge_reset_transforms": {
+          "value": false
+        },
+        "Scene.arp_ge_sel_bones_only": {
+          "value": false
+        },
+        "Scene.arp_ge_sel_only": {
+          "value": false
+        },
+        "Scene.arp_ge_shapes_only": {
+          "value": false
+        },
+        "Scene.arp_ge_shapes_only_data": {
+          "value": "VERTS"
+        },
+        "Scene.arp_ge_startend_keying": {
+          "value": true
+        },
+        "Scene.arp_ge_startend_keying_sk": {
+          "value": false
+        },
+        "Scene.arp_ge_vcol_type": {
+          "value": "SRGB"
+        },
+        "Scene.arp_global_scale": {
+          "value": 1.0
+        },
+        "Scene.arp_godot_root_axes": {
+          "value": true
+        },
+        "Scene.arp_highres_threshold": {
+          "value": 70000
+        },
+        "Scene.arp_ignore_linked_actions": {
+          "value": true
+        },
+        "Scene.arp_inherit_rot": {
+          "value": false
+        },
+        "Scene.arp_init_fbx_rot": {
+          "value": false
+        },
+        "Scene.arp_init_fbx_rot_mesh": {
+          "value": false
+        },
+        "Scene.arp_init_fbx_scale_mesh": {
+          "value": false
+        },
+        "Scene.arp_inputs_expand_ui": {
+          "value": true
+        },
+        "Scene.arp_keep_bend_bones": {
+          "value": false
+        },
+        "Scene.arp_large_icon": {
+          "value": 0
+        },
+        "Scene.arp_layers_animated": {
+          "value": false
+        },
+        "Scene.arp_layers_set_render": {
+          "value": false
+        },
+        "Scene.arp_layers_show_exclu": {
+          "value": false
+        },
+        "Scene.arp_layers_show_select": {
+          "value": false
+        },
+        "Scene.arp_mannequin_axes": {
+          "value": true
+        },
+        "Scene.arp_map_presets_expand_ui": {
+          "value": true
+        },
+        "Scene.arp_marker_to_select": {
+          "value": ""
+        },
+        "Scene.arp_markers_save": {
+          "value": []
+        },
+        "Scene.arp_mesh_smooth_type": {
+          "value": "OFF"
+        },
+        "Scene.arp_optimize_highres": {
+          "value": false
+        },
+        "Scene.arp_prioritize_active_color": {
+          "value": false
+        },
+        "Scene.arp_pseudo_voxels_resolution": {
+          "value": 7
+        },
+        "Scene.arp_pseudo_voxels_type": {
+          "value": "1"
+        },
+        "Scene.arp_push_bend": {
+          "value": true
+        },
+        "Scene.arp_quit": {
+          "value": false
+        },
+        "Scene.arp_remap_allow_root_update": {
+          "value": true
+        },
+        "Scene.arp_remap_only_containing": {
+          "value": ""
+        },
+        "Scene.arp_remap_show_tweaks": {
+          "value": false
+        },
+        "Scene.arp_rename_for_godot": {
+          "value": true
+        },
+        "Scene.arp_rename_for_ue": {
+          "value": true
+        },
+        "Scene.arp_rename_fp": {
+          "value": ""
+        },
+        "Scene.arp_retarget_decoupled_expand_ui": {
+          "value": false
+        },
+        "Scene.arp_retarget_in_place": {
+          "value": false
+        },
+        "Scene.arp_retro_3bonesleg_pole": {
+          "value": false
+        },
+        "Scene.arp_retro_action_prefix": {
+          "value": false
+        },
+        "Scene.arp_retro_axes": {
+          "value": false
+        },
+        "Scene.arp_retro_constraints": {
+          "value": false
+        },
+        "Scene.arp_retro_constraints_before_rename": {
+          "value": false
+        },
+        "Scene.arp_retro_export_soft_fix": {
+          "value": false
+        },
+        "Scene.arp_retro_eyes": {
+          "value": false
+        },
+        "Scene.arp_retro_feet": {
+          "value": false
+        },
+        "Scene.arp_retro_ge_UE_twist_pos": {
+          "value": false
+        },
+        "Scene.arp_retro_ge_frame_range": {
+          "value": false
+        },
+        "Scene.arp_retro_ge_mesh": {
+          "value": false
+        },
+        "Scene.arp_retro_ge_ue_axes_tweak": {
+          "value": false
+        },
+        "Scene.arp_retro_gltf_axes_fbx": {
+          "value": false
+        },
+        "Scene.arp_retro_ik_pole": {
+          "value": false
+        },
+        "Scene.arp_retro_jaw_rot": {
+          "value": false
+        },
+        "Scene.arp_retro_lips": {
+          "value": false
+        },
+        "Scene.arp_retro_spine_bend": {
+          "value": false
+        },
+        "Scene.arp_retro_splineik_quat": {
+          "value": false
+        },
+        "Scene.arp_retro_stretch_pin": {
+          "value": false
+        },
+        "Scene.arp_retro_stretch_thigh": {
+          "value": false
+        },
+        "Scene.arp_show_debug_44": {
+          "value": true
+        },
+        "Scene.arp_show_def_store": {
+          "value": [
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false,
+            false
+          ]
+        },
+        "Scene.arp_show_def_store_col": {
+          "value": ""
+        },
+        "Scene.arp_show_deforming": {
+          "value": false
+        },
+        "Scene.arp_show_driver_data": {
+          "value": false
+        },
+        "Scene.arp_show_freeze_warn": {
+          "value": false
+        },
+        "Scene.arp_show_ge_advanced": {
+          "value": false
+        },
+        "Scene.arp_show_ge_debug": {
+          "value": false
+        },
+        "Scene.arp_show_ik_chain_direction": {
+          "value": false
+        },
+        "Scene.arp_simplify_fac": {
+          "value": 0.009999999776482582
+        },
+        "Scene.arp_smart_AI_body_samples": {
+          "value": 10
+        },
+        "Scene.arp_smart_AI_facial_samples": {
+          "value": 8
+        },
+        "Scene.arp_smart_AI_is_installed": {
+          "value": false
+        },
+        "Scene.arp_smart_AI_samples": {
+          "value": 10
+        },
+        "Scene.arp_smart_AI_thresh": {
+          "value": 0.5
+        },
+        "Scene.arp_smart_cheeks": {
+          "value": true
+        },
+        "Scene.arp_smart_chin": {
+          "value": true
+        },
+        "Scene.arp_smart_depth": {
+          "value": false
+        },
+        "Scene.arp_smart_ears": {
+          "value": true
+        },
+        "Scene.arp_smart_eyebrows": {
+          "value": true
+        },
+        "Scene.arp_smart_eyes": {
+          "value": true
+        },
+        "Scene.arp_smart_fingers_engine": {
+          "value": "LEGACY"
+        },
+        "Scene.arp_smart_mouth": {
+          "value": true
+        },
+        "Scene.arp_smart_neck_count": {
+          "value": 1
+        },
+        "Scene.arp_smart_nose": {
+          "value": true
+        },
+        "Scene.arp_smart_overwrite": {
+          "value": true
+        },
+        "Scene.arp_smart_preset_settings": {
+          "value": "DEFAULT"
+        },
+        "Scene.arp_smart_remesh": {
+          "value": 9
+        },
+        "Scene.arp_smart_remesh_type": {
+          "value": "type1"
+        },
+        "Scene.arp_smart_root_vertical": {
+          "value": true
+        },
+        "Scene.arp_smart_shoulders_align": {
+          "value": "STRAIGHT"
+        },
+        "Scene.arp_smart_spine_count": {
+          "value": 4
+        },
+        "Scene.arp_smart_spine_shape": {
+          "value": "STRAIGHT"
+        },
+        "Scene.arp_smart_sym": {
+          "value": true
+        },
+        "Scene.arp_smart_teeth": {
+          "value": true
+        },
+        "Scene.arp_smart_tongue": {
+          "value": true
+        },
+        "Scene.arp_smart_twist_count": {
+          "value": 1
+        },
+        "Scene.arp_smart_type": {
+          "value": "BODY"
+        },
+        "Scene.arp_softlink_bones_idx": {
+          "value": 0
+        },
+        "Scene.arp_softlink_bones_list": {
+          "value": []
+        },
+        "Scene.arp_spline_snap_indiv": {
+          "value": false
+        },
+        "Scene.arp_spline_snap_iter_max": {
+          "value": 25
+        },
+        "Scene.arp_spline_snap_precision": {
+          "value": 3
+        },
+        "Scene.arp_teeth_lower_name": {
+          "value": ""
+        },
+        "Scene.arp_teeth_name": {
+          "value": ""
+        },
+        "Scene.arp_teeth_type": {
+          "value": "SINGLE"
+        },
+        "Scene.arp_tongue_name": {
+          "value": ""
+        },
+        "Scene.arp_twist_fac": {
+          "value": 0.5
+        },
+        "Scene.arp_ue4": {
+          "value": false
+        },
+        "Scene.arp_ue_ik": {
+          "value": true
+        },
+        "Scene.arp_ue_ik_anim": {
+          "value": false
+        },
+        "Scene.arp_ue_root_motion": {
+          "value": false
+        },
+        "Scene.arp_units_meters": {
+          "value": false
+        },
+        "Scene.arp_units_x100": {
+          "value": true
+        },
+        "Scene.arp_use_tspace": {
+          "value": false
+        }
+      }
+    }
+  }
+}
