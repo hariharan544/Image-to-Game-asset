@@ -199,6 +199,22 @@ def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8):
     return _mod("retopo").run(args)
 
 
+def stop_cleanup() -> None:
+    """After Stop: drop half-done pieces and results, show the original parts again."""
+    for o in list(bpy.data.objects):
+        if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_"):
+            bpy.data.objects.remove(o)
+    try:
+        retopo = _mod("retopo")
+        retopo.STATUS["text"] = ""
+    except Exception:                                 # noqa: BLE001
+        pass
+    for p in parts():
+        p.hide_set(False)
+    for o in lows():
+        o.hide_set(False)
+
+
 def clay_lows() -> None:
     """Plain grey on the new meshes until the bake (the original's material would show the
     density colours and confuse)."""

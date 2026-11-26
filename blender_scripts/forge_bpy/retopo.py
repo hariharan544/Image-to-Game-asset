@@ -255,6 +255,7 @@ def _run_builtin(args: dict) -> dict:
 # Quad Remesher jobs that timed out keep running in their engine and import their result
 # later: input name -> True. Their late "Retopo_<name>" objects are removed, never taken.
 _QR_PENDING: dict = {}
+STATUS = {"text": ""}          # what the running job is doing, for the panel
 
 
 def _is_result_of(o, name: str) -> bool:
@@ -351,6 +352,7 @@ def _run_qr(args: dict):
         before = C.tri_count(obj)
         backup = obj.data.copy()
         target = budget / 2                      # quads
+        STATUS["text"] = f"{obj.name}: Quad Remesher"
         ok = yield from _qr_part(obj, target, args, timeout)
         used = "quadremesher"
         got = C.tri_count(obj) if ok else 0
@@ -359,6 +361,7 @@ def _run_qr(args: dict):
             # one corrected re-run before any decimation
             target = target * (budget / max(got, 1)) * (0.95 if got > budget else 1.0)
             _replace_mesh(obj, backup.copy())
+            STATUS["text"] = f"{obj.name}: Quad Remesher again (triangle count)"
             ok = yield from _qr_part(obj, target, args, timeout)
             used = "quadremesher(rerun)"
         shape = None
@@ -376,6 +379,7 @@ def _run_qr(args: dict):
                 boost(backup, shape["mask"])
                 keep = obj.data.copy()
                 _replace_mesh(obj, backup.copy())
+                STATUS["text"] = f"{obj.name}: shape lost, Quad Remesher again with more detail"
                 ok2 = yield from _qr_part(obj, target, args, timeout)
                 if not ok2:
                     _replace_mesh(obj, keep)
@@ -400,6 +404,7 @@ def _run_qr(args: dict):
                     piece["forge_rescue"] = True
                     for col in obj.users_collection:
                         col.objects.link(piece)
+                    STATUS["text"] = f"{obj.name}: rebuilding thin part {ri + 1} (tail, horn...)"
                     ok3 = yield from _qr_part(piece, quads, args, timeout)
                     if ok3:
                         rescue.fuse(obj, piece, plug)

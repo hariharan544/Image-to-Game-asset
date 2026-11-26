@@ -100,6 +100,7 @@ def run(st, label: str, fn, on_done) -> None:
         raise RuntimeError(f"still working: {job_label()}")
     st.error = ""
     _JOB["label"] = label
+    _JOB["started"] = __import__("time").time()
     _JOB["on_done"] = on_done
     _JOB["snapshot"] = _snapshot(st)
     try:
@@ -217,6 +218,7 @@ class FORGE_OT_step(bpy.types.Operator):
             self.report({"WARNING"}, "Quad Remesher not found: Blender's own remesher is used")
 
         def done(st, rep):
+            S._mod("retopo").STATUS["text"] = ""
             for o in S.lows():                    # show whether mirror symmetry was used
                 r = rep.get("parts", {}).get(o.get("forge_part"))
                 if r is not None:
@@ -529,9 +531,20 @@ def draw_late(layout, context):
     st = st_of(context)
     busy = job_label()
     if busy:
+        import time as _t
         box = layout.box()
         box.label(text=f"Working: {busy}...", icon="SORTTIME")
-        box.label(text="Leave Blender alone until this finishes.")
+        secs = int(_t.time() - _JOB.get("started", _t.time()))
+        try:
+            now = S._mod("retopo").STATUS.get("text", "")
+        except Exception:                                 # noqa: BLE001
+            now = ""
+        if now:
+            box.label(text=now[:60])
+        box.label(text=f"{secs // 60} min {secs % 60:02d} s - leave Blender alone")
+        row = box.row()
+        row.alert = True
+        row.operator("forge.stop_job", text="Stop", icon="CANCEL")
     if st.error:
         box = layout.box()
         col = box.column(align=True)
@@ -674,4 +687,25 @@ def unregister_handlers():
         bpy.app.handlers.load_post.remove(_on_load)
 
 
-CLASSES = (FORGE_OT_step, FORGE_OT_import_retexture)
+class FORGE_OT_stop_job(bpy.types.Operator):
+    bl_idname = "forge.stop_job"
+    bl_label = "Stop"
+    bl_description = ("Stop the running job (e.g. a Quad Remesher run that takes too long), remove its "
+                      "half-done pieces and unlock the panel")
+
+    def execute(self, context):
+        gen = _JOB.get("gen")
+        _JOB.clear()                                  # the timer finds no job and stops
+        if gen is not None:
+            try:
+                gen.close()
+            except Exception:                         # noqa: BLE001
+                pass
+        S.stop_cleanup()
+        st = st_of(context)
+        st.error = "Stopped. Run the step again when ready (you can change the settings first)."
+        _redraw()
+        return {"FINISHED"}
+
+
+CLASSES = (FORGE_OT_step, FORGE_OT_import_retexture, FORGE_OT_stop_job)

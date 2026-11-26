@@ -176,6 +176,21 @@ def test_job_lock_lives_in_memory_and_stale_results_are_discarded():
         assert not bpy.types.FORGE_OT_stage_reopen.poll(bpy.context)
         L._JOB.clear()
         assert bpy.types.FORGE_OT_stage_reopen.poll(bpy.context)
+        # a long job: the panel shows it, Stop ends it and unlocks everything
+        from unittest import mock
+
+        def endless():
+            while True:
+                yield 1.0
+        L._JOB.update({"gen": endless(), "on_done": lambda *a: None, "label": "retopology", "started": 0})
+        L.S._mod("retopo").STATUS["text"] = "Body_low: rebuilding thin part 1"
+        F.stages_ui.FORGE_PT_stages.draw(mock.MagicMock(), bpy.context)
+        leftover = bpy.data.objects.new("Body_low_rescue0", bpy.data.meshes.new("r"))
+        bpy.context.scene.collection.objects.link(leftover)
+        assert bpy.ops.forge.stop_job() == {"FINISHED"}
+        assert not L.job_running() and "Stopped" in st.error
+        assert "Body_low_rescue0" not in bpy.data.objects and L.S._mod("retopo").STATUS["text"] == ""
+        assert bpy.types.FORGE_OT_stage_reopen.poll(bpy.context)
     finally:
         F.unregister()
 
