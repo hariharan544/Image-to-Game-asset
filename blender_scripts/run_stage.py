@@ -48,6 +48,7 @@ STAGES = {
     "fixture": fixture.run,
     "addon_probe": addon_probe.run,
     "addon_trial": addon_trial.run,
+    "addon_trial2": addon_trial.run_v2,
 }
 
 

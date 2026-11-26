@@ -146,7 +146,8 @@ def cmd_check(a) -> int:
 
 def cmd_setup_blender(a) -> int:
     from .setup_blender import run
-    return run(a.blender, a.jobs, Path.cwd() / ".env", a.skip_smoke_test, addon_trial=a.addon_trial)
+    return run(a.blender, a.jobs, Path.cwd() / ".env", a.skip_smoke_test, addon_trial=a.addon_trial,
+               addon_trial2=a.addon_trial2)
 
 
 def main(argv=None) -> int:
@@ -180,6 +181,8 @@ def main(argv=None) -> int:
     b.add_argument("--skip-smoke-test", action="store_true")
     b.add_argument("--addon-trial", action="store_true",
                    help="run Quad Remesher / Auto-Rig Pro / UVPackmaster for real in a windowed Blender")
+    b.add_argument("--addon-trial2", action="store_true",
+                   help="Auto-Rig Pro full flow (rig, bind, engine export) + a real UVPackmaster pack")
     b.set_defaults(fn=cmd_setup_blender)
 
     c = sub.add_parser("check", help="verify the environment")

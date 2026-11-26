@@ -96,8 +96,33 @@ def _addon_trial(blender: list[str], work: Path, say) -> None:
     say(f"[OK] Add-on trial report -> {work / 'addon_trial.json'}")
 
 
+def _addon_trial2(blender: list[str], work: Path, say) -> None:
+    say("Add-on trial 2 (Auto-Rig Pro full flow + UVPackmaster pack): a Blender window opens and "
+        "closes by itself - do not close it.")
+    out = work / "trial2"
+    out.mkdir(parents=True, exist_ok=True)
+    try:
+        rep = run_stage("addon_trial2", {"out_dir": str(out)}, work / "logs" / "addon_trial2.log",
+                        blender=blender, factory_startup=False, windowed=True, timeout=900)
+    except BlenderError as exc:
+        say(f"[X] Add-on trial 2 failed: {str(exc).splitlines()[0]}")
+        return
+    (work / "addon_trial2.json").write_text(json.dumps(rep, indent=2), encoding="utf-8")
+    a = rep.get("auto_rig_pro_flow", {})
+    say(f"   Auto-Rig Pro: preset={a.get('append_preset')} match={a.get('match_result')} "
+        f"bind={a.get('bind_result') or a.get('bind_error', '')[:80]} "
+        f"exports={ {k: v.get('exists', False) for k, v in a.get('exports', {}).items()} }")
+    u = rep.get("uvpackmaster_flow", {})
+    if u.get("after"):
+        say(f"   UVPackmaster: mode={u.get('mode_used')} utilization "
+            f"{u['before'].get('utilization')} -> {u['after'].get('utilization')} in {u.get('elapsed_s')}s")
+    else:
+        say(f"   UVPackmaster: {u.get('call_error') or u.get('skipped') or 'no result'}"[:200])
+    say(f"[OK] Add-on trial 2 report -> {work / 'addon_trial2.json'}")
+
+
 def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: bool, say=print,
-        addon_trial: bool = False) -> int:
+        addon_trial: bool = False, addon_trial2: bool = False) -> int:
     report: dict = {"time": time.time()}
     if blender_path:
         p = Path(blender_path)
@@ -168,6 +193,8 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
 
     if addon_trial:
         _addon_trial(blender, work, say)
+    if addon_trial2:
+        _addon_trial2(blender, work, say)
 
     if not skip_smoke and ok:
         say("Running the pipeline smoke test inside your Blender ...")
