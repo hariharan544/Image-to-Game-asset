@@ -90,7 +90,7 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
     report["blender"] = blender[0]
     say(f"[OK] Blender: {blender[0]}")
 
-    work = Path(jobs_dir) / "_setup"
+    work = (Path(jobs_dir) / "_setup").resolve()      # Blender must never see relative paths
     work.mkdir(parents=True, exist_ok=True)
     try:
         info = run_stage("sysinfo", {}, work / "logs" / "sysinfo.log", blender=blender, factory_startup=False)
@@ -124,8 +124,18 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
             probe = run_stage("addon_probe", {}, work / "logs" / "addon_probe.log", blender=blender,
                               factory_startup=False)
             (work / "addon_probe.json").write_text(json.dumps(probe, indent=2), encoding="utf-8")
-            counts = {k: len(v["operators"]) for k, v in probe["addons"].items()}
-            say(f"[OK] Add-on probe: operators found {counts} -> {work / 'addon_probe.json'}")
+            say(f"Add-on probe -> {work / 'addon_probe.json'}")
+            for key, a in probe["addons"].items():
+                for f in a["found"]:
+                    ops = len(a["operators"])
+                    if f.get("enable_errors"):
+                        say(f"   [X] {f['name']}: does not load in background Blender: {f['enable_errors'][0][:160]}")
+                    elif f["loaded"] or f.get("loaded_by_probe"):
+                        note = "" if f["enabled_in_saved_prefs"] else \
+                            "  (ticked but preferences not saved: Blender menu > Save Preferences)"
+                        say(f"   [OK] {f['name']} {f['version']}: {ops} operators{note}")
+                    else:
+                        say(f"   [!] {f['name']}: could not be loaded (see logs\\addon_probe.log)")
         except BlenderError as exc:
             say(f"[!] Add-on probe failed: {str(exc).splitlines()[0]}")
 

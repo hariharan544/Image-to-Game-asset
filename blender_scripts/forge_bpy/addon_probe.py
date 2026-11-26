@@ -88,10 +88,25 @@ def run(args: dict) -> dict:
         for m in mods:
             info = addon_utils.module_bl_info(m)
             hay = (m.__name__ + " " + info.get("name", "")).lower()
-            if any(n in hay for n in spec["names"]):
-                found.append({"module": m.__name__, "name": info.get("name"),
-                              "version": _value(info.get("version")),
-                              "enabled": addon_utils.check(m.__name__)[1]})
+            if not any(n in hay for n in spec["names"]):
+                continue
+            entry = {"module": m.__name__, "name": info.get("name"),
+                     "version": _value(info.get("version")),
+                     "enabled_in_saved_prefs": m.__name__ in bpy.context.preferences.addons.keys(),
+                     "loaded": addon_utils.check(m.__name__)[1]}
+            if not entry["loaded"]:
+                # turn it on for this process only (not saved), so the probe works even when
+                # the preferences were never saved; record why if it refuses to load headless
+                errors = []
+                try:
+                    addon_utils.enable(m.__name__, default_set=False, persistent=False,
+                                       handle_error=lambda ex: errors.append(f"{type(ex).__name__}: {ex}"))
+                except Exception as exc:
+                    errors.append(f"{type(exc).__name__}: {exc}")
+                entry["loaded_by_probe"] = addon_utils.check(m.__name__)[1]
+                if errors:
+                    entry["enable_errors"] = [e[:500] for e in errors]
+            found.append(entry)
         ops = {}
         for ns in dir(bpy.ops):
             if not any(n in ns.lower() for n in spec["ops_ns"]):

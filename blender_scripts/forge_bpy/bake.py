@@ -159,7 +159,7 @@ def _final_material(low, maps: dict) -> None:
 
 def run(args: dict) -> dict:
     size = int(args.get("texture_size", 2048))
-    out_dir = args["texture_dir"]
+    out_dir = os.path.abspath(args["texture_dir"])
     os.makedirs(out_dir, exist_ok=True)
     maps_wanted = [m for m in args.get("maps", MAP_TYPES) if m in MAP_TYPES]
     extrusion_ratio = float(args.get("cage_extrusion_ratio", 0.01))

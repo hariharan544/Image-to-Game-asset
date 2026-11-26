@@ -40,7 +40,8 @@ def _cycles_devices() -> dict:
 def run(args: dict) -> dict:
     mods = list(addon_utils.modules())
     label = {m.__name__: (m.__name__ + " " + addon_utils.module_bl_info(m).get("name", "")).lower() for m in mods}
-    enabled = sorted(n for n in label if addon_utils.check(n)[1])
+    prefs_on = set(bpy.context.preferences.addons.keys())     # ticked in the *saved* preferences
+    enabled = sorted(n for n in label if addon_utils.check(n)[1] or n in prefs_on)
     installed = sorted(label)
     detected = {}
     for key, needles in KNOWN_ADDONS.items():

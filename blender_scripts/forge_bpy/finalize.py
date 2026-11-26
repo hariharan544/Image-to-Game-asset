@@ -85,7 +85,7 @@ def _clay(engine: str, on: bool) -> None:
 
 
 def previews(args: dict) -> dict:
-    out_dir = args["preview_dir"]
+    out_dir = os.path.abspath(args["preview_dir"])
     os.makedirs(out_dir, exist_ok=True)
     res = int(args.get("resolution", 512))
     engine = args.get("engine", "BLENDER_WORKBENCH")
@@ -252,7 +252,7 @@ def _export_fbx(objs, path: str, engine: str) -> None:
 def export(args: dict) -> dict:
     engine = args["engine"]
     asset = C.safe_name(args["asset_name"])
-    out_dir = args["export_dir"]
+    out_dir = os.path.abspath(args["export_dir"])
     tex_maps = args.get("texture_maps", {})          # part -> {map: path}
     detachable = set(args.get("detachable_parts", []))
     unity_pipeline = args.get("unity_pipeline", "urp")

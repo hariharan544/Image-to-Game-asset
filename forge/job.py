@@ -24,7 +24,7 @@ class Job:
     # --------------------------------------------------------------- create / load
     @classmethod
     def open(cls, jobs_dir: str | Path, spec: AssetSpec, source_image: Path) -> "Job":
-        root = Path(jobs_dir) / spec.name
+        root = (Path(jobs_dir) / spec.name).resolve()
         path = root / "manifest.json"
         if path.exists():
             job = cls(root, json.loads(path.read_text(encoding="utf-8")))
@@ -49,7 +49,7 @@ class Job:
 
     @classmethod
     def load(cls, job_dir: str | Path) -> "Job":
-        root = Path(job_dir)
+        root = Path(job_dir).resolve()
         return cls(root, json.loads((root / "manifest.json").read_text(encoding="utf-8")))
 
     def save(self) -> None:
