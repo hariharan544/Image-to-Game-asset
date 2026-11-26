@@ -13,7 +13,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 def test_example_guide_resolves_aaa_and_mobile_targets():
     g = load_guide(ROOT / "guides" / "example_project.yaml")
-    knight, chest, sword = g.assets
+    by = {a.name: a for a in g.assets}
+    knight, chest, sword = by["knight"], by["treasure_chest"], by["fire_sword"]
+    ranger = by["studio_ranger"]
+    assert ranger.model and ranger.image and ranger.targets["unreal"].topology.target_height_m == 1.8
     assert knight.rig.enabled and knight.rig.rig_type == "biped"
     assert knight.rig.spec == "unreal"                         # Tripo rigs to the AAA skeleton
     ue, un = knight.targets["unreal"], knight.targets["unity"]
