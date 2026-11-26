@@ -1214,19 +1214,19 @@
               },
               "lock_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72D258>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000001D652DFDB58>"
               },
               "stack_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72E698>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000001D652DFD618>"
               },
               "track_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72DC18>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000001D652DFCF58>"
               },
               "norm_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000002E64C72E458>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x000001D652DFC658>"
               }
             }
           },
@@ -1385,7 +1385,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000002E64C72D618>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000001D652DFC298>"
               }
             }
           },
@@ -1410,7 +1410,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000002E64C72DF18>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000001D652DFDC18>"
               }
             }
           },
@@ -1736,27 +1736,27 @@
               },
               "packing": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C942218>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000001D652DFCC58>"
               },
               "editor": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E6491E0E98>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000001D650C50E98>"
               },
               "lock_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C940718>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000001D652DFDCD8>"
               },
               "stack_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C943A18>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000001D652DFCDD8>"
               },
               "track_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C9425D8>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000001D652DFFF58>"
               },
               "norm_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000002E64C941258>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x000001D652DFD858>"
               }
             }
           },
@@ -1769,7 +1769,7 @@
               },
               "packing": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_ScriptContainer(\"\") at 0x000002E64C942BD8>"
+                "value": "<bpy_struct, UVPM4_ScriptContainer(\"\") at 0x000001D652DFCE98>"
               }
             }
           },
@@ -1794,7 +1794,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000002E64C943718>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x000001D652DFCAD8>"
               }
             }
           },
@@ -1825,7 +1825,7 @@
               },
               "base": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingOptionsBase(\"\") at 0x000002E64C941318>"
+                "value": "<bpy_struct, UVPM4_GroupingOptionsBase(\"\") at 0x000001D652DFD318>"
               },
               "tile_count_per_group": {
                 "type": "INT",
@@ -1997,195 +1997,25 @@
     },
     "mode_used": "pack.single_tile",
     "attempts": {
-      "uv_editor": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect",
-      "uv_editor_no_space": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect"
+      "uv_editor": [
+        "PASS_THROUGH",
+        "FINISHED"
+      ]
     },
-    "call_error": "pack could not run in any context",
-    "poll_diagnosis": {
-      "mode": "EDIT_MESH",
-      "class": "bl_ext.user_default.uvpackmaster4.spipeline.operators.pack_operator.UVPM4_OT_Pack",
-      "mro": [
-        "bl_ext.user_default.uvpackmaster4.spipeline.operators.pack_operator.UVPM4_OT_Pack",
-        "bl_ext.user_default.uvpackmaster4.operator.UVPM4_OT_Engine",
-        "bl_ext.user_default.uvpackmaster4.operator_generic.UVPM4_OT_GenericHandler",
-        "bl_ext.user_default.uvpackmaster4.operator_generic.UVPM4_OT_Generic",
-        "_bpy_types.Operator",
-        "builtins.bpy_struct",
-        "bl_ext.user_default.uvpackmaster4.event.DefaultFinishConditionMixin",
-        "bl_ext.user_default.uvpackmaster4.operator.ModeIdAttrMixin",
-        "builtins.object"
-      ],
-      "poll_sources": [
-        {
-          "class": "UVPM4_OT_Engine",
-          "source": "    @classmethod\n    def poll(cls, context):\n        prefs = get_prefs()\n        return prefs.engine_initialized\n"
-        }
-      ],
-      "prefs": {
-        "bl_idname": {
-          "type": "STRING",
-          "value": "\u0006"
-        },
-        "operation_counter": {
-          "type": "INT",
-          "value": -1
-        },
-        "box_rendering": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "boxes_dirty": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "group_scheme_boxes_editing": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "custom_target_box_editing": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "engine_retcode": {
-          "type": "INT",
-          "value": 0
-        },
-        "engine_path": {
-          "type": "STRING",
-          "value": "Engine not detected"
-        },
-        "engine_initialized": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "engine_status_msg": {
-          "type": "STRING",
-          "value": "UVPackmaster engine 4.0.4 not detected. Press the button for help:"
-        },
-        "thread_count": {
-          "type": "INT",
-          "value": 16
-        },
-        "topology_parse_timeout": {
-          "type": "INT",
-          "value": 30
-        },
-        "seed": {
-          "type": "INT",
-          "value": 0
-        },
-        "test_param": {
-          "type": "INT",
-          "value": 0
-        },
-        "write_to_file": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "wait_for_debugger": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "vert_multi_panel_toggles": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "orient_aware_uv_islands": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "allow_inconsistent_islands": {
-          "type": "BOOLEAN",
-          "value": true
-        },
-        "dont_transform_pinned_uvs": {
-          "type": "BOOLEAN",
-          "value": true
-        },
-        "pinned_uvs_as_others": {
-          "type": "BOOLEAN",
-          "value": true
-        },
-        "enable_vulkan": {
-          "type": "BOOLEAN",
-          "value": true
-        },
-        "enable_vulkan_saved": {
-          "type": "BOOLEAN",
-          "value": true
-        },
-        "tdensity_unit": {
-          "type": "ENUM",
-          "items": [],
-          "value": "0"
-        },
-        "tdensity_sync_enable": {
-          "type": "BOOLEAN",
-          "value": true
-        },
-        "disable_tips": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "font_size_text_output": {
-          "type": "INT",
-          "value": 15
-        },
-        "font_size_uv_overlay": {
-          "type": "INT",
-          "value": 20
-        },
-        "box_render_line_width": {
-          "type": "FLOAT",
-          "value": 4.0
-        },
-        "short_island_operator_names": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "ch_panel_mode": {
-          "type": "ENUM",
-          "items": [],
-          "value": "0"
-        },
-        "dis_msgs": {
-          "type": "POINTER",
-          "fields": {
-            "name": {
-              "type": "STRING",
-              "value": ""
-            },
-            "pixel_margin_dismissed": {
-              "type": "BOOLEAN",
-              "value": false
-            },
-            "grouping_pack_dismissed": {
-              "type": "BOOLEAN",
-              "value": false
-            },
-            "grouping_editor_dismissed": {
-              "type": "BOOLEAN",
-              "value": false
-            },
-            "object_options_viewport_dismissed": {
-              "type": "BOOLEAN",
-              "value": false
-            }
-          }
-        },
-        "saved_m_panel_a_settings": {
-          "type": "COLLECTION",
-          "len": 0
-        },
-        "script_allow_execution": {
-          "type": "BOOLEAN",
-          "value": false
-        },
-        "saved_dev_settings": {
-          "type": "COLLECTION",
-          "len": 0
-        }
-      }
+    "call_result": [
+      "PASS_THROUGH",
+      "FINISHED"
+    ],
+    "elapsed_s": 2.7,
+    "uv_changed": true,
+    "after": {
+      "has_uv": true,
+      "utilization": 0.7504,
+      "overlap_pct": 0.098,
+      "texel_density_px_per_m": 250.47,
+      "texel_density_cv": 0.0875,
+      "out_of_bounds_ratio": 0.0,
+      "zero_area_uv_tris": 0
     }
   }
 }

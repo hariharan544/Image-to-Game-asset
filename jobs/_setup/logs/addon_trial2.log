@@ -128,47 +128,47 @@ register_class(...):
 Info: Registering operator class: 'ARP_OT_snap_rot_from_scale', bl_idname 'arp.snap_rot_from_scale' has been registered before, unregistering previous
 register_class(...):
 Info: Registering operator class: 'ARP_OT_bake_rot_from_scale', bl_idname 'arp.bake_rot_from_scale' has been registered before, unregistering previous
-00:06.250  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'align_op_type', 'default'
-00:06.250  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
-00:06.250  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
-00:06.250  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'pack_op_type', 'default'
-00:06.750  bpy.rna          | WARNING current value '63' matches no enum in 'EnumProperty', 'object_types', 'default'
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.r"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.l"].custom_shape_scale[0]
-00:06.766  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.r"].custom_shape_scale[0]
+00:06.500  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'align_op_type', 'default'
+00:06.500  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
+00:06.500  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
+00:06.500  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'pack_op_type', 'default'
+00:07.000  bpy.rna          | WARNING current value '63' matches no enum in 'EnumProperty', 'object_types', 'default'
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.l"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.r"].custom_shape_scale[0]
+00:07.031  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.l"].custom_shape_scale[0]
 Set default settings...
 Armature scale already initialized
 
@@ -257,7 +257,7 @@ Split...
   smoothing neck weights....x
   Unselect...
 Finalize...
-Bound in 0.26 seconds.
+Bound in 0.28 seconds.
 Restore rig data...
 Info: Bound in 0.3 seconds
 
@@ -287,16 +287,16 @@ Custom Bones: []
 
 Apply armature rotation...
   Renaming to def names...
-Export Prep Time: 0.42 seconds.
+Export Prep Time: 0.44 seconds.
 
 ..............................FBX Export [all_actions]..............................
    C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNITY.fbx
 
 FBX export starting... 'C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNITY.fbx'
 Actions: ['all_actions']
-export finished in 0.0531 sec.
+export finished in 0.0546 sec.
 FBX Exporter Time: 0.09 seconds.
-FBX (Total Time): 0.51 seconds.
+FBX (Total Time): 0.53 seconds.
 
 Revert object name changes...
 
@@ -337,10 +337,10 @@ Custom Bones: []
   No action to create
 
 Mped rig built.
-Export Bake Time: 0.23 seconds.
+Export Bake Time: 0.24 seconds.
 ..............................Set Units x100 (baked)..............................
   x100 Units (baked) set successfully.
-Export Units Time: 0.27 seconds.
+Export Units Time: 0.28 seconds.
   Renaming to def names...
 Export Prep Time: 0.3 seconds.
 
@@ -348,9 +348,9 @@ Export Prep Time: 0.3 seconds.
    C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNREAL.fbx
 
 FBX export starting... 'C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNREAL.fbx'
-export finished in 0.0475 sec.
-FBX Exporter Time: 0.06 seconds.
-FBX (Total Time): 0.36 seconds.
+export finished in 0.0444 sec.
+FBX Exporter Time: 0.05 seconds.
+FBX (Total Time): 0.35 seconds.
 
 Revert object name changes...
 
@@ -408,16 +408,16 @@ Set Mannequin Axes bones...
 ..............................Set Units x100 (baked)..............................
   x100 Units (baked) set successfully.
   Renaming to def names...
-Export Prep Time: 0.76 seconds.
+Export Prep Time: 0.78 seconds.
 
 ..............................FBX Export [all_actions]..............................
    C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNREAL_HUMANOID.fbx
 
 FBX export starting... 'C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNREAL_HUMANOID.fbx'
 Actions: ['all_actions']
-export finished in 0.0597 sec.
+export finished in 0.0574 sec.
 FBX Exporter Time: 0.07 seconds.
-FBX (Total Time): 0.8300000000000001 seconds.
+FBX (Total Time): 0.8500000000000001 seconds.
 
 Revert object name changes...
 
@@ -465,16 +465,16 @@ rename_for_ue() finished
 ..............................Set Units x100 (baked)..............................
   x100 Units (baked) set successfully.
   Renaming to def names...
-Export Prep Time: 0.44 seconds.
+Export Prep Time: 0.46 seconds.
 
 ..............................FBX Export [all_actions]..............................
    C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNREAL_HUMANOID_UE4.fbx
 
 FBX export starting... 'C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNREAL_HUMANOID_UE4.fbx'
 Actions: ['all_actions']
-export finished in 0.0533 sec.
+export finished in 0.0545 sec.
 FBX Exporter Time: 0.06 seconds.
-FBX (Total Time): 0.5 seconds.
+FBX (Total Time): 0.52 seconds.
 
 Revert object name changes...
 
@@ -491,10 +491,3 @@ FBX version: 7400
 FBX version: 7400
 FBX version: 7400
 FBX version: 7400
-Could not find button with matching property to decorate (Object.location)
-Could not find button with matching property to decorate (Object.location)
-Could not find button with matching property to decorate (Object.location)
-Could not find button with matching property to decorate (Object.location)
-Could not find button with matching property to decorate (Object.location)
-Could not find button with matching property to decorate (Object.location)
-Could not find button with matching property to decorate (Object.location)
