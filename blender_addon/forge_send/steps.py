@@ -130,10 +130,51 @@ def prepare_retopo() -> list:
     return out
 
 
-def run_retopo(budget: int, use_qr: bool = True):
+def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
+    """Detail map on every original part (kept on it: the director may paint over it)."""
+    dens = _mod("density")
+    n = 0
+    for p in parts():
+        me = p.data
+        if recompute or dens.QR_ATTR not in me.color_attributes:
+            dens.write_qr_density(me, dens.detail_score(me), strength, make_active=False)
+            n += 1
+    return n
+
+
+def show_detail_map(on: bool) -> None:
+    """Show the originals coloured by the detail map: red = more quads, cyan = fewer, white = normal."""
+    dens = _mod("density")
+    for p in parts():
+        me = p.data
+        if dens.QR_ATTR not in me.color_attributes:
+            continue
+        if on:
+            p["forge_prev_color"] = me.color_attributes.active_color_name or ""
+            me.color_attributes.active_color_name = dens.QR_ATTR
+        else:
+            prev = p.get("forge_prev_color", "")
+            if prev and prev in me.color_attributes:
+                me.color_attributes.active_color_name = prev
+    new = lows()
+    for p in parts():                     # with new meshes present the map view swaps them
+        p.hide_set(bool(new) and not on)
+    for o in new:
+        o.hide_set(on)
+
+
+def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8):
+    if use_qr and detail > 0:
+        ensure_detail_maps(detail)
     prepare_retopo()
+    if not (use_qr and detail > 0):              # no map: QR spreads quads by curvature only
+        dens = _mod("density")
+        for o in lows():
+            a = o.data.color_attributes.get(dens.QR_ATTR)
+            if a is not None:
+                o.data.color_attributes.remove(a)
     args = {"method": "quadremesher" if use_qr else "quadriflow", "target_tris": int(budget),
-            "min_tris_per_part": 300, "preserve_hard_edges": True, "qr_timeout": 900}
+            "min_tris_per_part": 300, "qr_timeout": 900}
     return _mod("retopo").run(args)
 
 

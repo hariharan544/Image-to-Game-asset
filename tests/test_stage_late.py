@@ -47,6 +47,11 @@ def test_steps_4_to_9(tmp_path):
 
         # 4 retopology (no Quad Remesher here -> Blender's remesher, reported as a fallback)
         st.budget = 4000
+        assert bpy.ops.forge.step(action="retopo_map") == {"FINISHED"}, st.error
+        assert "QR_Density" in bpy.data.objects["Body"].data.color_attributes
+        assert bpy.data.objects["Body"].data.color_attributes.active_color_name == "QR_Density"
+        assert bpy.ops.forge.step(action="retopo_map") == {"FINISHED"}            # hide again
+        assert not bpy.data.objects["Body"].hide_get()          # no new mesh yet: the bull stays visible
         assert bpy.ops.forge.step(action="retopo_run") == {"FINISHED"}, st.error
         assert st.retopo == "review", st.error
         rep = json.loads(st.retopo_rep)
@@ -173,3 +178,36 @@ def test_job_lock_lives_in_memory_and_stale_results_are_discarded():
         assert bpy.types.FORGE_OT_stage_reopen.poll(bpy.context)
     finally:
         F.unregister()
+
+
+def test_detail_map_for_quad_remesher():
+    import bmesh
+    import numpy as np
+    from forge_bpy import density as D
+
+    # colour code = Quad Remesher's own density brush
+    c = D.qr_colours(np.array([1.0, 4.0, 0.25, 2.0, 0.5]))
+    assert np.allclose(c[0, :3], 1) and np.allclose(c[1, :3], (1, 0, 0)) and np.allclose(c[2, :3], (0, 1, 1))
+    assert np.allclose(c[3, :3], (1, 2 / 3, 2 / 3)) and np.allclose(c[4, :3], (2 / 3, 1, 1))
+    assert D.qr_density(np.array([0.0, 0.5, 1.0]), 0.0).tolist() == [1.0, 1.0, 1.0]   # strength 0: even
+
+    # a box: corners and edges are detail, the middle of the faces is flat
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=2.0)
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=40, use_grid_fill=True)
+    me = bpy.data.meshes.new("box")
+    bm.to_mesh(me)
+    keep = me.color_attributes.new("Col", "BYTE_COLOR", "CORNER")       # the model's own colours
+    me.color_attributes.active_color = keep
+    s = D.detail_score(me)
+    D.write_qr_density(me, s, 0.8, make_active=False)
+    assert me.color_attributes.active_color_name == "Col"                 # model colours untouched
+    co = np.array([v.co[:] for v in me.vertices])
+    lv = np.array([l.vertex_index for l in me.loops])
+    col = np.array([d.color_srgb[:] for d in me.color_attributes["QR_Density"].data])
+    edge = ((np.abs(co) > 0.97).sum(1) >= 2)[lv]
+    flat = ((np.abs(co) < 0.5).sum(1) >= 2)[lv]
+    assert col[edge, 1].mean() < 0.7 and col[edge, 0].mean() > 0.95      # reddish: more quads
+    assert col[flat, 0].mean() < 0.85 and col[flat, 2].mean() > 0.95     # cyan-ish: fewer quads
+    # before remeshing it must be the only colour layer
+    assert D.only_qr_density(me) and [a.name for a in me.color_attributes] == ["QR_Density"]

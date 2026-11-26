@@ -43,6 +43,9 @@ class ForgeStageState(bpy.types.PropertyGroup):
                         description="Triangle budget for the whole character in Unreal (all parts together)")
     budget_unity: IntProperty(name="Triangles (Unity)", default=8000, min=300, max=200000,
                               description="Triangle budget for the Unity mobile version")
+    detail: FloatProperty(name="Detail focus", default=0.8, min=0.0, max=1.0,
+                          description="How strongly quads move from flat areas (belly, back) to detail "
+                                      "(eyes, mouth, nostrils, nails, hoof tips). 0 = even quads")
     tex_size: EnumProperty(name="Texture size", default="2048",
                            items=[("1024", "1K", ""), ("2048", "2K", ""), ("4096", "4K", "")])
     rig_phase: StringProperty(default="")         # "" | "joints" | "built"

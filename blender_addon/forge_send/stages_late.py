@@ -156,6 +156,9 @@ ACTIONS = {
     "retopo_run": "Rebuild every part as a clean quad mesh inside the triangle budget (Quad Remesher). "
                   "The originals are kept hidden for the detail bake",
     "retopo_undo": "Remove the new meshes and show the originals again",
+    "retopo_map": "Show / hide the detail map on the originals: red = more quads, cyan = fewer, white = normal",
+    "retopo_map_reset": "Make the detail map again from the shape (undoes your painting)",
+    "retopo_map_paint": "Paint the detail map yourself on the selected part (Vertex Paint)",
     "retopo_compare": "Show / hide the original high-detail parts next to the new meshes",
     "uv_run": "Cut seams and unwrap every part, pack the pieces tightly (UVPackmaster)",
     "uv_checker": "Show a checker pattern: squares should look square and evenly sized everywhere",
@@ -192,7 +195,7 @@ class FORGE_OT_step(bpy.types.Operator):
             return {"CANCELLED"}
         a = self.action
         try:
-            if context.mode != "OBJECT" and a not in ("rig_pose_stop", "colour_save"):
+            if context.mode != "OBJECT" and a not in ("rig_pose_stop", "colour_save", "retopo_map_paint"):
                 bpy.ops.object.mode_set(mode="OBJECT")
             getattr(self, "do_" + a)(context, st)
         except Exception as exc:                          # noqa: BLE001
@@ -204,6 +207,9 @@ class FORGE_OT_step(bpy.types.Operator):
 
     # -- 4 retopology
     def do_retopo_run(self, context, st):
+        if st.get("detail_view"):
+            st["detail_view"] = False
+            S.show_detail_map(False)
         _start_step(st, "retopo")
         st.rig_phase = ""
         qr = S.has_addon_op("qremesher.remesh")
@@ -213,7 +219,36 @@ class FORGE_OT_step(bpy.types.Operator):
         def done(st, rep):
             _save_rep(st, "retopo_rep", rep)
             st.retopo = "review"
-        run(st, "retopology (Quad Remesher)" if qr else "retopology", lambda: S.run_retopo(st.budget, qr), done)
+        run(st, "retopology (Quad Remesher)" if qr else "retopology",
+            lambda: S.run_retopo(st.budget, qr, st.detail), done)
+
+    def do_retopo_map(self, context, st):
+        S.ensure_detail_maps(st.detail)
+        on = not st.get("detail_view", False)
+        st["detail_view"] = on
+        S.show_detail_map(on)
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                sh = area.spaces.active.shading
+                sh.type = "SOLID"
+                sh.color_type = "VERTEX" if on else "MATERIAL"
+
+    def do_retopo_map_reset(self, context, st):
+        n = S.ensure_detail_maps(st.detail, recompute=True)
+        self.report({"INFO"}, f"Detail map made again for {n} part(s)")
+
+    def do_retopo_map_paint(self, context, st):
+        o = context.active_object
+        if o is None or o not in S.parts():
+            o = S.G.body_of(S.parts())
+        S.ensure_detail_maps(st.detail)
+        S.show_detail_map(True)
+        st["detail_view"] = True
+        S.C().select_only(o)
+        o.data.color_attributes.active_color_name = "QR_Density"
+        bpy.ops.object.mode_set(mode="VERTEX_PAINT")
+        self.report({"INFO"}, "Paint red where you want more quads, cyan for fewer, white = normal. "
+                              "Tab when done")
 
     def do_retopo_undo(self, context, st):
         S.undo_retopo()
@@ -497,6 +532,13 @@ def _approve_btn(col, stage, text="Approve"):
 
 def _draw_retopo(col, st):
     col.prop(st, "budget")
+    col.prop(st, "detail", slider=True)
+    c = col.column(align=True)
+    c.label(text="Detail map: red = more quads, cyan = fewer")
+    r = c.row(align=True)
+    r.operator("forge.step", text="Show / hide", icon="HIDE_OFF").action = "retopo_map"
+    r.operator("forge.step", text="Paint", icon="BRUSH_DATA").action = "retopo_map_paint"
+    r.operator("forge.step", text="Reset", icon="FILE_REFRESH").action = "retopo_map_reset"
     _btn(col, "retopo_run", "Run retopology", "MOD_REMESH", 1.3)
     rep = json.loads(st.retopo_rep or "{}")
     if st.retopo == "review" and rep:

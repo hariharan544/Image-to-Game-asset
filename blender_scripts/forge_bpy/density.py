@@ -86,3 +86,67 @@ def heat_colours(score: np.ndarray) -> np.ndarray:
     blue = np.array([0.05, 0.2, 1.0, 1.0])
     red = np.array([1.0, 0.1, 0.05, 1.0])
     return (1 - s) * blue + s * red
+
+
+# ----------------------------------------------------------------------------- Quad Remesher
+
+QR_ATTR = "QR_Density"
+
+
+def qr_density(score: np.ndarray, strength: float = 0.8) -> np.ndarray:
+    """Detail score 0..1 -> Quad Remesher density multiplier: flat areas fewer quads,
+    detailed areas more (strength 0 = uniform, 1 = about 0.3x .. 3x)."""
+    k = 1.75 * float(np.clip(strength, 0.0, 1.0))
+    return np.clip(2.0 ** ((score * 2.0 - 1.0) * k), 0.25, 4.0)
+
+
+def qr_colours(density: np.ndarray) -> np.ndarray:
+    """Quad Remesher's own colour code (from its density brush): white = 1x,
+    red (1,0,0) = 4x denser, cyan (0,1,1) = 4x sparser, linear in between."""
+    out = np.ones((len(density), 4))
+    up = density >= 1.0
+    n = (density[up] - 1.0) / 3.0
+    out[up, 1] = 1.0 - n
+    out[up, 2] = 1.0 - n
+    n = ((1.0 / density[~up]) - 1.0) / 3.0
+    out[~up, 0] = 1.0 - n
+    return np.clip(out, 0.0, 1.0)
+
+
+def write_qr_density(me, score: np.ndarray, strength: float = 0.8, make_active: bool = True) -> None:
+    """Corner-domain byte colours in sRGB, as Quad Remesher's density brush paints them."""
+    point = qr_colours(qr_density(score, strength))
+    nl = len(me.loops)
+    lv = np.empty(nl, np.int32)
+    me.loops.foreach_get("vertex_index", lv)
+    attr = me.color_attributes.get(QR_ATTR)
+    if attr is not None:
+        me.color_attributes.remove(attr)
+    keep_active = me.color_attributes.active_color_name
+    keep_render = me.color_attributes.render_color_index
+    attr = me.color_attributes.new(name=QR_ATTR, type="BYTE_COLOR", domain="CORNER")
+    attr.data.foreach_set("color_srgb", point[lv].astype(np.float32).ravel())
+    if not make_active and keep_active:   # leave the model's own colour layer in charge
+        me.color_attributes.active_color_name = keep_active
+        me.color_attributes.render_color_index = keep_render
+        return
+    me.color_attributes.active_color = attr
+    try:
+        me.color_attributes.render_color_index = me.color_attributes.find(QR_ATTR)
+    except (AttributeError, TypeError):
+        pass
+
+
+def only_qr_density(me) -> bool:
+    """Before remeshing: QR's density map must be the only (first, active) colour layer."""
+    if QR_ATTR not in me.color_attributes:
+        return False
+    for a in [a for a in me.color_attributes if a.name != QR_ATTR]:
+        me.color_attributes.remove(a)
+    attr = me.color_attributes[QR_ATTR]
+    me.color_attributes.active_color = attr
+    try:
+        me.color_attributes.render_color_index = 0
+    except (AttributeError, TypeError):
+        pass
+    return True

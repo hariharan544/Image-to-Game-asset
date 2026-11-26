@@ -260,12 +260,16 @@ def _qr_part(obj, quads: int, args: dict, timeout: float):
     from .addon_trial import view3d_override
     s = bpy.context.scene.qremesher
     s.target_count = max(int(quads), 20)
-    s.adaptive_size = float(args.get("qr_adaptive_size", 50.0))
-    s.adapt_quad_count = True
-    s.use_vertex_color = False
+    from .density import only_qr_density
+    painted = only_qr_density(obj.data)            # detail map (red = more quads, cyan = fewer)
+    s.adaptive_size = float(args.get("qr_adaptive_size", 75.0 if painted else 50.0))
+    # with a density map, keep the total near the budget and let the map move quads around
+    s.adapt_quad_count = not painted
+    s.use_vertex_color = painted
     s.use_materials = False
     s.use_normals = False
-    s.autodetect_hard_edges = bool(args.get("preserve_hard_edges", True))
+    # organic shapes: the angle detector smooths away soft creases; the map handles them
+    s.autodetect_hard_edges = bool(args.get("preserve_hard_edges", not painted))
     s.symmetry_x = bool(obj.get("forge_symmetry_x", args.get("symmetry_x", False)))
     s.symmetry_y = s.symmetry_z = False
     C.select_only(obj)
