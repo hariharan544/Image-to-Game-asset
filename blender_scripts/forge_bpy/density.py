@@ -39,7 +39,17 @@ def _smooth(values: np.ndarray, ev: np.ndarray, n: int, iterations: int) -> np.n
     return v
 
 
-def detail_score(me, scale_iterations: int = 6, feature_iterations: int = 3) -> np.ndarray:
+def detail_score(me, scales=(6, 30), feature_iterations: int = 3) -> np.ndarray:
+    """Detail at two sizes, combined: small sharp features (eyes, mouth, nails) and broad
+    forms (chest and belly muscles, shoulder blades) both pull quads towards them."""
+    out = None
+    for s in scales:
+        part = _detail_one(me, s, feature_iterations + s // 6)
+        out = part if out is None else np.maximum(out, part)
+    return out if out is not None else np.zeros(len(me.vertices))
+
+
+def _detail_one(me, scale_iterations: int, feature_iterations: int) -> np.ndarray:
     """0..1 per vertex. Curvature is measured on a slightly smoothed copy of the normals
     (so sculpt noise and fur strokes do not count), then spread a little so a feature gets
     a band of density around it, not a single vertex row."""
@@ -150,3 +160,65 @@ def only_qr_density(me) -> bool:
     except (AttributeError, TypeError):
         pass
     return True
+
+
+# ----------------------------------------------------------------------------- shape check
+
+def shape_loss(src_me, low_me, tol_rel: float = 0.008, max_samples: int = 300_000) -> dict:
+    """How much of the original surface the new mesh lost (a thin tail collapsed, a tuft or
+    a nail tip cut off): distance from every original vertex to the new surface.
+    Returns {"mask": bool per original vertex, "lost_ratio", "max_rel"}."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    n = len(src_me.vertices)
+    co = np.empty(n * 3, np.float32)
+    src_me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    size = float(np.linalg.norm(co.max(axis=0) - co.min(axis=0))) or 1.0
+    lv = [v.co.copy() for v in low_me.vertices]
+    tree = BVHTree.FromPolygons(lv, [tuple(p.vertices) for p in low_me.polygons])
+    # a dense AI mesh has millions of points: test an even sample, then grow the hits back
+    stride = max(1, n // max_samples)
+    idx = np.arange(0, n, stride)
+    dist = np.empty(len(idx))
+    for j, i in enumerate(idx):
+        hit = tree.find_nearest(Vector(co[i]))
+        dist[j] = hit[3] if hit[0] is not None else size
+    rel = dist / size
+    mask = np.zeros(n, bool)
+    mask[idx[rel > tol_rel]] = True
+    if stride > 1 and mask.any():
+        mask = _dilate(mask, src_me, int(2 * stride ** 0.5) + 1)
+    return {"mask": mask, "lost_ratio": float((rel > tol_rel).mean()) if len(rel) else 0.0,
+            "max_rel": float(rel.max()) if len(rel) else 0.0}
+
+
+def _dilate(mask: np.ndarray, me, rings: int) -> np.ndarray:
+    ev = np.empty(len(me.edges) * 2, np.int32)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    m = mask.copy()
+    for _ in range(rings):
+        grow = m[ev[:, 0]] | m[ev[:, 1]]
+        m[ev[grow, 0]] = True
+        m[ev[grow, 1]] = True
+    return m
+
+
+def boost(me, mask: np.ndarray, rings: int = 3) -> int:
+    """Paint the masked area (grown by a few rings) full red = 4x denser quads."""
+    mask = _dilate(mask, me, rings)
+    attr = me.color_attributes.get(QR_ATTR)
+    nl = len(me.loops)
+    if attr is None:
+        attr = me.color_attributes.new(name=QR_ATTR, type="BYTE_COLOR", domain="CORNER")
+        attr.data.foreach_set("color_srgb", np.ones(nl * 4, np.float32))
+    col = np.empty(nl * 4, np.float32)
+    attr.data.foreach_get("color_srgb", col)
+    col = col.reshape(-1, 4)
+    lv = np.empty(nl, np.int32)
+    me.loops.foreach_get("vertex_index", lv)
+    hit = mask[lv]
+    col[hit] = (1.0, 0.0, 0.0, 1.0)
+    attr.data.foreach_set("color_srgb", col.ravel())
+    return int(mask.sum())

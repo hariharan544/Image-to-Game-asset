@@ -138,6 +138,18 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
         me = p.data
         if recompute or dens.QR_ATTR not in me.color_attributes:
             dens.write_qr_density(me, dens.detail_score(me), strength, make_active=False)
+            if G.kind(p) == "body" and strength > 0:
+                # thin extra parts (tail, ears, horns) collapse in a retopology: 4x density
+                try:
+                    import numpy as np
+                    J = _mod("joints").estimate(p)
+                    mask = np.zeros(len(me.vertices), bool)
+                    for a in _mod("appendages").from_object(p, J):
+                        mask[a["vert_idx"]] = True
+                    if mask.any():
+                        dens.boost(me, mask, rings=2)
+                except Exception as exc:              # noqa: BLE001 - the map still works without
+                    print(f"[forge] appendage search skipped: {exc}")
             n += 1
     return n
 

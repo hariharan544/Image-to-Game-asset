@@ -448,9 +448,19 @@ def _retopo_rows(rep):
     for part, r in rep.get("parts", {}).items():
         m = str(r.get("method", ""))
         icon = GOOD if m.startswith("quadremesher") and "failed" not in m else (BAD if m.startswith("failed") else WARN)
+        sh = r.get("shape")
+        if sh and sh.get("lost_pct", 0) > 0.5:
+            icon = BAD
         out.append((icon, f"{part}: {r.get('tris_before', 0):,} > {r.get('tris_after', 0):,} tris"))
-        if icon != GOOD:
+        if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
             out.append(("BLANK1", f"    method: {m}"))
+        if sh:
+            if sh.get("lost_pct", 0) > 0.5:
+                out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))
+                out.append(("BLANK1", "    paint the lost part red (Paint), run again"))
+            else:
+                fixed = f", fixed {sh['refined']}x" if sh.get("refined") else ""
+                out.append(("BLANK1", f"    shape kept{fixed}"))
     if rep.get("total_tris"):
         out.append(("INFO", f"total {rep['total_tris']:,} triangles"))
     return out

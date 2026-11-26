@@ -52,3 +52,29 @@ def test_tail_ears_horns_found_with_chains():
     assert abs(tail[-1][1] - 0.55) < 0.04 and abs(tail[-1][2] - 0.55) < 0.04   # tip at the end
     assert found["ear_l"]["chain"][-1][0] > 0.25 and found["ear_r"]["chain"][-1][0] < -0.25
     assert found["horn_l"]["chain"][-1][2] > 1.9
+
+
+def test_detail_map_gives_extra_parts_full_density():
+    import importlib
+
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    body = _creature()
+    col = bpy.data.collections.new("Forge Parts")
+    bpy.context.scene.collection.children.link(col)
+    for c in list(body.users_collection):
+        c.objects.unlink(body)
+    col.objects.link(body)
+    body["forge_kind"] = "body"
+    S = importlib.import_module("forge_send.steps")
+    assert S.ensure_detail_maps(0.8) == 1
+    me = body.data
+    c = np.empty(len(me.loops) * 4, np.float32)
+    me.color_attributes["QR_Density"].data.foreach_get("color_srgb", c)
+    c = c.reshape(-1, 4)
+    lv = np.array([l.vertex_index for l in me.loops])
+    co = np.array([v.co[:] for v in me.vertices])[lv]
+    tail_tip = np.linalg.norm(co - (0, 0.5, 0.6), axis=1) < 0.05
+    belly = np.linalg.norm(co - (0, -0.16, 1.1), axis=1) < 0.04
+    assert tail_tip.any() and np.allclose(c[tail_tip, :3].mean(0), (1, 0, 0), atol=0.05)   # full red
+    assert belly.any() and c[belly, 1].mean() > 0.5                                       # not red

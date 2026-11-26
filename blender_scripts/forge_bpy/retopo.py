@@ -322,9 +322,35 @@ def _run_qr(args: dict):
             _replace_mesh(obj, backup.copy())
             ok = yield from _qr_part(obj, budget / 2 * (budget / got) * 0.95, args, timeout)
             used = "quadremesher(rerun)"
+        shape = None
+        if ok and args.get("shape_check", True):
+            # did a thin part (tail, tuft, nail tip) collapse? paint it denser and run again
+            from .density import boost, shape_loss
+            tol = float(args.get("shape_tolerance", 0.008))
+            shape = shape_loss(backup, obj.data, tol)
+            shape["refined"] = 0
+            for _ in range(int(args.get("shape_retries", 2))):
+                if shape["lost_ratio"] < float(args.get("shape_max_lost", 0.002)):
+                    break
+                boost(backup, shape["mask"])
+                keep = obj.data.copy()
+                _replace_mesh(obj, backup.copy())
+                ok2 = yield from _qr_part(obj, budget / 2, args, timeout)
+                if not ok2:
+                    _replace_mesh(obj, keep)
+                    break
+                bpy.data.meshes.remove(keep)
+                refined = shape["refined"] + 1
+                shape = shape_loss(backup, obj.data, tol)
+                shape["refined"] = refined
+                used = "quadremesher(shape-fixed)"
         if not ok:
             _replace_mesh(obj, backup.copy())
             used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
         bpy.data.meshes.remove(backup)
         _finish_part(obj, budget, used, before, report, True)
+        if shape is not None:
+            report[obj.get(C.PART_PROP)]["shape"] = {
+                "lost_pct": round(100 * shape["lost_ratio"], 2), "max_gap_pct": round(100 * shape["max_rel"], 2),
+                "refined": shape["refined"]}
     return {"parts": report, "total_tris": sum(r["tris_after"] for r in report.values())}
