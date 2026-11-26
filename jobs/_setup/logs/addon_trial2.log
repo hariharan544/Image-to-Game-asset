@@ -1,0 +1,317 @@
+Reloading external rigs...
+Reloading external metarigs...
+Cannot read ARP prefs
+Update armature presets...
+register_class(...):
+Info: Registering panel class: 'ARP_PT_RigProps', bl_idname 'ARP_PT_RigProps' has been registered before, unregistering previous
+register_class(...):
+Info: Registering panel class: 'ARP_PT_RigProps_LayerSets', bl_idname 'ARP_PT_RigProps_LayerSets' has been registered before, unregistering previous
+register_class(...):
+Info: Registering panel class: 'ARP_PT_BoneCustomProps', bl_idname 'ARP_PT_BoneCustomProps' has been registered before, unregistering previous
+register_class(...):
+Info: Registering panel class: 'ARP_PT_RigProps_Settings', bl_idname 'ARP_PT_RigProps_Settings' has been registered before, unregistering previous
+register_class(...):
+Info: Registering panel class: 'ARP_PT_RigProps_SetPickerCam', bl_idname 'ARP_PT_RigProps_SetPickerCam' has been registered before, unregistering previous
+register_class(...):
+Info: Registering panel class: 'ARP_PT_RigProps_Utils', bl_idname 'ARP_PT_RigProps_Utils' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_snap_head', bl_idname 'arp.snap_head' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_snap_head_bake', bl_idname 'pose.arp_bake_head_lock' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_set_picker_camera_func', bl_idname 'id.set_picker_camera_func' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_toggle_multi', bl_idname 'id.toggle_multi' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_snap_pole', bl_idname 'pose.arp_snap_pole' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_bake_pole', bl_idname 'pose.arp_bake_pole' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_arm_bake_fk_to_ik', bl_idname 'pose.arp_bake_arm_fk_to_ik' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_arm_fk_to_ik', bl_idname 'pose.arp_arm_fk_to_ik_' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_arm_bake_ik_to_fk', bl_idname 'pose.arp_bake_arm_ik_to_fk' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_arm_ik_to_fk', bl_idname 'pose.arp_arm_ik_to_fk_' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_switch_snap', bl_idname 'pose.arp_switch_snap' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_leg_fk_to_ik', bl_idname 'pose.arp_leg_fk_to_ik_' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_leg_bake_fk_to_ik', bl_idname 'pose.arp_bake_leg_fk_to_ik' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_leg_ik_to_fk', bl_idname 'pose.arp_leg_ik_to_fk_' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_leg_bake_ik_to_fk', bl_idname 'pose.arp_bake_leg_ik_to_fk' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_snap_pin', bl_idname 'pose.arp_snap_pin' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_snap_limb_lock', bl_idname 'pose.arp_snap_limb_lock' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_bake_limb_lock', bl_idname 'pose.arp_bake_limb_lock' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_toes_set_all', bl_idname 'pose.arp_toes_set_all' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_reset_script', bl_idname 'arp.reset_pose' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_free_parent_ik_fingers', bl_idname 'arp.free_lock_ik_fingers' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_switch_all_fingers', bl_idname 'arp.switch_all_fingers' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_switch_snap_root_tip_all', bl_idname 'arp.switch_snap_root_tip_all' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_switch_snap_root_tip', bl_idname 'arp.switch_snap_root_tip' has been registered before, unregistering previous
+register_class(...):
+Info: Registering uilist class: 'ARP_UL_layers_sets_list', bl_idname 'ARP_UL_layers_sets_list' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_add', bl_idname 'arp.layers_sets_add' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_remove', bl_idname 'arp.layers_sets_remove' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_move', bl_idname 'arp.layers_sets_move' has been registered before, unregistering previous
+register_class(...):
+Info: Registering menu class: 'ARP_MT_layers_sets_menu', bl_idname 'ARP_MT_layers_sets_menu' has been registered before, unregistering previous
+register_class(...):
+Info: Registering menu class: 'ARP_MT_layers_sets_menu_import', bl_idname 'ARP_MT_layers_sets_menu_import' has been registered before, unregistering previous
+register_class(...):
+Info: Registering menu class: 'ARP_MT_layers_sets_menu_export', bl_idname 'ARP_MT_layers_sets_menu_export' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_set_import', bl_idname 'arp.layers_set_import' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_set_import_preset', bl_idname 'arp.layers_set_import_preset' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_set_export', bl_idname 'arp.layers_set_export' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_set_export_preset', bl_idname 'arp.layers_set_export_preset' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_all_toggle', bl_idname 'arp.layers_sets_all_toggle' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_add_defaults', bl_idname 'arp.layers_add_defaults' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_PT_layers_sets_edit', bl_idname 'arp.layers_sets_edit' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_add_object', bl_idname 'arp.layers_sets_add_object' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_add_collection', bl_idname 'arp.layers_sets_add_collection' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_remove_collection', bl_idname 'arp.delete_bone_collec' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_clear_objects', bl_idname 'arp.layers_sets_clear_objects' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_add_bones', bl_idname 'arp.layers_sets_add_bones' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_layers_sets_remove_bones', bl_idname 'arp.layers_sets_remove_bones' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_rotation_mode_convert', bl_idname 'arp.convert_rot_mode' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_property_pin', bl_idname 'arp.property_pin' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_childof_switcher', bl_idname 'arp.childof_switcher' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_childof_keyer', bl_idname 'arp.childof_keyer' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_snap_reversed_spine', bl_idname 'pose.arp_snap_reversed_spine' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_spine_bake_fwd_to_rev', bl_idname 'pose.arp_bake_spine_fwd_to_rev' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_spine_bake_rev_to_fwd', bl_idname 'pose.arp_bake_spine_rev_to_fwd' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_spline_bake_fk_to_ik', bl_idname 'pose.arp_bake_spline_fk_to_ik' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_spline_bake_ik_to_fk', bl_idname 'pose.arp_bake_spline_ik_to_fk' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_extract_root_motion', bl_idname 'arp.extract_root_motion' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_clear_root_motion', bl_idname 'arp.clear_root_motion' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_snap_rot_from_scale', bl_idname 'arp.snap_rot_from_scale' has been registered before, unregistering previous
+register_class(...):
+Info: Registering operator class: 'ARP_OT_bake_rot_from_scale', bl_idname 'arp.bake_rot_from_scale' has been registered before, unregistering previous
+00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'align_op_type', 'default'
+00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
+00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
+00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'pack_op_type', 'default'
+00:06.578  bpy.rna          | WARNING current value '63' matches no enum in 'EnumProperty', 'object_types', 'default'
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.l"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.r"].custom_shape_scale[0]
+00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.l"].custom_shape_scale[0]
+Set default settings...
+Armature scale already initialized
+
+ Aligning arm bones...
+
+  [ .r ]
+  [ .l ]
+  Deleted 0 drivers
+  [ .r ]
+  [ .l ]
+  Align roll [.r]
+  Align roll [.l]
+  Set secondary controllers [.r]
+  Set secondary controllers [.l]
+  Align fingers... .r
+  Setup fingers rotations...
+  Align fingers... .l
+  Setup fingers rotations...
+
+ Align leg bones...
+
+  [ .l ]
+  [ .r ]
+  Clean drivers...
+  Deleted 0 drivers
+  Set roll... .l
+  Set roll... .r
+  Align feet... .l
+  Align feet... .r
+  Align toes... .l
+  Align toes... .r
+  Toes fingers... .l
+  Toes fingers... .r
+  Set shape...
+  Foot roll, c_thigh_b... .l
+  Foot roll, c_thigh_b... .r
+  Set secondary controllers [.l]
+  Set secondary controllers [.r]
+
+ Aligning spine bones [.x]...
+
+ Aligning heads
+
+Head [.x]
+ Set neck parent...
+
+ Aligning facial...
+  Cheeks...
+  Nose...
+  Chins...
+  Align eyespec target...
+  Align eyebrows... .l
+  Align eyebrows... .r
+  Set sub necks...
+  Set pose settings...
+  end _align_arm_limbs()
+
+ Aligning ears
+Set transform constraints values...
+Update Arm weights... .r
+
+Update Arm weights... .l
+
+Update Leg weights... .l
+
+Update Leg weights... .r
+
+Found 0 duplicated drivers
+Info: Rig Done
+Unbinding...
+Unbound.
+Binding...
+Bind prepare...
+Eyeballs object(s) not found, eyeball skinning skipped
+Setup virtual jaw...
+  set approximate chin pos
+Split...
+  Skinning object part: 1/1                                         Traceback (most recent call last):
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
+    return export_fbx_bin.arp_save(self, context, **keywords)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
+    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
+    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
+  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
+    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
+  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 50, in parse
+    return compile(source, filename, mode, flags,
+                   _feature_version=feature_version, optimize=optimize)
+  File "<unknown>", line 0
+    
+SyntaxError: invalid syntax
+00:08.766  bpy.rna          | ERROR Python script error in ARP_EXPORT_SCENE_OT_fbx.execute
+Traceback (most recent call last):
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
+    return export_fbx_bin.arp_save(self, context, **keywords)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
+    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
+    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
+  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
+    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
+  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 50, in parse
+    return compile(source, filename, mode, flags,
+                   _feature_version=feature_version, optimize=optimize)
+  File "<unknown>", line 0
+    
+SyntaxError: invalid syntax
+00:09.188  bpy.rna          | ERROR Python script error in ARP_EXPORT_SCENE_OT_fbx.execute
+
+
+  Improve skinning...
+  hips: True
+  heels: True
+  remove temp vgroups...
+  improve jaw weights... .x
+  cleaning head weights... .x
+  smoothing neck weights....x
+  Unselect...
+Finalize...
+Bound in 0.28 seconds.
+Restore rig data...
+Info: Bound in 0.3 seconds
+Error: Python: Traceback (most recent call last):
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
+    return export_fbx_bin.arp_save(self, context, **keywords)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
+    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
+    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
+  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
+    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
+  ... truncatedError: Python: Traceback (most recent call last):
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
+    return export_fbx_bin.arp_save(self, context, **keywords)
+           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
+    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
+  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
+    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
+  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
+    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
+  ... truncated

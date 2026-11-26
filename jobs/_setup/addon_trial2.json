@@ -1,0 +1,1660 @@
+{
+  "windowed": true,
+  "blender": "5.3.0",
+  "auto_rig_pro_flow": {
+    "module_dir": "C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro",
+    "preset_blends": [
+      "armature_presets\\bird.blend",
+      "armature_presets\\bird_44.blend",
+      "armature_presets\\cs.blend",
+      "armature_presets\\dog.blend",
+      "armature_presets\\free.blend",
+      "armature_presets\\horse.blend",
+      "armature_presets\\horse_ik_spine.blend",
+      "armature_presets\\human.blend",
+      "armature_presets\\master.blend",
+      "limb_presets\\modules.blend",
+      "misc_presets\\facial_setup.blend",
+      "misc_presets\\humanoid.blend"
+    ],
+    "enums": {
+      "arp_engine_type": {
+        "items": [
+          "UNITY",
+          "UNREAL",
+          "GODOT",
+          "OTHERS"
+        ],
+        "value": "UNITY"
+      },
+      "arp_export_rig_type": {
+        "items": [
+          "HUMANOID",
+          "UNIVERSAL"
+        ],
+        "value": "UNIVERSAL"
+      },
+      "arp_bind_engine": {
+        "items": [
+          "HEAT_MAP",
+          "PSEUDO_VOXELS",
+          "VHDS",
+          "AAS"
+        ],
+        "value": "HEAT_MAP"
+      },
+      "arp_smart_type": {
+        "items": [
+          "BODY",
+          "FACIAL"
+        ],
+        "value": "BODY"
+      },
+      "arp_mesh_smooth_type": {
+        "items": [
+          "OFF",
+          "FACE",
+          "EDGE"
+        ],
+        "value": "OFF"
+      },
+      "arp_ge_vcol_type": {
+        "items": [
+          "NONE",
+          "SRGB",
+          "LINEAR"
+        ],
+        "value": "SRGB"
+      }
+    },
+    "export_op_params": [
+      {
+        "id": "filepath",
+        "type": "STRING",
+        "default": ""
+      },
+      {
+        "id": "check_existing",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "filter_glob",
+        "type": "STRING",
+        "default": "*.fbx"
+      },
+      {
+        "id": "ui_tab",
+        "type": "ENUM",
+        "items": [
+          "MAIN",
+          "GEOMETRY",
+          "ARMATURE",
+          "ANIMATION"
+        ],
+        "default": "MAIN"
+      },
+      {
+        "id": "use_selection",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "use_active_collection",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "global_scale",
+        "type": "FLOAT",
+        "default": 1.0
+      },
+      {
+        "id": "apply_unit_scale",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "apply_scale_options",
+        "type": "ENUM",
+        "items": [
+          "FBX_SCALE_NONE",
+          "FBX_SCALE_UNITS",
+          "FBX_SCALE_CUSTOM",
+          "FBX_SCALE_ALL"
+        ],
+        "default": "FBX_SCALE_NONE"
+      },
+      {
+        "id": "units_meters",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "use_space_transform",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "bake_space_transform",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "colors_type",
+        "type": "ENUM",
+        "items": [
+          "NONE",
+          "SRGB",
+          "LINEAR"
+        ],
+        "default": "SRGB"
+      },
+      {
+        "id": "prioritize_active_color",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "object_types",
+        "type": "ENUM",
+        "items": [
+          "EMPTY",
+          "CAMERA",
+          "LIGHT",
+          "ARMATURE",
+          "MESH",
+          "OTHER"
+        ],
+        "default": ""
+      },
+      {
+        "id": "use_mesh_modifiers",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "use_mesh_modifiers_render",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "mesh_smooth_type",
+        "type": "ENUM",
+        "items": [
+          "OFF",
+          "FACE",
+          "EDGE"
+        ],
+        "default": "OFF"
+      },
+      {
+        "id": "use_subsurf",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "use_mesh_edges",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "use_tspace",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "use_triangles",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "use_custom_props",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "add_leaf_bones",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "primary_bone_axis",
+        "type": "ENUM",
+        "items": [
+          "X",
+          "Y",
+          "Z",
+          "-X",
+          "-Y",
+          "-Z"
+        ],
+        "default": "Y"
+      },
+      {
+        "id": "secondary_bone_axis",
+        "type": "ENUM",
+        "items": [
+          "X",
+          "Y",
+          "Z",
+          "-X",
+          "-Y",
+          "-Z"
+        ],
+        "default": "X"
+      },
+      {
+        "id": "use_armature_deform_only",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "armature_nodetype",
+        "type": "ENUM",
+        "items": [
+          "NULL",
+          "ROOT",
+          "LIMBNODE"
+        ],
+        "default": "NULL"
+      },
+      {
+        "id": "bake_anim",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "bake_anim_use_all_bones",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "bake_anim_use_nla_strips",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "bake_anim_use_all_actions",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "bake_anim_force_startend_keying",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "bake_anim_force_startend_keying_sk",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "bake_anim_step",
+        "type": "FLOAT",
+        "default": 1.0
+      },
+      {
+        "id": "bake_anim_simplify_factor",
+        "type": "FLOAT",
+        "default": 1.0
+      },
+      {
+        "id": "path_mode",
+        "type": "ENUM",
+        "items": [
+          "AUTO",
+          "ABSOLUTE",
+          "RELATIVE",
+          "MATCH",
+          "STRIP",
+          "COPY"
+        ],
+        "default": "AUTO"
+      },
+      {
+        "id": "embed_textures",
+        "type": "BOOLEAN",
+        "default": false
+      },
+      {
+        "id": "batch_mode",
+        "type": "ENUM",
+        "items": [
+          "OFF",
+          "SCENE",
+          "COLLECTION",
+          "SCENE_COLLECTION",
+          "ACTIVE_SCENE_COLLECTION"
+        ],
+        "default": "OFF"
+      },
+      {
+        "id": "use_batch_own_dir",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "use_metadata",
+        "type": "BOOLEAN",
+        "default": true
+      },
+      {
+        "id": "shape_keys_baked_data",
+        "type": "STRING",
+        "default": ""
+      },
+      {
+        "id": "mesh_names_data",
+        "type": "STRING",
+        "default": ""
+      },
+      {
+        "id": "export_action_only",
+        "type": "STRING",
+        "default": ""
+      },
+      {
+        "id": "axis_forward",
+        "type": "ENUM",
+        "items": [
+          "X",
+          "Y",
+          "Z",
+          "-X",
+          "-Y",
+          "-Z"
+        ],
+        "default": "-Z"
+      },
+      {
+        "id": "axis_up",
+        "type": "ENUM",
+        "items": [
+          "X",
+          "Y",
+          "Z",
+          "-X",
+          "-Y",
+          "-Z"
+        ],
+        "default": "Y"
+      }
+    ],
+    "append_preset": "human",
+    "appended": {
+      "rig": [
+        "c_pos",
+        "c_traj",
+        "c_root_master.x",
+        "c_root.x",
+        "root.x",
+        "c_p_root.x",
+        "c_root_bend.x",
+        "c_thigh_b.l",
+        "thigh_ik.l",
+        "leg_ik.l",
+        "c_thigh_fk.l",
+        "thigh_fk.l",
+        "c_leg_fk.l",
+        "leg_fk.l",
+        "foot.l",
+        "toes_01.l",
+        "foot_pole.l",
+        "foot_fk_scale_fix.l",
+        "c_foot_fk.l",
+        "foot_fk.l",
+        "c_toes_fk.l",
+        "c_p_foot_fk.l",
+        "leg_fk_pre_pole.l",
+        "leg_fk_pole.l",
+        "thigh.l",
+        "c_stretch_leg.l",
+        "leg_pole_line.l",
+        "leg.l",
+        "thigh_twist.l",
+        "thigh_ik_nostr.l",
+        "leg_ik_nostr.l",
+        "c_thigh_ik.l",
+        "leg_pole_root.l",
+        "c_thigh_b.r",
+        "thigh_ik.r",
+        "leg_ik.r",
+        "thigh_ik_nostr.r",
+        "leg_ik_nostr.r",
+        "c_thigh_fk.r",
+        "thigh_fk.r",
+        "c_leg_fk.r",
+        "leg_fk.r",
+        "foot.r",
+        "toes_01.r",
+        "foot_pole.r",
+        "foot_fk_scale_fix.r",
+        "c_foot_fk.r",
+        "foot_fk.r",
+        "c_toes_fk.r",
+        "c_p_foot_fk.r",
+        "leg_fk_pre_pole.r",
+        "leg_fk_pole.r",
+        "thigh.r",
+        "c_stretch_leg.r",
+        "leg_pole_line.r",
+        "leg.r",
+        "thigh_twist.r",
+        "c_thigh_ik.r",
+        "leg_pole_root.r",
+        "c_p_root_master.x",
+        "c_spine_01.x",
+        "spine_01.x",
+        "c_p_spine_01.x",
+        "c_spine_02.x",
+        "spine_02.x",
+        "c_shoulder.r",
+        "arm_ik.r",
+        "forearm_ik.r",
+        "shoulder.r",
+        "shoulder_track_pole.r",
+        "shoulder_pole.r",
+        "arm_twist_twk.r",
+        "arm.r",
+        "c_stretch_arm.r",
+        "arm_pole_line.r",
+        "forearm.r",
+        "hand.r",
+        "c_pinky1_base.r",
+        "pinky_bend_all.r",
+        "pinky1_rot.r",
+        "c_pinky1.r",
+        "pinky1.r",
+        "pinky2_rot.r",
+        "c_pinky2.r",
+        "pinky3_rot.r",
+        "c_pinky3.r",
+        "c_ring1_base.r",
+        "ring_bend_all.r",
+        "ring1_rot.r",
+        "c_ring1.r",
+        "ring1.r",
+        "ring2_rot.r",
+        "c_ring2.r",
+        "ring3_rot.r",
+        "c_ring3.r",
+        "c_middle1_base.r",
+        "middle_bend_all.r",
+        "middle1_rot.r",
+        "c_middle1.r",
+        "middle1.r",
+        "middle2_rot.r",
+        "c_middle2.r",
+        "middle3_rot.r",
+        "c_middle3.r",
+        "c_index1_base.r",
+        "index1_rot.r",
+        "c_index1.r",
+        "index1.r",
+        "index2_rot.r",
+        "c_index2.r",
+        "index3_rot.r",
+        "c_index3.r",
+        "index_bend_all.r",
+        "c_thumb1_base.r",
+        "thumb_bend_all.r",
+        "thumb1_rot.r",
+        "c_thumb1.r",
+        "thumb1.r",
+        "thumb2_rot.r",
+        "c_thumb2.r",
+        "thumb3_rot.r",
+        "c_thumb3.r",
+        "hand_rot_twist.r",
+        "arm_ik_nostr_scale_fix.r",
+        "arm_ik_nostr.r",
+        "forearm_ik_nostr.r",
+        "arm_twist.r",
+        "c_arm_twist_offset.r",
+        "c_arm_ik.r",
+        "c_shoulder.l",
+        "arm_ik.l",
+        "forearm_ik.l",
+        "arm.l",
+        "c_stretch_arm.l",
+        "arm_pole_line.l",
+        "forearm.l",
+        "hand.l",
+        "c_pinky1_base.l",
+        "pinky_bend_all.l",
+        "pinky1_rot.l",
+        "c_pinky1.l",
+        "pinky1.l",
+        "pinky2_rot.l",
+        "c_pinky2.l",
+        "pinky3_rot.l",
+        "c_pinky3.l",
+        "c_ring1_base.l",
+        "ring_bend_all.l",
+        "ring1_rot.l",
+        "c_ring1.l",
+        "ring1.l",
+        "ring2_rot.l",
+        "c_ring2.l",
+        "ring3_rot.l",
+        "c_ring3.l",
+        "c_middle1_base.l",
+        "middle_bend_all.l",
+        "middle1_rot.l",
+        "c_middle1.l",
+        "middle1.l",
+        "middle2_rot.l",
+        "c_middle2.l",
+        "middle3_rot.l",
+        "c_middle3.l",
+        "c_index1_base.l",
+        "index_bend_all.l",
+        "index1_rot.l",
+        "c_index1.l",
+        "index1.l",
+        "index2_rot.l",
+        "c_index2.l",
+        "index3_rot.l",
+        "c_index3.l",
+        "c_thumb1_base.l",
+        "thumb_bend_all.l",
+        "thumb1_rot.l",
+        "c_thumb1.l",
+        "thumb1.l",
+        "thumb2_rot.l",
+        "c_thumb2.l",
+        "thumb3_rot.l",
+        "c_thumb3.l",
+        "hand_rot_twist.l",
+        "shoulder.l",
+        "shoulder_track_pole.l",
+        "shoulder_pole.l",
+        "arm_twist_twk.l",
+        "arm_ik_nostr_scale_fix.l",
+        "arm_ik_nostr.l",
+        "forearm_ik_nostr.l",
+        "arm_twist.l",
+        "c_arm_twist_offset.l",
+        "c_arm_ik.l",
+        "c_arm_fk.l",
+        "arm_fk.l",
+        "c_forearm_fk.l",
+        "forearm_fk.l",
+        "hand_fk_scale_fix.l",
+        "c_hand_fk.l",
+        "arm_fk_pre_pole.l",
+        "arm_fk_pole.l",
+        "c_arm_fk.r",
+        "c_forearm_fk.r",
+        "forearm_fk.r",
+        "hand_fk_scale_fix.r",
+        "c_hand_fk.r",
+        "arm_fk.r",
+        "arm_fk_pre_pole.r",
+        "arm_fk_pole.r",
+        "c_neck.x",
+        "c_p_neck.x",
+        "neck.x",
+        "neck_twist.x",
+        "c_p_spine_02.x",
+        "c_p_neck_01.x",
+        "head_scale_fix.x",
+        "c_head.x",
+        "head.x",
+        "leg_stretch.l",
+        "leg_twist.l",
+        "leg_stretch.r",
+        "leg_twist.r",
+        "thigh_stretch.l",
+        "thigh_stretch.r",
+        "arm_stretch.l",
+        "arm_stretch.r",
+        "forearm_stretch.l",
+        "forearm_twist.l",
+        "forearm_stretch.r",
+        "forearm_twist.r",
+        "c_stretch_leg_pin.l",
+        "c_stretch_leg_pin.r",
+        "c_stretch_arm_pin.r",
+        "c_stretch_arm_pin.l",
+        "c_arms_pole.l",
+        "c_arms_pole.r",
+        "c_foot_ik.r",
+        "c_p_foot_ik.r",
+        "foot_ik.r",
+        "toes_track.r",
+        "toes_01_ik.r",
+        "toes_02.r",
+        "foot_snap_fk.r",
+        "foot_bank_01.r",
+        "foot_bank_02.r",
+        "foot_heel.r",
+        "toes_end.r",
+        "c_toes_ik.r",
+        "c_foot_01.r",
+        "foot_ik_target.r",
+        "foot_01_pole.r",
+        "toes_end_01.r",
+        "foot_roll.r",
+        "c_foot_roll_cursor.r",
+        "leg_pole_tracker.r",
+        "leg_pole_psrv.r",
+        "c_leg_pole.r",
+        "c_foot_ik.l",
+        "c_p_foot_ik.l",
+        "foot_ik.l",
+        "toes_track.l",
+        "toes_01_ik.l",
+        "toes_02.l",
+        "foot_snap_fk.l",
+        "foot_bank_01.l",
+        "foot_bank_02.l",
+        "foot_heel.l",
+        "toes_end.l",
+        "c_toes_ik.l",
+        "c_foot_01.l",
+        "foot_01_pole.l",
+        "foot_ik_target.l",
+        "toes_end_01.l",
+        "foot_roll.l",
+        "c_foot_roll_cursor.l",
+        "leg_pole_tracker.l",
+        "leg_pole_psrv.l",
+        "c_leg_pole.l",
+        "c_hand_ik.r",
+        "c_hand_ik.l",
+        "root_ref.x",
+        "thigh_ref.l",
+        "leg_ref.l",
+        "foot_bank_01_ref.l",
+        "foot_bank_02_ref.l",
+        "foot_heel_ref.l",
+        "foot_ref.l",
+        "toes_ref.l",
+        "thigh_ref.r",
+        "leg_ref.r",
+        "foot_bank_01_ref.r",
+        "foot_bank_02_ref.r",
+        "foot_heel_ref.r",
+        "foot_ref.r",
+        "toes_ref.r",
+        "spine_01_ref.x",
+        "spine_02_ref.x",
+        "neck_ref.x",
+        "head_ref.x",
+        "shoulder_ref.r",
+        "arm_ref.r",
+        "forearm_ref.r",
+        "hand_ref.r",
+        "pinky1_base_ref.r",
+        "pinky1_ref.r",
+        "pinky2_ref.r",
+        "pinky3_ref.r",
+        "ring1_base_ref.r",
+        "ring1_ref.r",
+        "ring2_ref.r",
+        "ring3_ref.r",
+        "middle1_base_ref.r",
+        "middle1_ref.r",
+        "middle2_ref.r",
+        "middle3_ref.r",
+        "index1_base_ref.r",
+        "index1_ref.r",
+        "index2_ref.r",
+        "index3_ref.r",
+        "thumb1_ref.r",
+        "thumb2_ref.r",
+        "thumb3_ref.r",
+        "shoulder_ref.l",
+        "arm_ref.l",
+        "forearm_ref.l",
+        "hand_ref.l",
+        "pinky1_base_ref.l",
+        "pinky1_ref.l",
+        "pinky2_ref.l",
+        "pinky3_ref.l",
+        "ring1_base_ref.l",
+        "ring1_ref.l",
+        "ring2_ref.l",
+        "ring3_ref.l",
+        "middle1_base_ref.l",
+        "middle1_ref.l",
+        "middle2_ref.l",
+        "middle3_ref.l",
+        "index1_base_ref.l",
+        "index1_ref.l",
+        "index2_ref.l",
+        "index3_ref.l",
+        "thumb1_ref.l",
+        "thumb2_ref.l",
+        "thumb3_ref.l"
+      ]
+    },
+    "match_result": [
+      "FINISHED"
+    ],
+    "match_mode": "EDIT",
+    "final_rig": {
+      "name": "rig",
+      "bones": 345,
+      "deform": [
+        "root.x",
+        "foot.l",
+        "toes_01.l",
+        "thigh_twist.l",
+        "foot.r",
+        "toes_01.r",
+        "thigh_twist.r",
+        "spine_01.x",
+        "spine_02.x",
+        "shoulder.r",
+        "hand.r",
+        "c_pinky1_base.r",
+        "pinky1.r",
+        "c_pinky2.r",
+        "c_pinky3.r",
+        "c_ring1_base.r",
+        "ring1.r",
+        "c_ring2.r",
+        "c_ring3.r",
+        "c_middle1_base.r",
+        "middle1.r",
+        "c_middle2.r",
+        "c_middle3.r",
+        "c_index1_base.r",
+        "index1.r",
+        "c_index2.r",
+        "c_index3.r",
+        "thumb1.r",
+        "c_thumb2.r",
+        "c_thumb3.r",
+        "c_arm_twist_offset.r",
+        "hand.l",
+        "c_pinky1_base.l",
+        "pinky1.l",
+        "c_pinky2.l",
+        "c_pinky3.l",
+        "c_ring1_base.l",
+        "ring1.l",
+        "c_ring2.l",
+        "c_ring3.l",
+        "c_middle1_base.l",
+        "middle1.l",
+        "c_middle2.l",
+        "c_middle3.l",
+        "c_index1_base.l",
+        "index1.l",
+        "c_index2.l",
+        "c_index3.l",
+        "thumb1.l",
+        "c_thumb2.l",
+        "c_thumb3.l",
+        "shoulder.l",
+        "c_arm_twist_offset.l",
+        "neck.x",
+        "head.x",
+        "leg_stretch.l",
+        "leg_twist.l",
+        "leg_stretch.r",
+        "leg_twist.r",
+        "thigh_stretch.l",
+        "thigh_stretch.r",
+        "arm_stretch.l",
+        "arm_stretch.r",
+        "forearm_stretch.l",
+        "forearm_twist.l",
+        "forearm_stretch.r",
+        "forearm_twist.r"
+      ]
+    },
+    "bind_result": [
+      "FINISHED"
+    ],
+    "body_vertex_groups": 67,
+    "exports": {
+      "UNITY": {
+        "error": "RuntimeError: Error: Python: Traceback (most recent call last):\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\arp_fbx_init.py\", line 331, in execute\n    return export_fbx_bin.arp_save(self, context, **keywords)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\export_fbx_bin.py\", line 4146, in arp_save\n    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)\n  Fi"
+      },
+      "UNREAL": {
+        "error": "RuntimeError: Error: Python: Traceback (most recent call last):\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\arp_fbx_init.py\", line 331, in execute\n    return export_fbx_bin.arp_save(self, context, **keywords)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\export_fbx_bin.py\", line 4146, in arp_save\n    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)\n  Fi"
+      }
+    }
+  },
+  "uvpackmaster_flow": {
+    "props": {
+      "name": {
+        "type": "STRING",
+        "value": ""
+      },
+      "main_prop_access_desc": {
+        "type": "POINTER",
+        "fields": {
+          "name": {
+            "type": "STRING",
+            "value": ""
+          },
+          "active_item_uuid": {
+            "type": "STRING",
+            "value": ""
+          }
+        }
+      },
+      "main_prop_sets": {
+        "type": "POINTER",
+        "fields": {
+          "name": {
+            "type": "STRING",
+            "value": ""
+          },
+          "items": {
+            "type": "COLLECTION",
+            "len": 0
+          }
+        }
+      },
+      "main_prop_sets_enable": {
+        "type": "BOOLEAN",
+        "value": false
+      },
+      "default_main_props": {
+        "type": "POINTER",
+        "fields": {
+          "name": {
+            "type": "STRING",
+            "value": ""
+          },
+          "numbered_groups_descriptors": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "lock_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C41D8>"
+              },
+              "stack_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C7418>"
+              },
+              "track_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C5798>"
+              },
+              "norm_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C4298>"
+              }
+            }
+          },
+          "track_groups_props": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "require_match_for_all": {
+                "type": "BOOLEAN",
+                "value": true
+              },
+              "matching_mode": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1",
+                  "2"
+                ],
+                "value": "0"
+              }
+            }
+          },
+          "pack_strategy_props": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "strategy": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1",
+                  "2",
+                  "3"
+                ],
+                "value": "0"
+              },
+              "start_corner": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1",
+                  "2",
+                  "3"
+                ],
+                "value": "0"
+              }
+            }
+          },
+          "precision": {
+            "type": "INT",
+            "value": 500
+          },
+          "margin": {
+            "type": "FLOAT",
+            "value": 0.003000000026077032
+          },
+          "pixel_margin_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "pixel_margin": {
+            "type": "INT",
+            "value": 5
+          },
+          "pixel_border_margin_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "pixel_border_margin": {
+            "type": "INT",
+            "value": 1
+          },
+          "extra_pixel_margin_to_others": {
+            "type": "INT",
+            "value": 0
+          },
+          "pixel_margin_tex_size": {
+            "type": "INT",
+            "value": 1024
+          },
+          "pixel_perfect_align": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "pixel_perfect_align_target": {
+            "type": "ENUM",
+            "items": [
+              "0",
+              "1"
+            ],
+            "value": "0"
+          },
+          "pixel_perfect_vert_align_mode": {
+            "type": "ENUM",
+            "items": [
+              "0",
+              "1",
+              "2",
+              "3",
+              "4"
+            ],
+            "value": "0"
+          },
+          "rotation_enable": {
+            "type": "BOOLEAN",
+            "value": true
+          },
+          "pre_rotation_disable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "flipping_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "normalize_scale": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "normalize_space": {
+            "type": "ENUM",
+            "items": [
+              "0",
+              "1"
+            ],
+            "value": "0"
+          },
+          "tdensity_set_before_pack": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "tdensity_to_set": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "mode": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1"
+                ],
+                "value": "0"
+              },
+              "val": {
+                "type": "POINTER",
+                "value": "X"
+              },
+              "tier_access_desc": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x00000248C01C4E98>"
+              }
+            }
+          },
+          "tdensity_packing": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "mode": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1"
+                ],
+                "value": "0"
+              },
+              "val": {
+                "type": "POINTER",
+                "value": "X"
+              },
+              "tier_access_desc": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x00000248C01C6098>"
+              }
+            }
+          },
+          "island_tdensity_set_before_pack": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "island_normalize_multiplier_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "island_normalize_multiplier": {
+            "type": "INT",
+            "value": 100
+          },
+          "scale_mode": {
+            "type": "ENUM",
+            "items": [
+              "0",
+              "1",
+              "2"
+            ],
+            "value": "0"
+          },
+          "rotation_step": {
+            "type": "INT",
+            "value": 90
+          },
+          "island_rot_step_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "island_rot_step": {
+            "type": "INT",
+            "value": 90
+          },
+          "non_square_packing": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "lock_overlapping_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "lock_overlapping_mode": {
+            "type": "ENUM",
+            "items": [
+              "1",
+              "2"
+            ],
+            "value": "1"
+          },
+          "heuristic_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "heuristic_search_time": {
+            "type": "INT",
+            "value": 0
+          },
+          "heuristic_max_wait_time": {
+            "type": "INT",
+            "value": 0
+          },
+          "heuristic_allow_mixed_scales": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "advanced_heuristic_mode": {
+            "type": "ENUM",
+            "items": [
+              "0",
+              "1",
+              "2"
+            ],
+            "value": "0"
+          },
+          "fully_inside": {
+            "type": "BOOLEAN",
+            "value": true
+          },
+          "custom_target_box_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "custom_target_box": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "p1_x": {
+                "type": "FLOAT",
+                "value": 0.0
+              },
+              "p1_y": {
+                "type": "FLOAT",
+                "value": 0.0
+              },
+              "p2_x": {
+                "type": "FLOAT",
+                "value": 1.0
+              },
+              "p2_y": {
+                "type": "FLOAT",
+                "value": 1.0
+              }
+            }
+          },
+          "tile_target_props": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "mode": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1",
+                  "2"
+                ],
+                "value": "0"
+              },
+              "use_editor_grid": {
+                "type": "BOOLEAN",
+                "value": false
+              },
+              "tile_count_x": {
+                "type": "INT",
+                "value": 1
+              },
+              "tile_count_y": {
+                "type": "INT",
+                "value": 1
+              },
+              "start_tile_x": {
+                "type": "INT",
+                "value": 0
+              },
+              "start_tile_y": {
+                "type": "INT",
+                "value": 0
+              },
+              "tile_count": {
+                "type": "INT",
+                "value": 1
+              },
+              "tiles_in_row": {
+                "type": "INT",
+                "value": 10
+              }
+            }
+          },
+          "tile_filling_method": {
+            "type": "ENUM",
+            "items": [
+              "0",
+              "1"
+            ],
+            "value": "0"
+          },
+          "split_props": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "detection_mode": {
+                "type": "ENUM",
+                "items": [
+                  "1",
+                  "2"
+                ],
+                "value": "1"
+              },
+              "max_tile_x": {
+                "type": "INT",
+                "value": 0
+              },
+              "dont_split_priorities": {
+                "type": "BOOLEAN",
+                "value": false
+              }
+            }
+          },
+          "simi_props": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "simi_mode": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1",
+                  "2"
+                ],
+                "value": "0"
+              },
+              "threshold": {
+                "type": "FLOAT",
+                "value": 0.10000000149011612
+              },
+              "check_holes": {
+                "type": "BOOLEAN",
+                "value": true
+              },
+              "adjust_scale": {
+                "type": "BOOLEAN",
+                "value": false
+              },
+              "non_uniform_scaling_tolerance": {
+                "type": "FLOAT",
+                "value": 0.0
+              },
+              "match_3d_axis": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1",
+                  "2",
+                  "4"
+                ],
+                "value": "0"
+              },
+              "match_3d_axis_space": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1"
+                ],
+                "value": "0"
+              },
+              "correct_vertices": {
+                "type": "BOOLEAN",
+                "value": false
+              },
+              "vertex_threshold": {
+                "type": "FLOAT",
+                "value": 0.009999999776482582
+              }
+            }
+          },
+          "align_priority_enable": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "align_priority": {
+            "type": "INT",
+            "value": 0
+          },
+          "orient_to3d_props": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "prim_3d_axis": {
+                "type": "ENUM",
+                "items": [
+                  "1",
+                  "2",
+                  "4"
+                ],
+                "value": "4"
+              },
+              "prim_uv_axis": {
+                "type": "ENUM",
+                "items": [
+                  "1",
+                  "2",
+                  "8",
+                  "16"
+                ],
+                "value": "2"
+              },
+              "sec_3d_axis": {
+                "type": "ENUM",
+                "items": [
+                  "1",
+                  "2",
+                  "4"
+                ],
+                "value": "1"
+              },
+              "sec_uv_axis": {
+                "type": "ENUM",
+                "items": [
+                  "1",
+                  "2",
+                  "8",
+                  "16"
+                ],
+                "value": "1"
+              },
+              "axes_space": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1"
+                ],
+                "value": "0"
+              },
+              "prim_sec_bias": {
+                "type": "INT",
+                "value": 80
+              }
+            }
+          },
+          "grouping_scheme_access_descriptors": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "packing": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C7958>"
+              },
+              "editor": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248BC170E98>"
+              },
+              "lock_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C6758>"
+              },
+              "stack_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C4418>"
+              },
+              "track_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C5558>"
+              },
+              "norm_group": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C5858>"
+              }
+            }
+          },
+          "scripting": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "packing": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_ScriptContainer(\"\") at 0x00000248C01C5618>"
+              }
+            }
+          },
+          "island_tdensity_packing": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "mode": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1"
+                ],
+                "value": "0"
+              },
+              "val": {
+                "type": "POINTER",
+                "value": "X"
+              },
+              "tier_access_desc": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x00000248C01C7A18>"
+              }
+            }
+          },
+          "active_pack_mode_id": {
+            "type": "ENUM",
+            "items": [],
+            "value": "pack.single_tile"
+          },
+          "group_method_pack": {
+            "type": "ENUM",
+            "items": [
+              "0",
+              "2",
+              "3",
+              "5",
+              "6",
+              "7",
+              "4"
+            ],
+            "value": "0"
+          },
+          "auto_group_options": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "base": {
+                "type": "POINTER",
+                "value": "<bpy_struct, UVPM4_GroupingOptionsBase(\"\") at 0x00000248C01C7E98>"
+              },
+              "tile_count_per_group": {
+                "type": "INT",
+                "value": 1
+              },
+              "tdensity_policy": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "1"
+                ],
+                "value": "0"
+              },
+              "group_layout_mode": {
+                "type": "ENUM",
+                "items": [
+                  "0",
+                  "2",
+                  "3",
+                  "4",
+                  "5"
+                ],
+                "value": "0"
+              }
+            }
+          },
+          "uuid": {
+            "type": "STRING",
+            "value": ""
+          }
+        }
+      },
+      "saved_m_panel_settings": {
+        "type": "COLLECTION",
+        "len": 0
+      },
+      "saved_panel_settings": {
+        "type": "COLLECTION",
+        "len": 0
+      },
+      "grouping_schemes": {
+        "type": "COLLECTION",
+        "len": 0
+      },
+      "group_method_editor": {
+        "type": "ENUM",
+        "items": [
+          "0",
+          "2",
+          "3",
+          "5",
+          "6",
+          "7",
+          "4"
+        ],
+        "value": "4"
+      },
+      "repack_props": {
+        "type": "POINTER",
+        "fields": {
+          "name": {
+            "type": "STRING",
+            "value": ""
+          },
+          "force_repack": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "show_results": {
+            "type": "BOOLEAN",
+            "value": false
+          },
+          "repack_cluster_access_desc": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "active_item_uuid": {
+                "type": "STRING",
+                "value": ""
+              }
+            }
+          },
+          "repack_clusters": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "items": {
+                "type": "COLLECTION",
+                "len": 0
+              }
+            }
+          }
+        }
+      },
+      "tdensity_props": {
+        "type": "POINTER",
+        "fields": {
+          "name": {
+            "type": "STRING",
+            "value": ""
+          },
+          "tdensity_tiers": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "items": {
+                "type": "COLLECTION",
+                "len": 0
+              }
+            }
+          },
+          "tdensity_tier_access_desc": {
+            "type": "POINTER",
+            "fields": {
+              "name": {
+                "type": "STRING",
+                "value": ""
+              },
+              "active_item_uuid": {
+                "type": "STRING",
+                "value": ""
+              }
+            }
+          }
+        }
+      },
+      "arrange_non_packed": {
+        "type": "BOOLEAN",
+        "value": true
+      },
+      "show_expert_options": {
+        "type": "BOOLEAN",
+        "value": false
+      },
+      "highprec_topo_analysis": {
+        "type": "BOOLEAN",
+        "value": false
+      },
+      "disable_immediate_uv_update": {
+        "type": "BOOLEAN",
+        "value": false
+      }
+    },
+    "module_dir": "C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\uvpackmaster4",
+    "mode_ids": [
+      "pack.groups_independently",
+      "pack.groups_to_tiles",
+      "pack.groups_together",
+      "pack.single_tile",
+      "pack.tiles"
+    ],
+    "before": {
+      "has_uv": true,
+      "utilization": 0.5736,
+      "overlap_pct": 0.108,
+      "texel_density_px_per_m": 218.91,
+      "texel_density_cv": 0.0875,
+      "out_of_bounds_ratio": 0.0,
+      "zero_area_uv_tris": 0
+    },
+    "mode_used": "pack.single_tile",
+    "call_error": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect"
+  }
+}
