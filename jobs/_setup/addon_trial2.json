@@ -814,10 +814,168 @@
     "body_vertex_groups": 67,
     "exports": {
       "UNITY": {
-        "error": "RuntimeError: Error: Python: Traceback (most recent call last):\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\arp_fbx_init.py\", line 331, in execute\n    return export_fbx_bin.arp_save(self, context, **keywords)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\export_fbx_bin.py\", line 4146, in arp_save\n    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)\n  Fi"
+        "path": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNITY.fbx",
+        "attempts": {
+          "arp.arp_export_fbx_panel": [
+            "FINISHED"
+          ]
+        },
+        "settings": {
+          "engine": "UNITY",
+          "rig_type": "HUMANOID"
+        },
+        "used": "arp.arp_export_fbx_panel",
+        "exists": true,
+        "size": 181900,
+        "reimported_bones": {
+          "root": [
+            "root.x",
+            "spine_01.x",
+            "spine_02.x",
+            "neck.x",
+            "head.x",
+            "shoulder.l",
+            "arm_stretch.l",
+            "arm_twist.l",
+            "forearm_stretch.l",
+            "forearm_twist.l",
+            "hand.l",
+            "c_index1.l",
+            "c_index2.l",
+            "c_index3.l",
+            "c_middle1.l",
+            "c_middle2.l",
+            "c_middle3.l",
+            "c_pinky1.l",
+            "c_pinky2.l",
+            "c_pinky3.l",
+            "c_ring1.l",
+            "c_ring2.l",
+            "c_ring3.l",
+            "c_thumb1.l",
+            "c_thumb2.l",
+            "c_thumb3.l",
+            "shoulder.r",
+            "arm_stretch.r",
+            "arm_twist.r",
+            "forearm_stretch.r",
+            "forearm_twist.r",
+            "hand.r",
+            "c_index1.r",
+            "c_index2.r",
+            "c_index3.r",
+            "c_middle1.r",
+            "c_middle2.r",
+            "c_middle3.r",
+            "c_pinky1.r",
+            "c_pinky2.r",
+            "c_pinky3.r",
+            "c_ring1.r",
+            "c_ring2.r",
+            "c_ring3.r",
+            "c_thumb1.r",
+            "c_thumb2.r",
+            "c_thumb3.r",
+            "thigh_stretch.l",
+            "leg_stretch.l",
+            "foot.l",
+            "toes_01.l",
+            "leg_twist.l",
+            "thigh_twist.l",
+            "thigh_stretch.r",
+            "leg_stretch.r",
+            "foot.r",
+            "toes_01.r",
+            "leg_twist.r",
+            "thigh_twist.r"
+          ]
+        }
       },
       "UNREAL": {
-        "error": "RuntimeError: Error: Python: Traceback (most recent call last):\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\arp_fbx_init.py\", line 331, in execute\n    return export_fbx_bin.arp_save(self, context, **keywords)\n           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^\n  File \"C:\\Users\\harih\\AppData\\Roaming\\Blender Foundation\\Blender\\5.3\\extensions\\user_default\\auto_rig_pro\\src\\export_fbx\\export_fbx_bin.py\", line 4146, in arp_save\n    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)\n  Fi"
+        "path": "C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNREAL.fbx",
+        "attempts": {
+          "arp.arp_export_fbx_panel": [
+            "FINISHED"
+          ]
+        },
+        "settings": {
+          "engine": "UNREAL",
+          "rig_type": "UNIVERSAL"
+        },
+        "used": "arp.arp_export_fbx_panel",
+        "exists": true,
+        "size": 193580,
+        "reimported_bones": {
+          "root": [
+            "root.x",
+            "spine_01.x",
+            "spine_02.x",
+            "neck.x",
+            "head.x",
+            "shoulder.l",
+            "arm_stretch.l",
+            "arm_twist.l",
+            "forearm_stretch.l",
+            "forearm_twist.l",
+            "hand.l",
+            "index1_base.l",
+            "index1.l",
+            "index2.l",
+            "index3.l",
+            "middle1_base.l",
+            "middle1.l",
+            "middle2.l",
+            "middle3.l",
+            "pinky1_base.l",
+            "pinky1.l",
+            "pinky2.l",
+            "pinky3.l",
+            "ring1_base.l",
+            "ring1.l",
+            "ring2.l",
+            "ring3.l",
+            "thumb1.l",
+            "thumb2.l",
+            "thumb3.l",
+            "shoulder.r",
+            "arm_stretch.r",
+            "arm_twist.r",
+            "forearm_stretch.r",
+            "forearm_twist.r",
+            "hand.r",
+            "index1_base.r",
+            "index1.r",
+            "index2.r",
+            "index3.r",
+            "middle1_base.r",
+            "middle1.r",
+            "middle2.r",
+            "middle3.r",
+            "pinky1_base.r",
+            "pinky1.r",
+            "pinky2.r",
+            "pinky3.r",
+            "ring1_base.r",
+            "ring1.r",
+            "ring2.r",
+            "ring3.r",
+            "thumb1.r",
+            "thumb2.r",
+            "thumb3.r",
+            "thigh_stretch.l",
+            "leg_stretch.l",
+            "foot.l",
+            "toes_01.l",
+            "leg_twist.l",
+            "thigh_twist.l",
+            "thigh_stretch.r",
+            "leg_stretch.r",
+            "foot.r",
+            "toes_01.r",
+            "leg_twist.r",
+            "thigh_twist.r"
+          ]
+        }
       }
     }
   },
@@ -873,19 +1031,19 @@
               },
               "lock_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C41D8>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0D558>"
               },
               "stack_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C7418>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0CA18>"
               },
               "track_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C5798>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0C658>"
               },
               "norm_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x00000248C01C4298>"
+                "value": "<bpy_struct, UVPM4_NumberedGroupsDescriptor(\"\") at 0x0000022D3FB0EE18>"
               }
             }
           },
@@ -1044,7 +1202,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x00000248C01C4E98>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x0000022D3FB0DD98>"
               }
             }
           },
@@ -1069,7 +1227,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x00000248C01C6098>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x0000022D3FB0D318>"
               }
             }
           },
@@ -1395,27 +1553,27 @@
               },
               "packing": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C7958>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0D918>"
               },
               "editor": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248BC170E98>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3BFE8E98>"
               },
               "lock_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C6758>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0CD18>"
               },
               "stack_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C4418>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0C418>"
               },
               "track_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C5558>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D3FB0D498>"
               },
               "norm_group": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x00000248C01C5858>"
+                "value": "<bpy_struct, UVPM4_GroupingSchemeAccessDescriptor(\"\") at 0x0000022D4DA75618>"
               }
             }
           },
@@ -1428,7 +1586,7 @@
               },
               "packing": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_ScriptContainer(\"\") at 0x00000248C01C5618>"
+                "value": "<bpy_struct, UVPM4_ScriptContainer(\"\") at 0x0000022D4DA759D8>"
               }
             }
           },
@@ -1453,7 +1611,7 @@
               },
               "tier_access_desc": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x00000248C01C7A18>"
+                "value": "<bpy_struct, UVPM4_IdCollectionAccessDescriptor(\"\") at 0x0000022D4DA75CD8>"
               }
             }
           },
@@ -1484,7 +1642,7 @@
               },
               "base": {
                 "type": "POINTER",
-                "value": "<bpy_struct, UVPM4_GroupingOptionsBase(\"\") at 0x00000248C01C7E98>"
+                "value": "<bpy_struct, UVPM4_GroupingOptionsBase(\"\") at 0x0000022D4DA74D18>"
               },
               "tile_count_per_group": {
                 "type": "INT",
@@ -1655,6 +1813,10 @@
       "zero_area_uv_tris": 0
     },
     "mode_used": "pack.single_tile",
-    "call_error": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect"
+    "attempts": {
+      "uv_editor": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect",
+      "uv_editor_no_space": "RuntimeError: Operator bpy.ops.uvpackmaster4.pack.poll() failed, context is incorrect"
+    },
+    "call_error": "pack could not run in any context"
   }
 }

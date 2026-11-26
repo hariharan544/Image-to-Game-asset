@@ -128,47 +128,47 @@ register_class(...):
 Info: Registering operator class: 'ARP_OT_snap_rot_from_scale', bl_idname 'arp.snap_rot_from_scale' has been registered before, unregistering previous
 register_class(...):
 Info: Registering operator class: 'ARP_OT_bake_rot_from_scale', bl_idname 'arp.bake_rot_from_scale' has been registered before, unregistering previous
-00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'align_op_type', 'default'
-00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
-00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
-00:06.078  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'pack_op_type', 'default'
-00:06.578  bpy.rna          | WARNING current value '63' matches no enum in 'EnumProperty', 'object_types', 'default'
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.l"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.r"].custom_shape_scale[0]
-00:06.594  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.l"].custom_shape_scale[0]
+00:06.172  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'align_op_type', 'default'
+00:06.172  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
+00:06.172  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'target_scheme_uuid', 'default'
+00:06.172  bpy.rna          | WARNING current value '0' matches no enum in 'EnumProperty', 'pack_op_type', 'default'
+00:06.672  bpy.rna          | WARNING current value '63' matches no enum in 'EnumProperty', 'object_types', 'default'
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.l"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.r"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.l"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.l"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.l"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_ik.r"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.r"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_forearm_fk.r"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_fk.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_ik.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.r"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["arm_pole_line.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_01.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_pole.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_fk.l"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_fk.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_ik.r"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_hand_fk.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_leg_fk.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["leg_pole_line.r"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arms_pole.l"].custom_shape_scale[0]
+00:06.688  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_arm_ik.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_toes_fk.r"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_thigh_ik.l"].custom_shape_scale[0]
+00:06.704  anim.driver      | WARNING Invalid driver on Object 'rig' - pose.bones["c_foot_roll_cursor.r"].custom_shape_scale[0]
 Set default settings...
 Armature scale already initialized
 
@@ -246,41 +246,7 @@ Eyeballs object(s) not found, eyeball skinning skipped
 Setup virtual jaw...
   set approximate chin pos
 Split...
-  Skinning object part: 1/1                                         Traceback (most recent call last):
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
-    return export_fbx_bin.arp_save(self, context, **keywords)
-           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
-    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
-    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
-  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
-    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
-  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 50, in parse
-    return compile(source, filename, mode, flags,
-                   _feature_version=feature_version, optimize=optimize)
-  File "<unknown>", line 0
-    
-SyntaxError: invalid syntax
-00:08.766  bpy.rna          | ERROR Python script error in ARP_EXPORT_SCENE_OT_fbx.execute
-Traceback (most recent call last):
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
-    return export_fbx_bin.arp_save(self, context, **keywords)
-           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
-    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
-    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
-  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
-    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
-  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 50, in parse
-    return compile(source, filename, mode, flags,
-                   _feature_version=feature_version, optimize=optimize)
-  File "<unknown>", line 0
-    
-SyntaxError: invalid syntax
-00:09.188  bpy.rna          | ERROR Python script error in ARP_EXPORT_SCENE_OT_fbx.execute
-
+  Skinning object part: 1/1                                         
 
   Improve skinning...
   hips: True
@@ -294,24 +260,108 @@ Finalize...
 Bound in 0.28 seconds.
 Restore rig data...
 Info: Bound in 0.3 seconds
-Error: Python: Traceback (most recent call last):
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
-    return export_fbx_bin.arp_save(self, context, **keywords)
-           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
-    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
-    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
-  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
-    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
-  ... truncatedError: Python: Traceback (most recent call last):
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\arp_fbx_init.py", line 331, in execute
-    return export_fbx_bin.arp_save(self, context, **keywords)
-           ~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 4146, in arp_save
-    ret = save_single(operator, context.scene, depsgraph, filepath, **kwargs_mod)
-  File "C:\Users\harih\AppData\Roaming\Blender Foundation\Blender\5.3\extensions\user_default\auto_rig_pro\src\export_fbx\export_fbx_bin.py", line 3974, in save_single
-    shape_keys_baked_data_dict = ast.literal_eval(shape_keys_baked_data)
-  File "C:\Program Files\Blender Foundation\Blender 5.3\5.3\python\Lib\ast.py", line 64, in literal_eval
-    node_or_string = parse(node_or_string.lstrip(" \t"), mode='eval')
-  ... truncated
+
+Multiple twist bones: False
+
+..............................Starting ARP FBXExport..............................
+
+Create copies...
+  Get character objects...
+  Character objects: ['rig', 'trial_body']
+Copied.
+Custom Bones: []
+
+..............................Building humanoid rig..............................
+  Humanoid loaded. Setting up...
+  Create additional bones...
+  Create twist bones...
+  Set parents...
+  Set rest pose...
+
+  Add constraints...
+  Assign modifiers and weights...
+  mesh: trial_body_arpexp                                                       
+  Humanoid set.
+..............................Set Units x100 (baked)..............................
+  x100 Units (baked) set successfully.
+
+Apply armature rotation...
+  Renaming to def names...
+Export Prep Time: 0.42 seconds.
+
+..............................FBX Export [all_actions]..............................
+   C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNITY.fbx
+
+FBX export starting... 'C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNITY.fbx'
+Actions: ['all_actions']
+export finished in 0.0571 sec.
+FBX Exporter Time: 0.09 seconds.
+FBX (Total Time): 0.51 seconds.
+
+Revert object name changes...
+
+Revert units changes
+Reverting baked actions...
+Deleting copies...
+
+ARPFBX Export Done!
+Revert changes time: 0.01 seconds.
+C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNITY.fbx
+(0 seconds)
+Info: Character Exported
+
+Multiple twist bones: False
+
+..............................Starting ARP FBXExport..............................
+
+Create copies...
+  Get character objects...
+  Character objects: ['rig', 'trial_body']
+Copied.
+Custom Bones: []
+
+..............................Building Mped rig..............................
+  Collect deforming bones...
+  Assign neck parent: spine_02.x
+
+  Create the Mped rig...
+  Create bones...
+  Set parents...
+  Error with: "root.x". Could not find parent in the Mped armature: "c_traj"
+
+  Create constraints...
+
+  Assign modifiers and weights...
+  mesh: trial_body_arpexp                                                       
+  Bones renaming...
+  No action to create
+
+Mped rig built.
+Export Bake Time: 0.24 seconds.
+..............................Set Units x100 (baked)..............................
+  x100 Units (baked) set successfully.
+Export Units Time: 0.28 seconds.
+  Renaming to def names...
+Export Prep Time: 0.31 seconds.
+
+..............................FBX Export [all_actions]..............................
+   C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNREAL.fbx
+
+FBX export starting... 'C:\\Users\\harih\\Documents\\Image-to-Game-asset\\jobs\\_setup\\trial2\\arp_trial_UNREAL.fbx'
+export finished in 0.0453 sec.
+FBX Exporter Time: 0.05 seconds.
+FBX (Total Time): 0.36 seconds.
+
+Revert object name changes...
+
+Revert units changes
+Reverting baked actions...
+Deleting copies...
+
+ARPFBX Export Done!
+Revert changes time: 0.01 seconds.
+C:\Users\harih\Documents\Image-to-Game-asset\jobs\_setup\trial2\arp_trial_UNREAL.fbx
+(0 seconds)
+Info: Character Exported
+FBX version: 7400
+FBX version: 7400
