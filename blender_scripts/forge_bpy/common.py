@@ -56,9 +56,13 @@ def meshes_with_role(role: str) -> list[bpy.types.Object]:
 
 
 def find_armature() -> bpy.types.Object | None:
-    for o in bpy.data.objects:
-        if o.type == "ARMATURE":
-            return o
+    """The asset's skeleton: an Auto-Rig Pro rig if one was built, else the source rig.
+    ARP helper armatures (e.g. rig_add) are never returned."""
+    arms = [o for o in bpy.data.objects if o.type == "ARMATURE" and not o.get("forge_arp_helper")]
+    for pick in (lambda o: o.get("forge_arp"), lambda o: o.get(ROLE_PROP) == "rig", lambda o: True):
+        hit = next((o for o in arms if pick(o)), None)
+        if hit is not None:
+            return hit
     return None
 
 

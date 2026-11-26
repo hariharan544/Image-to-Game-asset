@@ -100,6 +100,10 @@ def check(stage: str, result: dict, spec: AssetSpec) -> list[Issue]:
                 add(Issue("NO_WEIGHTS", stage, part, r["skipped"]))
             if r.get("unweighted_verts", 0) > 0:
                 add(Issue("UNWEIGHTED_VERTS", stage, part, "vertices without skin weights", r["unweighted_verts"], 0))
+        if spec.rig.method == "auto_rig_pro" and (result or {}).get("rig_system") != "auto_rig_pro":
+            add(Issue("ARP_FALLBACK", stage, None,
+                      f"Auto-Rig Pro not used, Tripo skeleton kept: {result.get('arp_fallback_reason')}",
+                      severity="warn"))
         bones = (result or {}).get("bones", 0)
         if spec.rig.max_bones and bones > spec.rig.max_bones:
             add(Issue("SKELETON_TOO_HEAVY", stage, None,

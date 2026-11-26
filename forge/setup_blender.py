@@ -29,7 +29,7 @@ def _remember_blender(path: str, env_file: Path) -> None:
     env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False) -> dict:
+def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False, use_arp: bool = False) -> dict:
     """Run every Blender stage once on a generated test asset. Returns per-stage timings."""
     t: dict = {}
     logs = work / "logs"
@@ -42,7 +42,8 @@ def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False)
         return res
 
     src = work / "test_model.glb"
-    stage("fixture", {"out": str(src), "rigged": True})
+    # with Auto-Rig Pro: a T-pose humanoid with a UE-style skeleton, to test the ARP rig path
+    stage("fixture", {"out": str(src), "rigged": True, "humanoid": use_arp})
     b = lambda n: str(work / f"{n}.blend")    # noqa: E731
     stage("cleanup", {"source": str(src), "target_height_m": 1.8, "save_blend": b("1")})
     if use_qr:
@@ -58,8 +59,18 @@ def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False)
     bake = stage("bake", {"load_blend": b("3"), "texture_size": 1024, "texture_dir": str(work / "textures"),
                           "samples": 16, "device": "GPU" if gpu else "CPU", "save_blend": b("4"),
                           "uv_utilization": {p: r["utilization"] for p, r in uv["parts"].items()}})
-    stage("skin", {"load_blend": b("4"), "max_influences": 4, "sockets": {"socket_weapon_r": "hand_r"},
-                   "save_blend": b("5")})
+    skin_args = {"load_blend": b("4"), "max_influences": 4, "sockets": {"socket_weapon_r": "hand_r"},
+                 "save_blend": b("5")}
+    if use_arp:
+        skin_args.update(rig_method="auto_rig_pro", detachable_parts=["Sword"], ensure_addons=["auto-rig pro"])
+        skin = stage("skin", skin_args, windowed=True, factory_startup=False)
+        a = skin.get("arp", {})
+        say(f"             rig: {skin.get('rig_system')} "
+            f"{('- ' + str(a.get('deform_bones')) + ' deform bones, refs placed ' + str(a.get('placed'))) if a else ''}"
+            f"{' - fallback: ' + str(skin.get('arp_fallback_reason')) if skin.get('arp_fallback_reason') else ''}")
+        t["rig_system"] = skin.get("rig_system")
+    else:
+        skin = stage("skin", skin_args)
     stage("lods", {"load_blend": b("5"), "lod_ratios": [1, 0.5, 0.25], "save_blend": b("6")})
     try:
         stage("previews", {"load_blend": b("6"), "preview_dir": str(work / "previews"),
@@ -71,10 +82,17 @@ def _smoke(blender: list[str], work: Path, gpu: bool, say, use_qr: bool = False)
         t["preview_engine"] = "CYCLES"
     maps = {p: r["maps"] for p, r in bake["parts"].items() if "maps" in r}
     for engine in ("unreal", "unity"):
-        stage("export", {"load_blend": b("6"), "engine": engine, "asset_name": "SetupTest",
-                         "export_dir": str(work / "export" / engine), "texture_maps": maps,
-                         "detachable_parts": ["Sword"], "unity_pipeline": "urp",
-                         "ao_into_basecolor": engine == "unity"})
+        ex = {"load_blend": b("6"), "engine": engine, "asset_name": "SetupTest",
+              "export_dir": str(work / "export" / engine), "texture_maps": maps,
+              "detachable_parts": ["Sword"], "unity_pipeline": "urp",
+              "ao_into_basecolor": engine == "unity"}
+        if skin.get("rig_system") == "auto_rig_pro":
+            ex.update(rig_system="auto_rig_pro", prop_bones=skin.get("arp", {}).get("props", {}),
+                      ensure_addons=["auto-rig pro"])
+            res = stage("export", ex, windowed=True, factory_startup=False)
+            say(f"             {engine}: {sorted(Path(p).name for p in res['meshes'].values())}")
+        else:
+            stage("export", ex)
     return t
 
 
@@ -208,7 +226,8 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
         say("Running the pipeline smoke test inside your Blender ...")
         try:
             report["smoke"] = _smoke(blender, work / "smoke", bool(gpu), say,
-                                     use_qr=info["addons"]["quad_remesher"]["installed"])
+                                     use_qr=info["addons"]["quad_remesher"]["installed"],
+                                     use_arp=info["addons"]["auto_rig_pro"]["installed"])
             say(f"[OK] Smoke test passed. Exports: {work / 'smoke' / 'export'}")
         except BlenderError as exc:
             say(f"[X] Smoke test failed: {str(exc).splitlines()[0]}\n  Logs: {work / 'smoke' / 'logs'}")

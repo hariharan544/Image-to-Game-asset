@@ -128,6 +128,41 @@ def _add_sockets(arm, sockets: dict) -> dict:
 
 
 def run(args: dict) -> dict:
+    """rig_method "auto_rig_pro": rebuild the skeleton with Auto-Rig Pro (humanoids); on any
+    failure the scene is reloaded and the weight-transfer method below is used instead."""
+    if args.get("rig_method") == "auto_rig_pro":
+        from . import arp_rig
+        from .addon_trial import has_op
+        why = None
+        if not has_op("arp.append_arp"):
+            why = "Auto-Rig Pro not loaded"
+        else:
+            try:
+                rep = arp_rig.build(args)
+                return {"rig_system": "auto_rig_pro", "arp": rep, "parts": _weight_report(),
+                        "sockets": rep.get("sockets", {}), "bones": rep["bones"]}
+            except Exception as exc:              # fall back on the untouched scene
+                why = f"{type(exc).__name__}: {exc}"[:400]
+                if args.get("load_blend"):
+                    bpy.ops.wm.open_mainfile(filepath=args["load_blend"])
+        res = _run_transfer(args)
+        res["rig_system"] = "transfer"
+        res["arp_fallback_reason"] = why
+        return res
+    res = _run_transfer(args)
+    res["rig_system"] = "transfer"
+    return res
+
+
+def _weight_report() -> dict:
+    out = {}
+    for low in C.meshes_with_role("low"):
+        unweighted = sum(1 for v in low.data.vertices if not any(g.weight > 1e-4 for g in v.groups))
+        out[low.get(C.PART_PROP)] = {"vertex_groups": len(low.vertex_groups), "unweighted_verts": unweighted}
+    return out
+
+
+def _run_transfer(args: dict) -> dict:
     arm = C.find_armature()
     if arm is None:
         return {"skipped": "no armature in source model"}

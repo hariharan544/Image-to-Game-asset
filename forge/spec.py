@@ -72,6 +72,11 @@ class TextureSpec(BaseModel):
 
 class RigSpec(BaseModel):
     enabled: bool = False
+    # transfer     = keep Tripo's skeleton, copy its weights onto the new mesh
+    # auto_rig_pro = rebuild as an Auto-Rig Pro rig (humanoids; UE5 Mannequin / Unity Humanoid export),
+    #                falls back to transfer when ARP is missing or fails
+    method: Literal["transfer", "auto_rig_pro"] = "transfer"
+    bind_engine: Literal["HEAT_MAP", "PSEUDO_VOXELS", "VHDS"] = "HEAT_MAP"
     rig_type: str = "biped"
     spec: str = "tripo"
     model_version: Optional[str] = "v3.0-20260909"

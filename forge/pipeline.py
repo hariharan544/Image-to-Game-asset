@@ -239,7 +239,10 @@ class Pipeline:
                      maps=spec.texture.maps, margin_px=spec.uv.margin_px, device=spec.texture.device,
                      uv_utilization={p: r.get("utilization", 0.7) for p, r in uv_res.get("parts", {}).items()})
         elif name == "skin":
-            a.update(sockets=spec.rig.sockets, rigid_parts=[])
+            parts = job.stage("cleanup")["attempts"][-1]["result"].get("parts", [])
+            a.update(sockets=spec.rig.sockets, rigid_parts=[], rig_method=spec.rig.method,
+                     bind_engine=spec.rig.bind_engine,
+                     detachable_parts=match_parts(spec.detachable_parts, parts))
         elif name == "metrics":
             a.update(texture_size=spec.texture.size, max_influences=spec.rig.max_influences)
         elif name == "previews":
@@ -250,9 +253,16 @@ class Pipeline:
         name, _ = split_key(key)
         log_path = self.job.path("logs", f"{key.replace('@', '_')}_a{attempt}.log")
         # paid add-ons need the user's add-ons loaded and (for their engines/GPU) a window
-        needs_addons = name == "retopo" and args.get("method") == "quadremesher"
+        addons = []
+        if name == "retopo" and args.get("method") == "quadremesher":
+            addons.append("quad remesher")
+        if name == "skin" and args.get("rig_method") == "auto_rig_pro":
+            addons.append("auto-rig pro")
+        if name == "export" and args.get("rig_system") == "auto_rig_pro":
+            addons.append("auto-rig pro")
+        needs_addons = bool(addons)
         if needs_addons:
-            args = {**args, "ensure_addons": ["quad remesher"]}
+            args = {**args, "ensure_addons": addons}
         return run_stage(name, {k: v for k, v in args.items() if not k.startswith("_")}, log_path,
                          blender=self.blender, windowed=needs_addons, factory_startup=not needs_addons)
 
@@ -349,6 +359,11 @@ class Pipeline:
                 "texture_maps": tex_maps, "detachable_parts": detachable,
                 "unity_pipeline": spec.export.unity_pipeline,
                 "ao_into_basecolor": spec.export.ao_into_basecolor}
+        skin_att = job.stage(f"skin@{t}").get("attempts") or []
+        skin_res = skin_att[-1].get("result", {}) if skin_att else {}
+        if skin_res.get("rig_system") == "auto_rig_pro":
+            args["rig_system"] = "auto_rig_pro"
+            args["prop_bones"] = skin_res.get("arp", {}).get("props", {})
         exports = dict(job.artifact("exports") or {})
         exports[t] = self._blender(f"export@{t}", args, 1)
         job.set_artifact("exports", exports)

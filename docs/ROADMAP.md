@@ -20,11 +20,19 @@
 - Tune the profile budgets with you after looking at real results.
 
 ## Phase 3: Paid add-ons + quality
-- **Quad Remesher** adapter for retopology. It runs its engine as an external process, so it needs
-  Blender in UI mode with auto-quit. Tested on your machine.
-- **UVPackmaster** adapter for packing (higher utilisation, texel-density-aware packing).
-- **Auto-Rig Pro** adapter: rebuild the Tripo skeleton as an ARP rig (IK/FK, facial, twist bones),
-  then use ARP's game-engine export (UE Mannequin / Unity Humanoid naming).
+- ✅ **Quad Remesher** is the default retopology method. It runs in a short-lived windowed
+  Blender (verified on the user's PC: about 3 s per part, 100% quads). If it fails, it falls back
+  to QuadriFlow for that part.
+- ✅ **Auto-Rig Pro** rigs humanoids (`rig.method: auto_rig_pro`):
+  1. Tripo's skeleton (UE Mannequin, Mixamo or generic names) → all 65 ARP reference bones;
+  2. match_to_rig → bind;
+  3. props welded to their socket bone;
+  4. export through ARP: UE5 Mannequin skeleton for Unreal, Humanoid for Unity.
+
+  Each ARP call was verified on the user's PC. The full chain runs in the setup smoke test. If ARP
+  fails, the stage falls back to transferring Tripo's weights.
+- ⏳ **UVPackmaster**: the add-on loads, but its packing engine (installed separately) is not
+  detected. The adapter is built once the engine is installed. Blender's packer is used until then.
 - Bake: optional cage mesh, anti-aliased bakes, texture de-lighting and seam fixing.
 - Mobile: strip non-essential bones (fingers, twist bones) when the bone count is over budget.
   Optionally bake an atlas so all parts share one material, for fewer draw calls.

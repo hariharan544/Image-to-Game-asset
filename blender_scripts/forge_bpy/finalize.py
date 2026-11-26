@@ -249,6 +249,50 @@ def _export_fbx(objs, path: str, engine: str) -> None:
     bpy.ops.export_scene.fbx(filepath=path, **FBX_COMMON, **FBX_ENGINE[engine])
 
 
+ARP_ENGINE = {   # measured: these settings give UE5 Mannequin names / a Unity humanoid
+    "unreal": {"arp_engine_type": "UNREAL", "arp_export_rig_type": "HUMANOID",
+               "arp_mannequin_axes": True, "arp_rename_for_ue": True, "arp_ue4": False},
+    "unity": {"arp_engine_type": "UNITY", "arp_export_rig_type": "HUMANOID"},
+}
+
+
+def _export_arp(objs, rig, path: str, engine: str) -> None:
+    from .addon_trial import view3d_override
+    sc = bpy.context.scene
+    for k, v in {**ARP_ENGINE[engine], "arp_ge_sel_only": True}.items():
+        if hasattr(sc, k):
+            setattr(sc, k, v)
+    C.ensure_object_mode()
+    for o in bpy.context.view_layer.objects:
+        o.select_set(False)
+    for o in objs:
+        o.hide_set(False)
+        o.select_set(True)
+    rig.hide_set(False)
+    rig.select_set(True)
+    bpy.context.view_layer.objects.active = rig
+    with bpy.context.temp_override(**view3d_override()):
+        bpy.ops.arp.arp_export_fbx_panel(filepath=path)
+    if not os.path.exists(path):
+        raise RuntimeError(f"Auto-Rig Pro export wrote no file: {path}")
+
+
+def _prop_to_static(obj, rig, bone_name: str) -> None:
+    """Unbind a rigidly skinned prop and move its pivot to the grip bone, at the world
+    origin - so it snaps onto an engine socket created on that bone."""
+    grip = rig.matrix_world @ rig.data.bones[bone_name].head_local if bone_name in rig.data.bones \
+        else obj.matrix_world.translation.copy()
+    for m in [m for m in obj.modifiers if m.type == "ARMATURE"]:
+        obj.modifiers.remove(m)
+    obj.vertex_groups.clear()
+    mw = obj.matrix_world.copy()
+    obj.parent = None
+    obj.matrix_world = mw
+    from mathutils import Matrix
+    obj.data.transform(Matrix.Translation(-grip) @ obj.matrix_world)
+    obj.matrix_world = Matrix.Identity(4)
+
+
 def export(args: dict) -> dict:
     engine = args["engine"]
     asset = C.safe_name(args["asset_name"])
@@ -260,7 +304,8 @@ def export(args: dict) -> dict:
     os.makedirs(out_dir, exist_ok=True)
 
     arm = C.find_armature()
-    if arm is not None and engine == "unreal":
+    use_arp = bool(arm is not None and arm.get("forge_arp"))
+    if arm is not None and engine == "unreal" and not use_arp:
         arm.name = "Armature"   # UE drops a top node named "Armature" instead of adding a root bone
     skeletal = arm is not None
     prefix = "" if engine == "unity" else ("SK_" if skeletal else "SM_")
@@ -278,6 +323,34 @@ def export(args: dict) -> dict:
     # LOD0 naming for Unity's automatic LODGroup
     for o in lows:
         o.name = f"{o.get(C.PART_PROP)}_LOD0"
+
+    if use_arp:
+        files["rig_system"] = "auto_rig_pro"
+        if body:
+            path = os.path.join(out_dir, f"{prefix}{asset}.fbx")
+            _export_arp(with_lods(body), arm, path, engine)
+            files["meshes"]["body"] = path
+        props_bones = args.get("prop_bones", {})
+        files["sockets"] = {}
+        for o in lows:
+            part = o.get(C.PART_PROP)
+            if part not in detachable:
+                continue
+            bone = props_bones.get(part, "hand.r")
+            objs = with_lods([o])
+            for x in objs:
+                _prop_to_static(x, arm, bone)
+            path = os.path.join(out_dir, f"{'SM_' if engine == 'unreal' else ''}{asset}_{part}.fbx")
+            _export_fbx(objs, path, engine)
+            files["meshes"][part] = path
+            files["sockets"][part] = bone
+        for o in lows:
+            part = o.get(C.PART_PROP)
+            if part in tex_maps:
+                files["textures"][part] = _pack_textures(part, tex_maps[part], engine,
+                                                         os.path.join(out_dir, "Textures"), asset, unity_pipeline,
+                                                         ao_into_basecolor)
+        return files
 
     if body:
         objs = with_lods(body) + ([arm] if arm else [])

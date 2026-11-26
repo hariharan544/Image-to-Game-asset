@@ -2,7 +2,7 @@
 generation: {use_multiview: true, generate_parts: true}
 topology: {symmetry_x: true, preserve_hard_edges: false}
 uv: {method: min_stretch}
-rig: {enabled: true, rig_type: biped}
+rig: {enabled: true, rig_type: biped, method: auto_rig_pro}
 tiers:                      # AAA budgets (Unreal)
   hero:       {topology: {target_tris: 80000}, texture: {size: 4096}, uv: {texel_density_px_per_m: 1024}}
   standard:   {topology: {target_tris: 40000}, texture: {size: 2048}, uv: {texel_density_px_per_m: 512}}

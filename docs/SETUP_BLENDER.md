@@ -42,6 +42,17 @@ When Quad Remesher, UVPackmaster or Auto-Rig Pro are installed, `forge setup-ble
 its settings, as they exist in *your* Blender. Forge's add-on adapters are written against this
 file, so send it over after the first setup run.
 
+## UVPackmaster engine
+
+UVPackmaster 4 packs with a separate **engine** program that ships with your purchase and is
+installed on its own. Without it, the add-on loads but reports *"UVPackmaster engine 4.0.4 not
+detected"*. To install it:
+1. run the engine installer from your UVPackmaster download;
+2. restart Blender;
+3. check that UV Editor → N panel → UVPackmaster shows the engine as ready.
+
+Until then, Forge packs UVs with Blender's built-in packer.
+
 ## Manual steps (if you prefer)
 
 1. **Blender.** Install the latest release from blender.org, or run
