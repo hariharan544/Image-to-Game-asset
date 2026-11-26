@@ -52,7 +52,9 @@ def find_blender() -> Optional[list[str]]:
 
 
 def run_stage(stage: str, args: dict, log_path: Path, timeout: float = 3600,
-              blender: Optional[list[str]] = None) -> dict:
+              blender: Optional[list[str]] = None, factory_startup: bool = True) -> dict:
+    """factory_startup=True ignores the user's Blender preferences/add-ons, so pipeline
+    results are reproducible. sysinfo runs with False to see the real setup."""
     cmd_base = blender or find_blender()
     if not cmd_base:
         raise BlenderError("Blender not found. Install Blender 4.2+ or set FORGE_BLENDER to blender.exe")
@@ -63,7 +65,8 @@ def run_stage(stage: str, args: dict, log_path: Path, timeout: float = 3600,
         if cmd_base[0] == sys.executable and "blender" not in Path(cmd_base[0]).name.lower():
             cmd = [*cmd_base, str(SCRIPT), stage, str(a), str(r)]
         else:
-            cmd = [*cmd_base, "-b", "--factory-startup", "-P", str(SCRIPT), "--", stage, str(a), str(r)]
+            cmd = [*cmd_base, "-b", *(["--factory-startup"] if factory_startup else []),
+                   "-P", str(SCRIPT), "--", stage, str(a), str(r)]
         log_path.parent.mkdir(parents=True, exist_ok=True)
         with open(log_path, "w", encoding="utf-8") as log:
             try:

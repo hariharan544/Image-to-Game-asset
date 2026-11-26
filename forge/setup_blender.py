@@ -1,0 +1,133 @@
+"""`forge setup-blender`: find Blender, check it, and prove the pipeline runs in it.
+
+1. locate Blender (or use --blender PATH and remember it in .env)
+2. version check (4.2 minimum, newest recommended)
+3. system info: GPU backend for Cycles baking (OptiX on RTX cards), paid add-ons
+4. smoke test: build a test model, then cleanup -> retopo -> uv -> bake -> skin
+   -> lods -> previews -> export (Unreal + Unity) inside *your* Blender
+5. write a report to jobs/_setup/blender_report.json
+"""
+
+from __future__ import annotations
+
+import json
+import time
+from pathlib import Path
+from typing import Optional
+
+from .blender import BlenderError, find_blender, run_stage
+
+MIN_VERSION = (4, 2)
+WINGET = "winget install --id BlenderFoundation.Blender -e"
+DOWNLOAD = "https://www.blender.org/download/"
+
+
+def _remember_blender(path: str, env_file: Path) -> None:
+    lines = env_file.read_text(encoding="utf-8").splitlines() if env_file.exists() else []
+    lines = [l for l in lines if not l.strip().startswith("FORGE_BLENDER=")]
+    lines.append(f"FORGE_BLENDER={path}")
+    env_file.write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def _smoke(blender: list[str], work: Path, gpu: bool, say) -> dict:
+    """Run every Blender stage once on a generated test asset. Returns per-stage timings."""
+    t: dict = {}
+    logs = work / "logs"
+
+    def stage(name, args, **kw):
+        t0 = time.time()
+        res = run_stage(name, args, logs / f"{name}.log", blender=blender, **kw)
+        t[name] = round(time.time() - t0, 1)
+        say(f"   {name:9} ok  ({t[name]}s)")
+        return res
+
+    src = work / "test_model.glb"
+    stage("fixture", {"out": str(src), "rigged": True})
+    b = lambda n: str(work / f"{n}.blend")    # noqa: E731
+    stage("cleanup", {"source": str(src), "target_height_m": 1.8, "save_blend": b("1")})
+    stage("retopo", {"load_blend": b("1"), "target_tris": 4000, "save_blend": b("2")})
+    uv = stage("uv", {"load_blend": b("2"), "texture_size": 1024, "save_blend": b("3")})
+    bake = stage("bake", {"load_blend": b("3"), "texture_size": 1024, "texture_dir": str(work / "textures"),
+                          "samples": 16, "device": "GPU" if gpu else "CPU", "save_blend": b("4"),
+                          "uv_utilization": {p: r["utilization"] for p, r in uv["parts"].items()}})
+    stage("skin", {"load_blend": b("4"), "max_influences": 4, "sockets": {"socket_weapon_r": "hand_r"},
+                   "save_blend": b("5")})
+    stage("lods", {"load_blend": b("5"), "lod_ratios": [1, 0.5, 0.25], "save_blend": b("6")})
+    try:
+        stage("previews", {"load_blend": b("6"), "preview_dir": str(work / "previews"),
+                           "engine": "BLENDER_WORKBENCH"})
+        t["preview_engine"] = "BLENDER_WORKBENCH"
+    except BlenderError:
+        say("   previews: Workbench (GPU viewport renderer) failed, trying Cycles CPU ...")
+        stage("previews", {"load_blend": b("6"), "preview_dir": str(work / "previews"), "engine": "CYCLES"})
+        t["preview_engine"] = "CYCLES"
+    maps = {p: r["maps"] for p, r in bake["parts"].items() if "maps" in r}
+    for engine in ("unreal", "unity"):
+        stage("export", {"load_blend": b("6"), "engine": engine, "asset_name": "SetupTest",
+                         "export_dir": str(work / "export" / engine), "texture_maps": maps,
+                         "detachable_parts": ["Sword"], "unity_pipeline": "urp",
+                         "ao_into_basecolor": engine == "unity"})
+    return t
+
+
+def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: bool, say=print) -> int:
+    report: dict = {"time": time.time()}
+    if blender_path:
+        p = Path(blender_path)
+        if not p.exists():
+            say(f"[X] {p} does not exist")
+            return 1
+        blender = [str(p)]
+        _remember_blender(str(p), env_file)
+        say(f"[OK] saved FORGE_BLENDER={p} to {env_file}")
+    else:
+        blender = find_blender()
+    if not blender:
+        say("[X] Blender not found.\n  Install it with:\n"
+            f"      {WINGET}\n  or download it from {DOWNLOAD}\n"
+            "  Then run `forge setup-blender` again (or pass --blender \"C:\\path\\to\\blender.exe\").")
+        return 1
+    report["blender"] = blender[0]
+    say(f"[OK] Blender: {blender[0]}")
+
+    work = Path(jobs_dir) / "_setup"
+    work.mkdir(parents=True, exist_ok=True)
+    try:
+        info = run_stage("sysinfo", {}, work / "logs" / "sysinfo.log", blender=blender, factory_startup=False)
+    except BlenderError as exc:
+        say(f"[X] Blender did not start correctly: {exc}")
+        return 1
+    report["sysinfo"] = info
+    ver = tuple(info["version_tuple"][:2])
+    ok = True
+    if ver < MIN_VERSION:
+        say(f"[X] Blender {info['blender_version']} is too old - Forge needs {MIN_VERSION[0]}.{MIN_VERSION[1]} or newer")
+        ok = False
+    else:
+        say(f"[OK] Version {info['blender_version']} (Python {info['python']})")
+
+    gpu = info.get("best_gpu_backend")
+    if gpu:
+        devs = ", ".join(info["cycles_devices"][gpu])
+        say(f"[OK] GPU baking: {gpu} -> {devs}")
+    else:
+        say("[!] No GPU found for Cycles - baking will run on the CPU (slower). Update the NVIDIA driver,\n"
+            "  then in Blender: Edit > Preferences > System > Cycles Render Devices > OptiX.")
+    for name, label in (("quad_remesher", "Quad Remesher"), ("auto_rig_pro", "Auto-Rig Pro"),
+                        ("uvpackmaster", "UVPackmaster")):
+        a = info["addons"][name]
+        state = "enabled" if a["enabled"] else ("installed, NOT enabled" if a["installed"] else "not installed")
+        say(f"{'[OK]' if a['enabled'] else '[--]'} {label}: {state}")
+
+    if not skip_smoke and ok:
+        say("Running the pipeline smoke test inside your Blender ...")
+        try:
+            report["smoke"] = _smoke(blender, work / "smoke", bool(gpu), say)
+            say(f"[OK] Smoke test passed. Exports: {work / 'smoke' / 'export'}")
+        except BlenderError as exc:
+            say(f"[X] Smoke test failed: {str(exc).splitlines()[0]}\n  Logs: {work / 'smoke' / 'logs'}")
+            report["smoke_error"] = str(exc)
+            ok = False
+    (work / "blender_report.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
+    say(f"Report: {work / 'blender_report.json'}")
+    return 0 if ok else 1

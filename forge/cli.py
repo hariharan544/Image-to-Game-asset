@@ -5,6 +5,7 @@
   forge review   jobs/knight --checkpoint final --approve [--notes "..."]
   forge review   jobs/knight --checkpoint final --reject --notes "cape clips" --redo-from retopo
   forge review   jobs/knight --reject --notes "mobile textures too blurry" --redo-from bake@unity
+  forge setup-blender [--blender PATH]                    find + verify Blender, GPU, add-ons, smoke test
   forge check                                             verify Blender, Tripo key, AI supervisor
 """
 
@@ -143,6 +144,11 @@ def cmd_check(a) -> int:
     return 0 if ok else 1
 
 
+def cmd_setup_blender(a) -> int:
+    from .setup_blender import run
+    return run(a.blender, a.jobs, Path.cwd() / ".env", a.skip_smoke_test)
+
+
 def main(argv=None) -> int:
     _load_dotenv()
     p = argparse.ArgumentParser(prog="forge", description="Image -> game-ready 3D asset pipeline")
@@ -168,6 +174,11 @@ def main(argv=None) -> int:
     v.add_argument("--redo-from", help=f"restart from this stage ({', '.join(STAGE_NAMES)}); "
                                        "add @unreal or @unity to rebuild only that target")
     v.set_defaults(fn=cmd_review)
+
+    b = sub.add_parser("setup-blender", help="find and verify Blender, GPU, add-ons; run a smoke test")
+    b.add_argument("--blender", help="path to blender.exe (saved to .env as FORGE_BLENDER)")
+    b.add_argument("--skip-smoke-test", action="store_true")
+    b.set_defaults(fn=cmd_setup_blender)
 
     c = sub.add_parser("check", help="verify the environment")
     c.set_defaults(fn=cmd_check)

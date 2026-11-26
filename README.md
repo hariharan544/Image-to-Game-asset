@@ -32,19 +32,22 @@ image ─► Tripo (cloud) ─────────► Blender (headless, aut
 
 ## Setup (Windows)
 
-1. Install **Python 3.11+** and **Blender 4.2 LTS or newer** (developed against Blender 5.3).
-2. In a terminal in this folder:
-   ```bat
-   py -m venv .venv
-   .venv\Scripts\activate
-   pip install -e .[dev]
-   copy .env.example .env
-   ```
-3. Put your Tripo API key (`tsk_...`, from platform.tripo3d.ai) into `.env`.
-4. Check everything is found:
-   ```bat
-   forge check
-   ```
+Open PowerShell in this folder and run:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File setup\setup_windows.ps1
+```
+
+The script installs Python and Blender if they are missing (it asks first), installs Forge and
+creates `.env`. It then runs **`forge setup-blender`**, which checks:
+* the Blender version;
+* that your RTX GPU is available for baking;
+* which paid add-ons are installed.
+
+It finishes with a smoke test of every Blender stage inside your Blender.
+
+Then put your Tripo API key (`tsk_...`, from platform.tripo3d.ai) into `.env` and run
+`forge check`. Details and manual steps: [docs/SETUP_BLENDER.md](docs/SETUP_BLENDER.md).
 
 ## Making assets (the director's workflow)
 

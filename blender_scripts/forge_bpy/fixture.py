@@ -1,10 +1,9 @@
-"""Build a fake 'AI-generated' asset like Tripo returns: dense triangulated meshes,
-a baked texture, optionally a skeleton with weights. Exported as GLB.
+"""Stage: build a fake 'AI-generated' asset like Tripo returns - dense triangulated
+meshes, a texture, optionally a skeleton with weights - exported as GLB.
 
-    python make_fixture.py <out.glb> [--rigged]
+Used by `forge setup-blender` (smoke test on the user's Blender) and by the tests.
+args: {"out": "<path.glb>", "rigged": true}
 """
-
-import sys
 
 import bpy
 
@@ -39,9 +38,9 @@ def dense(obj, levels=2):
     bpy.ops.object.modifier_apply(modifier=t.name)
 
 
-def main():
-    out = sys.argv[1]
-    rigged = "--rigged" in sys.argv
+def run(args: dict) -> dict:
+    out = args["out"]
+    rigged = bool(args.get("rigged", True))
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
     bpy.ops.mesh.primitive_uv_sphere_add(radius=0.3, location=(0, 0, 1.3), segments=32, ring_count=16)
@@ -90,6 +89,4 @@ def main():
                 bpy.ops.object.parent_set(type="ARMATURE_AUTO")
 
     bpy.ops.export_scene.gltf(filepath=out, export_format="GLB")
-
-
-main()
+    return {"out": out, "rigged": rigged}

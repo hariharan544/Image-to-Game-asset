@@ -4,14 +4,11 @@ Needs Blender: either the `bpy` pip module in this Python, or FORGE_BLENDER /
 blender on PATH. Skipped otherwise.
 """
 
-import importlib.util
-import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
-from forge.blender import find_blender
+from forge.blender import find_blender, run_stage
 from forge.cli import main as cli
 from forge.dataset import DatasetRecorder
 from forge.job import Job
@@ -43,14 +40,9 @@ class FakeTripo:
 
 @pytest.fixture(scope="module")
 def fixture_glb(tmp_path_factory):
-    out = tmp_path_factory.mktemp("fx") / "src.glb"
-    blender = find_blender()
-    script = ROOT / "tests" / "blender" / "make_fixture.py"
-    if blender[0] == sys.executable:
-        cmd = [sys.executable, str(script), str(out), "--rigged"]
-    else:
-        cmd = [*blender, "-b", "--factory-startup", "-P", str(script), "--", str(out), "--rigged"]
-    subprocess.run(cmd, check=True, capture_output=True)
+    d = tmp_path_factory.mktemp("fx")
+    out = d / "src.glb"
+    run_stage("fixture", {"out": str(out), "rigged": True}, d / "fixture.log")
     return out
 
 
