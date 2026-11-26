@@ -235,6 +235,24 @@ def _dispatch(args: dict):
     return _run_builtin(args)
 
 
+def _bounds(me):
+    import numpy as np
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    return (co.min(axis=0), co.max(axis=0)) if len(co) else None
+
+
+def _same_place(src_me, new_me, tol: float = 0.2) -> bool:
+    """The remeshed part still covers the original's box (within 20% of its size)."""
+    import numpy as np
+    a, b = _bounds(src_me), _bounds(new_me)
+    if a is None or b is None:
+        return False
+    size = float(np.linalg.norm(a[1] - a[0])) or 1.0
+    return float(np.abs(a[0] - b[0]).max()) < tol * size and float(np.abs(a[1] - b[1]).max()) < tol * size
+
+
 def _run_builtin(args: dict) -> dict:
     method = args.get("method", "quadriflow")
     lows = C.meshes_with_role("low")
@@ -243,7 +261,18 @@ def _run_builtin(args: dict) -> dict:
     report: dict = {}
     for obj in lows:
         before = C.tri_count(obj)
-        used = _retopo_part(obj, budgets[obj.name], method, _opts(args))
+        if before <= budgets[obj.name] and not args.get("always_remesh", False):
+            used = "kept (already within budget)"       # e.g. a low-poly prop
+        else:
+            keep = obj.data.copy()
+            used = _retopo_part(obj, budgets[obj.name], method, _opts(args))
+            if not _same_place(keep, obj.data):
+                # the built-in remesher sometimes collapses thin boxes (measured: a sword came
+                # back elsewhere, 91% bake misses): reduce the original instead
+                _replace_mesh(obj, keep.copy())
+                _decimate(obj, budgets[obj.name])
+                used += ">broken>decimate"
+            bpy.data.meshes.remove(keep)
         if method == "quadremesher":
             used = "quadremesher-unavailable>" + used
         _finish_part(obj, budgets[obj.name], used, before, report, True)
