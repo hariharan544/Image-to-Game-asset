@@ -97,8 +97,15 @@ def check(stage: str, result: dict, spec: AssetSpec) -> list[Issue]:
                 add(Issue("BAKE_SKIPPED", stage, part, r["skipped"]))
                 continue
             miss = r.get("bake_miss_ratio")
-            if miss is not None and miss > q.max_bake_miss_ratio:
-                add(Issue("BAKE_MISSES", stage, part, "rays missed the high mesh (black areas)", miss, q.max_bake_miss_ratio))
+            if miss is not None and miss > q.max_bake_miss_ratio_hard:
+                add(Issue("BAKE_MISSES", stage, part,
+                          "bake rays found no source over a large area (check the model / search distance)",
+                          miss, q.max_bake_miss_ratio_hard))
+            elif miss is not None and miss > q.max_bake_miss_ratio:
+                # expected on fused meshes: closed gaps/holes have no source surface; already filled
+                add(Issue("BAKE_MISSES_FILLED", stage, part,
+                          f"{miss:.1%} of texels had no source surface and were filled from their surroundings",
+                          miss, q.max_bake_miss_ratio, severity="warn"))
 
     elif stage == "skin":
         if "skipped" in (result or {}):

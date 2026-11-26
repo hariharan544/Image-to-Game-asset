@@ -110,7 +110,8 @@ class QASpec(BaseModel):
     max_texel_density_cv: float = 0.35
     texel_density_tolerance: float = 0.5        # +-50% of the target density is acceptable
     max_non_manifold_edges: int = 0
-    max_bake_miss_ratio: float = 0.02
+    max_bake_miss_ratio: float = 0.02            # above: warning (misses are filled)
+    max_bake_miss_ratio_hard: float = 0.10       # above: error, the supervisor retries / asks you
     max_unweighted_verts_pct: float = 0.0
     max_ngons: int = 0
 
