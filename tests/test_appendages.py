@@ -67,6 +67,14 @@ def test_detail_map_gives_extra_parts_full_density():
     col.objects.link(body)
     body["forge_kind"] = "body"
     S = importlib.import_module("forge_send.steps")
+    try:
+        _check_density(S, body)
+    finally:                                  # leave no "Forge Parts" behind for other tests
+        bpy.ops.wm.read_homefile(use_empty=True)
+
+
+def _check_density(S, body):
+    import numpy as np
     assert S.ensure_detail_maps(0.8) == 1
     me = body.data
     c = np.empty(len(me.loops) * 4, np.float32)
