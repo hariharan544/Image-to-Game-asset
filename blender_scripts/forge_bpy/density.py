@@ -322,8 +322,11 @@ def region_labels(V: np.ndarray, J: dict) -> np.ndarray:
     leg_x = abs(p("thigh_l")[0])
     ax = np.abs(V[:, 0])
     lab = np.zeros(len(V), np.int8)                                   # body
-    lab[(V[:, 2] > neck_z) & (ax < sh_x)] = 1                         # head
-    arm = ax > sh_x * 1.05
+    H = float(V[:, 2].max() - V[:, 2].min()) or 1.0
+    # arms are out past the shoulders AND at arm height: ears, horns and hair beside a wide
+    # head stay head (a straight |x| cut sliced through their roots)
+    arm = (ax > sh_x * 1.05) & (V[:, 2] < neck_z + 0.03 * H)
+    lab[(V[:, 2] > neck_z) & ~arm] = 1                                # head
     lab[arm] = 2
     lab[arm & (ax > wr_x)] = 3                                        # hands
     leg = (V[:, 2] < hip_z) & (ax > 0.35 * leg_x) & ~arm
@@ -395,20 +398,28 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
     a, b = ev[0::2].astype(np.int64), ev[1::2].astype(np.int64)
     deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)[:, None]
 
+    # each vertex may only move onto the original surface it stands for: one that faces the
+    # same way, and not farther than a few of its own edges (next to a thin ear or in the gap
+    # at a horn root, the nearest hit can be the far side of the sheet or another wall)
+    elen = np.linalg.norm(co[a] - co[b], axis=1)
+    reach = (np.bincount(a, weights=elen, minlength=n) + np.bincount(b, weights=elen, minlength=n)) / deg[:, 0]
+    reach = np.minimum(4.0 * reach, limit)
+
     def project(pts, nrm):
         out = pts.copy()
         moved = 0
         for i in range(n):
             p = Vector(pts[i])
             d = Vector(nrm[i])
+            lim = float(reach[i]) or limit
             best = None
             for s in (1.0, -1.0):
-                hit = tree.ray_cast(p, d * s, limit)
-                if hit[0] is not None and (best is None or hit[3] < best[1]):
+                hit = tree.ray_cast(p, d * s, lim)
+                if hit[0] is not None and hit[1].dot(d) > 0.2 and (best is None or hit[3] < best[1]):
                     best = (hit[0], hit[3])
             if best is None:
-                near = tree.find_nearest(p, limit)
-                if near[0] is not None:
+                near = tree.find_nearest(p, lim)
+                if near[0] is not None and near[1].dot(d) > 0.0:
                     best = (near[0], near[3])
             if best is not None:
                 out[i] = best[0][:]
@@ -487,11 +498,13 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
     allowance = int(max_add * tris0)
     added = splits = 0
 
-    def hit_at(p, n):
+    def hit_at(p, n, lim):
+        """The groove floor under p: facing the same way as the surface (not the far wall of
+        a crevice or the underside of an ear), within reach."""
         best = None
         for s in (1.0, -1.0):
-            h = tree.ray_cast(p, n * s, reach)
-            if h[0] is not None and (best is None or h[3] < best[3]):
+            h = tree.ray_cast(p, n * s, lim)
+            if h[0] is not None and h[1].dot(n) > 0.5 and (best is None or h[3] < best[3]):
                 best = h
         return best
 
@@ -500,16 +513,20 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
         marks = []
         for e in bm.edges:
             a, b = e.verts
-            if (b.co - a.co).length < min_edge:
+            elen = (b.co - a.co).length
+            if elen < min_edge:
                 continue
             best = None
+            # a groove narrower than one quad is about as deep as the quad is wide: deeper
+            # hits are another surface, not this groove
+            lim = min(reach, 0.75 * elen)
             for k in range(1, samples + 1):
                 t = k / (samples + 1)
                 p = a.co.lerp(b.co, t)
                 n = a.normal.lerp(b.normal, t)
                 if n.length < 1e-9:
                     continue
-                h = hit_at(p, n.normalized())
+                h = hit_at(p, n.normalized(), lim)
                 if h is None or pstrict[h[2]] >= 0.999 or h[3] <= tol:
                     continue
                 if best is None or h[3] > best[0]:
@@ -613,6 +630,43 @@ def straddles_middle(me, cell: float = 0.02, min_share: float = 0.5) -> bool:
     return float(np.mean(~_mirror_far(co, cell * size))) >= min_share
 
 
+def mirror_plane(me, max_shift: float = 0.03, samples: int = 60_000) -> float:
+    """Where the body's mirror plane really is (x = x0), measured from its own symmetry, not
+    from its box (a longer hand or a curled tail moves the box centre). Robust 1-D
+    registration: each point and the nearest point to its mirror image agree on a middle;
+    the median of those middles, a few times over. Bounded to max_shift of the size."""
+    from mathutils.kdtree import KDTree
+    n = len(me.vertices)
+    if n == 0:
+        return 0.0
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    if n > samples:
+        co = co[:: n // samples + 1]
+    size = float((co.max(axis=0) - co.min(axis=0)).max()) or 1.0
+    kd = KDTree(len(co))
+    for i, p in enumerate(co):
+        kd.insert(p, i)
+    kd.balance()
+    x0 = 0.0
+    for it in range(12):
+        mids = []
+        tol = (0.08 if it < 3 else 0.02) * size       # wide first (the plane may be far off)
+        for p in co[:: max(1, len(co) // 8000)]:
+            q, _i, dist = kd.find((2 * x0 - p[0], p[1], p[2]))
+            if q is not None and dist < tol:
+                mids.append(0.5 * (p[0] + q[0]))
+        if len(mids) < 100:
+            break
+        new = float(np.clip(np.median(mids), -max_shift * size, max_shift * size))
+        if abs(new - x0) < 1e-5 * size:
+            x0 = new
+            break
+        x0 = new
+    return x0
+
+
 def symmetrize(me, side: str) -> None:
     """Make the mesh symmetric from one side: 'left' keeps the character's left (+X) and
     mirrors it over, 'right' keeps -X. One-sided parts must be split off first."""
@@ -630,66 +684,14 @@ def symmetrize(me, side: str) -> None:
 
 
 def _mirror_far(co: np.ndarray, cell: float) -> np.ndarray:
-    """True where a vertex's mirror image (across X = 0) has no vertex of the mesh within about
-    one cell: grid lookup, fast on millions of vertices (AI meshes are dense)."""
-    def key(q):
-        return (q[:, 0] * 2_000_003 + q[:, 1]) * 2_000_003 + q[:, 2]
-    lo = co.min(axis=0) - 2 * cell
-    q = np.floor((co - lo) / cell).astype(np.int64)
-    occ = np.unique(key(q))
-    m = co.copy()
-    m[:, 0] = -m[:, 0]
-    qm = np.floor((m - lo) / cell).astype(np.int64)
-    found = np.zeros(len(co), bool)
-    for dx in (-1, 0, 1):
-        for dy in (-1, 0, 1):
-            for dz in (-1, 0, 1):
-                k = key(qm + np.array([dx, dy, dz]))
-                i = np.clip(np.searchsorted(occ, k), 0, len(occ) - 1)
-                found |= occ[i] == k
-    return ~found
+    from .parts import mirror_far
+    return mirror_far(co, cell)
 
 
-def one_sided_parts(me, taken=None, high: float = 0.05, low: float = 0.012,
-                    min_extent: float = 0.08, max_share: float = 0.15) -> np.ndarray:
-    """Parts that mirroring would duplicate or delete: a tail curling to one side, a horn
-    broken on one side, a pouch on one hip. Hysteresis like an edge detector: a region is
-    seeded where the mirror is far off (> high x size) and grown over the surface while the
-    mirror stays off by more than low x size, so the cut lands near the root, on the
-    symmetric body. Small one-sided details (a notch, a scar) are left to the chosen side.
-    Returns piece ids (0 = body), numbered after the ones already in `taken`."""
-    n = len(me.vertices)
-    ids = np.zeros(n, np.int32)
-    if n == 0:
-        return ids
-    co = np.empty(n * 3, np.float32)
-    me.vertices.foreach_get("co", co)
-    co = co.reshape(-1, 3).astype(np.float64)
-    size = float((co.max(axis=0) - co.min(axis=0)).max()) or 1.0
-    far_hi = _mirror_far(co, high * size)
-    far_lo = _mirror_far(co, low * size)
-    if taken is not None:
-        far_lo &= taken == 0
-        far_hi &= taken == 0
-    if not far_hi.any():
-        return ids
-    ev = np.empty(len(me.edges) * 2, np.int32)
-    me.edges.foreach_get("vertices", ev)
-    ev = ev.reshape(-1, 2).astype(np.int64)
-    keep = far_lo[ev[:, 0]] & far_lo[ev[:, 1]]
-    from .appendages import _components
-    lab = _components(n, ev[keep, 0], ev[keep, 1])
-    k = int(taken.max()) if taken is not None and len(taken) else 0
-    for root in np.unique(lab[far_hi & far_lo]):
-        sel = (lab == root) & far_lo
-        if sel.sum() > max_share * n:          # a broad lopsided area of the body itself
-            continue
-        ext = float((co[sel].max(axis=0) - co[sel].min(axis=0)).max())
-        if ext < min_extent * size:
-            continue
-        k += 1
-        ids[sel] = k
-    return ids
+def one_sided_parts(me, taken=None, **kw) -> np.ndarray:
+    """Parts mirroring would copy or delete (no twin), cut at their neck: see parts.py."""
+    from .parts import one_sided_parts as osp
+    return osp(me, taken, **kw)
 
 
 def write_split(me, ids: np.ndarray) -> None:

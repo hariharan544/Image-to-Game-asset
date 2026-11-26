@@ -31,8 +31,9 @@ class QREMESHER_OT_remesh(bpy.types.Operator):
     bl_label = "fake Quad Remesher"
 
     def execute(self, context):
-        o = context.active_object or (context.selected_objects or [None])[0]
-        Engine.jobs.append(o.name)
+        o = context.view_layer.objects.active
+        # the engine takes a snapshot of the input and works on it outside Blender
+        Engine.jobs.append((o.name, o.data.copy(), o.matrix_world.copy()))
         return {"FINISHED"}
 
 
@@ -46,17 +47,18 @@ def install():
 
 
 def deliver(remesh=None):
-    """The engine finishes the oldest job: import its result like the real add-on."""
-    name = Engine.jobs.pop(0)
-    src = bpy.data.objects[name]
-    me = src.data.copy()
+    """The engine finishes the oldest job: import its result like the real add-on (into the
+    active collection, named after the input, the input hidden if it still exists)."""
+    name, me, mw = Engine.jobs.pop(0)
     if remesh is not None:
         remesh(me)
     rname = "Retopo_" + name
     if Engine.name_limit:
         rname = rname[:Engine.name_limit]
     res = bpy.data.objects.new(rname, me)
-    res.matrix_world = src.matrix_world.copy()
+    res.matrix_world = mw
     bpy.context.view_layer.active_layer_collection.collection.objects.link(res)
-    src.hide_set(True)                       # hide_input
+    src = bpy.data.objects.get(name)
+    if src is not None:
+        src.hide_set(True)                   # hide_input
     return res

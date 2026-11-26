@@ -51,9 +51,19 @@ def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_
         ring = {v for e in open_edges for v in e.verts}
         root = sum((v.co for v in ring), Vector()) / len(ring)
         centre = sum((v.co for v in bm.verts), Vector()) / len(bm.verts)
+        # the plug follows the cut ring itself: its plane normal, pointing from the body into
+        # the part (the farthest vertex of a curled tail points sideways, not into the body)
+        rc = np.array([v.co[:] for v in ring]) - np.array(root[:])
         tip = max(bm.verts, key=lambda v: (v.co - root).length).co.copy()
-        out = (tip - root).normalized() if (tip - root).length > 1e-9 else (centre - root).normalized()
-        radius = max(sum((v.co - root).length for v in ring) / len(ring), 1e-6)
+        normal = tip - root if (tip - root).length > 1e-9 else centre - root
+        if len(ring) >= 3:
+            _u, sv, vt = np.linalg.svd(rc, full_matrices=False)
+            if sv[2] < 0.25 * sv[1]:                 # one flat ring: its normal (else: tip)
+                normal = Vector(vt[2])
+        out = normal.normalized()
+        if out.dot(centre - root) < 0:
+            out = -out
+        radius = max(float(np.median([(v.co - root).length for v in ring])), 1e-6)
         # plug: two rings going into the body, narrowing, then closed
         edges = open_edges
         for depth, shrink in ((0.6, 0.85), (1.2, 0.6)):
@@ -280,32 +290,105 @@ def clean_seam(me, piece_obj) -> None:
     me.update()
 
 
-def split_off(me, ids: np.ndarray) -> list:
-    """Planned split (before remeshing): every thin part marked k > 0 in `ids` is taken out of
+def _defects(bm) -> tuple:
+    """(open edges, edges shared by more than two faces, loose vertices)."""
+    return (sum(1 for e in bm.edges if e.is_boundary), sum(1 for e in bm.edges if len(e.link_faces) > 2),
+            sum(1 for v in bm.verts if not v.link_faces))
+
+
+def mesh_defects(me) -> tuple:
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    d = _defects(bm)
+    bm.free()
+    return d
+
+
+def _cut_body(me, remove: np.ndarray):
+    """The body without the removed vertices, every opening capped. Returns a bmesh."""
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bm.verts.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[v for v in bm.verts if remove[v.index]], context="VERTS")
+    loose = [v for v in bm.verts if not v.link_faces]
+    if loose:
+        bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    open_edges = [e for e in bm.edges if e.is_boundary]
+    if open_edges:
+        res = bmesh.ops.holes_fill(bm, edges=open_edges, sides=100000)
+        ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+        if ng:
+            bmesh.ops.triangulate(bm, faces=ng)
+    _drop_open_scraps(bm)
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    return bm
+
+
+def _drop_open_scraps(bm, max_share: float = 0.05) -> int:
+    """Small shells that are still open after capping are scraps of the removed part (the
+    inner end of a part that was a separate shell overlapping the body): delete them."""
+    total = len(bm.faces)
+    seen: set = set()
+    dropped = 0
+    for e in [e for e in bm.edges if e.is_boundary]:
+        if not e.is_valid or not e.link_faces or e.link_faces[0] in seen:
+            continue
+        shell, stack = set(), [e.link_faces[0]]
+        while stack:
+            f = stack.pop()
+            if f in shell:
+                continue
+            shell.add(f)
+            for ed in f.edges:
+                stack.extend(g for g in ed.link_faces if g not in shell)
+        seen |= shell
+        if len(shell) < max_share * total:
+            verts = {v for f in shell for v in f.verts}
+            bmesh.ops.delete(bm, geom=list(shell), context="FACES")
+            bmesh.ops.delete(bm, geom=[v for v in verts if v.is_valid and not v.link_faces], context="VERTS")
+            dropped += 1
+    return dropped
+
+
+def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
+    """Planned split (before remeshing): every part marked k > 0 in `ids` is taken out of
     `me` (the hole is capped) and returned as its own closed piece with a plug that reaches
-    back into the body. [(k, piece_mesh, plug)]."""
+    back into the body. [(k, piece_mesh, plug)].
+
+    Transactional: a piece is only taken when the piece comes out closed and the body is
+    left without new openings or broken edges; otherwise it stays with the body (and the
+    reason goes to `report`). The body is never handed on with a hole."""
+    before = mesh_defects(me)
     pieces = []
     for k in sorted(set(int(i) for i in np.unique(ids)) - {0}):
         region = ids == k
         piece = extract(me, region, grow_rings=0, name=f"forge_part_{k}")   # exact cut: no overlap band
+        d = mesh_defects(piece)
+        if d[0] or d[1] or len(piece.polygons) < 8:
+            bpy.data.meshes.remove(piece)
+            if report is not None:
+                report.append((k, "the cut piece was not closed: kept with the body"))
+            continue
         plug = list(piece["forge_plug"]) if "forge_plug" in piece else None
         pieces.append((k, piece, plug))
-    if pieces:
-        bm = bmesh.new()
-        bm.from_mesh(me)
-        bm.verts.ensure_lookup_table()
-        bmesh.ops.delete(bm, geom=[v for v in bm.verts if ids[v.index] > 0], context="VERTS")
-        open_edges = [e for e in bm.edges if e.is_boundary]
-        if open_edges:
-            res = bmesh.ops.holes_fill(bm, edges=open_edges, sides=100000)
-            ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
-            if ng:
-                bmesh.ops.triangulate(bm, faces=ng)
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    ok = []
+    for k, piece, plug in pieces:           # each cut must leave the body as sound as before
+        bm = _cut_body(me, ids == k)
+        d = _defects(bm)
+        bm.free()
+        if d[0] > before[0] or d[1] > before[1]:
+            bpy.data.meshes.remove(piece)
+            if report is not None:
+                report.append((k, "cutting it would leave an opening in the body: kept with the body"))
+            continue
+        ok.append((k, piece, plug))
+    if ok:
+        remove = np.isin(ids, [k for k, _p, _q in ok])
+        bm = _cut_body(me, remove)
         bm.to_mesh(me)
         bm.free()
         me.update()
-    return pieces
+    return ok
 
 
 def attach(target, piece_obj) -> None:

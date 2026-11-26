@@ -281,25 +281,31 @@ class FORGE_OT_step(bpy.types.Operator):
             st.symmetry = side
 
     def do_retopo_map(self, context, st):
-        S.prepare_maps(st.detail)
         on = not st.get("detail_view", False)
-        st["detail_view"] = on
-        S.show_detail_map(on)
-        for area in context.screen.areas:
-            if area.type == "VIEW_3D":
-                sh = area.spaces.active.shading
-                sh.type = "SOLID"
-                sh.color_type = "VERTEX" if on else "MATERIAL"
+
+        def show(st, _n=None):
+            st["detail_view"] = on
+            S.show_detail_map(on)
+            for area in bpy.context.screen.areas if bpy.context.screen else []:
+                if area.type == "VIEW_3D":
+                    sh = area.spaces.active.shading
+                    sh.type = "SOLID"
+                    sh.color_type = "VERTEX" if on else "MATERIAL"
+        if on and (S.plan_needed(st.symmetry) or any(S._mod("density").QR_ATTR not in p.data.color_attributes
+                                                     for p in S.parts())):
+            run(st, "detail map + parts plan", lambda: S.prepare_maps_job(st.detail, side=st.symmetry), show)
+        else:
+            show(st)
 
     def do_retopo_map_reset(self, context, st):
-        n = S.prepare_maps(st.detail, recompute=True)
-        self.report({"INFO"}, f"Detail map made again for {n} part(s)")
+        run(st, "detail map + parts plan (again)",
+            lambda: S.prepare_maps_job(st.detail, recompute=True, side=st.symmetry), lambda st, n: None)
 
     def do_retopo_map_paint(self, context, st):
         o = context.active_object
         if o is None or o not in S.parts():
             o = S.G.body_of(S.parts())
-        S.prepare_maps(st.detail)
+        S.prepare_maps(st.detail, side=st.symmetry)
         S.show_detail_map(True)
         st["detail_view"] = True
         S.C().select_only(o)
@@ -535,6 +541,16 @@ def _retopo_rows(rep):
             else:
                 out.append(("BLANK1", "    mirrored (symmetric)" if r["symmetry"]
                             else f"    not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)"))
+        if "part(s) separate" in m:
+            n_sep = m.split("+")[-1].split(" ")[0]
+            out.append(("BLANK1", f"    {n_sep} part(s) remeshed on their own, then attached"))
+        for how in r.get("piece_fallbacks", []):
+            out.append((WARN, f"    a part got no Quad Remesher result: Blender's {how} used"))
+        for why in r.get("split_kept", []):
+            out.append((WARN, f"    {why}"))
+        if r.get("open_edges") or r.get("bad_edges"):
+            out.append((BAD, f"    mesh not closed: {r.get('open_edges', 0)} open, "
+                             f"{r.get('bad_edges', 0)} broken edges - Undo and run again"))
         if sh:
             if sh.get("lost_pct", 0) > 0.5:
                 out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))
@@ -687,6 +703,8 @@ def _draw_retopo(col, st):
         c.label(text="Extra parts found:", icon="OUTLINER_OB_ARMATURE")
         for line in plan:
             c.label(text="   " + line)
+        if S.plan_needed(st.symmetry):
+            c.label(text="   (made for another symmetry choice: Show or Run updates it)", icon="INFO")
     _btn(col, "retopo_run", "Run retopology", "MOD_REMESH", 1.3)
     rep = json.loads(st.retopo_rep or "{}")
     if st.retopo == "review" and rep:

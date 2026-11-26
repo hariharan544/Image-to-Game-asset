@@ -111,7 +111,7 @@ def prepare_retopo() -> list:
     # leftovers of a run that stopped half-way (rescue pieces, Quad Remesher results)
     for o in list(bpy.data.objects):
         if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_") \
-                or o.get("forge_cage"):
+                or o.get("forge_cage") or o.get("forge_qr_proxy"):
             bpy.data.objects.remove(o)
     for mod in ("retopo", "bake"):
         try:
@@ -176,43 +176,80 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
     return n
 
 
-def plan_parts(recompute: bool = False) -> dict:
-    """Which extra parts of the body are thin and one-sided (tail, antenna: retopologized on
-    their own, then attached) and which are thick and rigid (horns: fewer quads, they do not
-    bend). Stored on the body mesh; the director sees the result in Step 4."""
+def plan_parts(recompute: bool = False, side: str = "") -> dict:
+    """The parts plan, made ONCE and used by the run (what the director sees is what runs):
+    - thin parts without a twin (tail, antenna, trunk) are cut at their neck and remeshed on
+      their own, then attached;
+    - when a side is chosen for mirroring, parts that mirroring would copy or delete (a tail
+      curling to one side) are cut the same way; pairs in another pose are not parts;
+    - thick rigid parts (horns) get fewer quads; ears stay with the body.
+    Stored on the body mesh (forge_split + forge_plan); the panel lists it in Step 4."""
     import numpy as np
     dens = _mod("density")
+    parts_mod = _mod("parts")
     out = {}
     for p in parts():
         if G.kind(p) != "body":
             continue
         me = p.data
-        if not recompute and dens.SPLIT_ATTR in me.attributes and p.get("forge_plan"):
+        mirror = side in ("left", "right")
+        if (not recompute and dens.SPLIT_ATTR in me.attributes and p.get("forge_plan")
+                and bool(me.get("forge_plan_mirror", False)) == mirror):
             return dict(p["forge_plan"])
         J = _mod("joints").estimate(p)
         apps = _mod("appendages").from_object(p, J)
+        arr = parts_mod.MeshArrays(me)
         ids = np.zeros(len(me.vertices), np.int32)
         k = 0
+        regions = []
         for a in apps:
-            # split only thin UNPAIRED parts (tail, antenna, trunk): paired ears stay with the
-            # mirrored body, where they come out symmetric without extra seams near the face
-            if a.get("thin") and a["kind"] not in ("ear", "horn"):
+            m = np.zeros(len(me.vertices), bool)
+            m[a["vert_idx"]] = True
+            regions.append((a, m))
+            twin = parts_mod.has_twin(arr, m, a.get("thickness", a["width"]))
+            # split only thin parts WITHOUT a twin; paired ears/horns stay with the mirrored
+            # body, where they come out symmetric without extra seams near the face
+            if a.get("thin") and not twin and a["kind"] not in ("ear", "horn") and a.get("cut_ok", True):
                 k += 1
-                ids[a["vert_idx"]] = k
-                out[a["name"]] = "separate"
+                ids[m & (ids == 0)] = k
+                out[a["name"]] = "separate (cut at its root)"
             elif a["kind"] == "horn":
                 out[a["name"]] = "rigid, fewer quads"
             else:
                 out[a["name"]] = "with the body"
+        if mirror and dens.straddles_middle(me):
+            rep: list = []
+            extra = parts_mod.one_sided_parts(me, taken=ids, arr=arr, report=rep)
+            for kk in [int(x) for x in np.unique(extra) if x > 0]:
+                m = extra == kk
+                name = next((a["name"] for a, am in regions if (am & m).sum() > 0.3 * m.sum()), f"part_{kk}")
+                out[name] = "separate: one-sided, kept as it is when mirroring"
+                ids[m & (ids == 0)] = kk
+            for kind, c, why in rep:
+                if kind == "pair":
+                    out[f"{'left' if c[0] > 0 else 'right'} side differs"] = why
+            me["forge_onesided_planned"] = True
+        elif "forge_onesided_planned" in me:
+            del me["forge_onesided_planned"]
+        me["forge_plan_mirror"] = mirror
         dens.write_split(me, ids)
         # rigid horns: half the quads (they never deform, only their shape matters)
         horn = np.zeros(len(me.vertices), bool)
-        for a in apps:
+        app_all = np.zeros(len(me.vertices), bool)
+        for a, m in regions:
+            app_all |= m
             if a["kind"] == "horn":
-                horn[a["vert_idx"]] = True
+                horn |= m
         if horn.any() and dens.QR_ATTR in me.color_attributes:
             # rings=2 reaches the base too, which the head weighting would otherwise paint red
             dens.boost(me, horn, rings=2, edge_factor=0.7)      # edges 1.4x longer: half the quads
+        # face creases are carved on the FACE only: ear, horn and tail roots are not creases
+        sa = me.attributes.get(dens.STRICT_ATTR)
+        if sa is not None and app_all.any():
+            sv = np.empty(len(me.vertices), np.float32)
+            sa.data.foreach_get("value", sv)
+            sv[dens._dilate(app_all, me, 3)] = 1.0
+            sa.data.foreach_set("value", sv)
         p["forge_plan"] = out
     return out
 
@@ -253,14 +290,37 @@ def show_detail_map(on: bool) -> None:
         o.hide_set(on)
 
 
-def prepare_maps(detail: float, recompute: bool = False) -> int:
+def prepare_maps(detail: float, recompute: bool = False, side: str = "") -> int:
     """Detail map AND parts plan together, so the map the director sees (Show / Paint) is the
     map Quad Remesher gets: the plan paints the horns lighter on top of the detail map."""
     n = ensure_detail_maps(detail, recompute=recompute) if detail > 0 else 0
     try:
-        plan_parts(recompute=recompute or n > 0)       # a fresh map needs the plan painted again
+        plan_parts(recompute=recompute or n > 0, side=side)   # a fresh map needs the plan again
     except Exception as exc:                          # noqa: BLE001 - remeshing still works without
-        print(f"[forge] parts plan skipped: {exc}")
+        print(f"[forge] parts plan failed: {exc}")
+        for p in parts():
+            if G.kind(p) == "body":
+                p["forge_plan"] = {"parts plan failed": str(exc)[:80]}
+    return n
+
+
+def plan_needed(side: str) -> bool:
+    """The parts plan has to be (re)made: no plan yet, or the mirroring choice changed."""
+    for p in parts():
+        if G.kind(p) == "body":
+            me = p.data
+            return not (_mod("density").SPLIT_ATTR in me.attributes and p.get("forge_plan")
+                        and bool(me.get("forge_plan_mirror", False)) == (side in ("left", "right")))
+    return False
+
+
+def prepare_maps_job(detail: float, recompute: bool = False, side: str = ""):
+    """prepare_maps as a job: the panel shows what is going on (on a dense AI mesh finding
+    the parts takes a minute or two) and Stop works between the steps."""
+    STATUS["text"] = "detail map + finding the extra parts (tail, horns, ears...)"
+    yield 0.1
+    n = prepare_maps(detail, recompute=recompute, side=side)
+    STATUS["text"] = ""
     return n
 
 
@@ -279,7 +339,7 @@ def plan_rows() -> list:
 
 def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: str = "auto"):
     if use_qr:
-        prepare_maps(detail)
+        prepare_maps(detail, side=symmetry)
     for p in parts():                                  # a side preview must not reach the remesher
         show_side(p, "")
     prepare_retopo()
@@ -300,10 +360,12 @@ def stop_cleanup(label: str = "") -> None:
     if "retopo" in label:
         undo_retopo()                     # a half-done retopology is of no use: start clean
     for o in list(bpy.data.objects):
-        if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_"):
+        if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_") \
+                or o.get("forge_qr_proxy"):
             bpy.data.objects.remove(o)
     try:
         retopo = _mod("retopo")
+        retopo.cleanup_jobs()
         retopo.STATUS["text"] = ""
     except Exception:                                 # noqa: BLE001
         pass

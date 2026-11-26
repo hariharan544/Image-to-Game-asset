@@ -87,8 +87,14 @@ def _components(n: int, a: np.ndarray, b: np.ndarray) -> np.ndarray:
         lab = new
 
 
-def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share: float = 0.002) -> list:
-    """Appendages as [{"name", "kind", "chain": [(x,y,z)...], "verts": n}] sorted by size."""
+def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share: float = 0.002,
+         arr=None) -> list:
+    """Appendages as [{"name", "kind", "chain": [(x,y,z)...], "verts": n}] sorted by size.
+
+    With `arr` (parts.MeshArrays in the same space as V) every candidate is grown over the
+    surface to its neck and measured on its whole shape by thickness: the distance to a
+    guessed bone only says that something sticks out (on a round cartoon body it swallows
+    most of a horn), never where the part ends or how thick it is."""
     g, top = V[:, 2].min(), V[:, 2].max()
     H = max(top - g, 1e-6)
     segs = _segments(J)
@@ -115,18 +121,39 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
     head_top = np.array(J["head"][1][:])
     head_r = max(np.linalg.norm(head - neck), 0.6 * np.linalg.norm(head_top - head), 0.05 * H)
     out = []
-    for verts in groups.values():
+    cands = [v for v in sorted(groups.values(), key=len, reverse=True) if len(v) >= 12]
+    if arr is not None:
+        from .parts import grow_parts
+        seeds = []
+        for verts in cands:
+            m = np.zeros(len(V), bool)
+            m[verts] = True
+            seeds.append(m)
+        grown = []
+        # the trunk's own thickness (spine and head capsules): what a part must be thinner than
+        spine = np.array([segs[i][2].startswith(("pelvis", "spine", "chest", "neck", "head")) for i in range(len(segs))])
+        on_spine = spine[which] & ~far
+        trunk = 2.0 * float(np.median(local[on_spine])) if on_spine.any() else None
+        for info in grow_parts(arr, seeds, body=~far, t_body=trunk):   # all together: touching parts stop at each other
+            if info is not None:                # (None: as thick as the body around: not a part)
+                grown.append((list(np.nonzero(info["mask"])[0]), info))
+    else:
+        grown = [(v, None) for v in cands]
+    for verts, info in grown:
         if len(verts) < max(12, min_share * len(V)):
             continue
         P = V[verts]
         # root: the appendage vertex closest to the explained body; tip: farthest from the root
         root = P[np.argmin(d[verts])]
-        # start the chain on the body surface, not where the part begins to stick out
         i0 = verts[int(np.argmin(d[verts]))]
-        a, b, _k = segs[which[i0]]
-        on_bone = a + where[i0] * (b - a)
-        out_dir = root - on_bone
-        root = on_bone + out_dir / max(np.linalg.norm(out_dir), 1e-9) * local[i0]
+        if info is not None and info["ring"] is not None:
+            root = np.array(info["ring"][0])          # the neck: where the part meets the body
+        else:
+            # start the chain on the body surface, not where the part begins to stick out
+            a, b, _k = segs[which[i0]]
+            on_bone = a + where[i0] * (b - a)
+            out_dir = root - on_bone
+            root = on_bone + out_dir / max(np.linalg.norm(out_dir), 1e-9) * local[i0]
         dist = np.linalg.norm(P - root, axis=1)
         tip = P[np.argmax(dist)]
         length = float(dist.max())
@@ -135,7 +162,9 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
         # appendages are elongated; a patch of torso surface flagged by mistake is a broad sheet
         ev_ = np.linalg.eigvalsh(np.cov((P - P.mean(axis=0)).T))[::-1]
         width = 2.0 * np.sqrt(max(ev_[1], 0.0))
-        if length < 1.6 * width:
+        thick = info["thickness"] if info is not None else width
+        # elongated: longer than thick (PCA width of a curled tail is its curl, not its girth)
+        if length < 1.6 * (thick if info is not None else width):
             continue
         # must stick out clearly (armpits and shoulder blends stick out a little, ears a lot)
         if float(np.max(d[verts] - local[verts])) < 0.06 * H:
@@ -154,14 +183,20 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
         member[verts] = True
         touch_e = (member[edges[:, 0]] & ~far[edges[:, 1]]) | (member[edges[:, 1]] & ~far[edges[:, 0]])
         touch_v = np.unique(np.where(member[edges[touch_e, 0]], edges[touch_e, 0], edges[touch_e, 1]))
-        if len(touch_v) > 2:
+        if len(touch_v) > 2 and info is None:      # (a grown part's ring was checked instead)
             axis = (tip - root) / max(np.linalg.norm(tip - root), 1e-9)
             proj = (V[touch_v] - root) @ axis
             if float(proj.max() - proj.min()) > 0.5 * length:
                 continue
         # flat (an ear is a thin sheet) or round (a horn is a cone): the cross-section shape
         # tells them apart better than the direction (rabbit ears point up, bull horns sideways)
-        flat = bool(ev_[2] < 0.25 * max(ev_[1], 1e-12))
+        if info is not None:
+            # a sheet is much thinner than a tube of the same area and length would be
+            area = len(verts) * (arr.edge_len ** 2) * 0.87
+            tube_d = area / (np.pi * max(length, 1e-9))
+            flat = bool(thick < 0.45 * tube_d)
+        else:
+            flat = bool(ev_[2] < 0.25 * max(ev_[1], 1e-12))
         # pointed: a horn narrows to a tip, an ear stays blunt
         ax = (tip - root) / max(np.linalg.norm(tip - root), 1e-9)
         t = (P - root) @ ax
@@ -173,7 +208,10 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
         kind = _classify(c, root, tip, pelvis, head, head_top, head_r, front, H, flat, pointed)
         out.append({"kind": kind, "chain": [tuple(map(float, p)) for p in chain],
                     "verts": len(verts), "vert_idx": np.asarray(verts), "length": length,
-                    "width": float(width), "thin": bool(width < 0.06 * H and kind != "horn"), "centre": tuple(map(float, c))})
+                    "width": float(width), "thickness": float(thick),
+                    "thin": bool(thick < 0.06 * H and kind != "horn"), "centre": tuple(map(float, c)),
+                    "ring": info["ring"] if info is not None else None,
+                    "cut_ok": bool(info["ok"]) if info is not None else False})
     out.sort(key=lambda a: -a["verts"])
     return _name(out)
 
@@ -195,7 +233,9 @@ def _classify(c, root, tip, pelvis, head, head_top, head_r, front, H, flat=False
         if abs(c[0] - head[0]) > 0.8 * head_r:
             return "ear"
         return "snout" if not behind else "head_extra"
-    if behind and root[2] < pelvis[2] + 0.15 * H and abs(root[0]) < 0.1 * H:
+    # a tail grows from the lower back, near the centre line (the pelvis guess is unreliable on
+    # a round cartoon body: compare with the middle of the trunk instead)
+    if behind and abs(root[0]) < 0.1 * H and root[2] < max(pelvis[2] + 0.15 * H, 0.5 * (pelvis[2] + head[2])):
         return "tail"
     if behind:
         return "back_extra"
@@ -217,14 +257,13 @@ def _name(items: list) -> list:
     return items
 
 
-def from_object(obj, J: dict, segments: int = 5) -> list:
-    me = obj.data
-    n = len(me.vertices)
-    co = np.empty(n * 3, np.float32)
-    me.vertices.foreach_get("co", co)
-    co = co.reshape(-1, 3).astype(np.float64)
+def from_object(obj, J: dict, segments: int = 5, grow: bool = True) -> list:
+    from .parts import MeshArrays
+    arr = MeshArrays(obj.data)
     m = np.array(obj.matrix_world)
-    V = co @ m[:3, :3].T + m[:3, 3]
-    ev = np.empty(len(me.edges) * 2, np.int32)
-    me.edges.foreach_get("vertices", ev)
-    return find(V, ev.reshape(-1, 2).astype(np.int64), J, segments)
+    V = arr.co @ m[:3, :3].T + m[:3, 3]
+    if grow:                                      # measure in the same (world) space
+        arr.co = V
+        nr = arr.nrm @ np.linalg.inv(m[:3, :3])
+        arr.nrm = nr / np.maximum(np.linalg.norm(nr, axis=1, keepdims=True), 1e-12)
+    return find(V, arr.ev, J, segments, arr=arr if grow else None)

@@ -7,6 +7,7 @@ import pytest
 
 bpy = pytest.importorskip("bpy")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_scripts"))
+sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 
 def _creature():
@@ -79,7 +80,7 @@ def _check_density(S, body):
     import numpy as np
     assert S.ensure_detail_maps(0.8) == 1
     plan = S.plan_parts(recompute=True)
-    assert plan.get("tail") == "separate", plan
+    assert plan.get("tail", "").startswith("separate"), plan
     assert plan.get("horn_l") == "rigid, fewer quads" and plan.get("ear_l") == "with the body", plan
     me = body.data
     ids = np.empty(len(me.vertices), np.int32)
@@ -197,3 +198,119 @@ def test_one_sided_tail_is_split_before_mirroring():
     behind = co2[(co2[:, 1] > 0.3) & (co2[:, 2] < 0.85)]
     assert len(behind) == 0                        # no mirrored tail on the body
     assert len(pieces) == 1                        # the one tail travels on its own
+
+
+@pytest.mark.parametrize("curl", [1.0, -1.0])
+def test_curled_tail_is_cut_at_its_root_and_never_mirrored(curl):
+    """A tail hanging on the centre line, then curling to one side: the cut is at the rump
+    (where the surface turns into the body), not where the tail stops being symmetric. After
+    the split, making the body symmetric from either side leaves no stub to mirror."""
+    import numpy as np
+    from mathutils import Vector
+
+    import bodies
+    from forge_bpy import density, parts, rescue
+    body, P = bodies.curled_tail(curl)
+    me = body.data
+    co = bodies.coords(me)
+    al = np.array([bodies.arc(P, c) for c in co])
+    tail = (al[:, 0] < 0.06) & (al[:, 1] > 0.06)
+    rep = []
+    ids = parts.one_sided_parts(me, report=rep)
+    assert ids.max() == 1, rep
+    left = tail & (ids == 0)
+    assert al[left, 1].max() < 0.17, al[left, 1].max()            # the rump surface is at ~0.12
+    assert ((ids > 0) & ~tail).sum() == 0                          # nothing of the body taken
+    Pm = [Vector((-p.x, p.y, p.z)) for p in P]
+    for side in ("left", "right"):
+        m2 = me.copy()
+        pieces = rescue.split_off(m2, ids)
+        density.symmetrize(m2, side)
+        c2 = bodies.coords(m2)
+        for path in (P, Pm):
+            a = np.array([bodies.arc(path, q) for q in c2])
+            assert ((a[:, 0] < 0.04) & (a[:, 1] > 0.2)).sum() == 0, side    # no stub, no V
+        assert bodies.open_edges(m2) == (0, 0)
+        assert len(pieces) == 1 and bodies.open_edges(pieces[0][1]) == (0, 0)
+
+
+def test_arms_in_different_poses_are_a_pair_not_parts():
+    """An AI mesh's right hand 20 cm higher than the left: a pair in another pose. The chosen
+    side wins for both arms; nothing is cut off the arm (that left slits on both arms)."""
+    import numpy as np
+
+    import bodies
+    from forge_bpy import parts
+    o = bodies.biped(arm_dz=0.2, tail=True)
+    rep = []
+    ids = parts.one_sided_parts(o.data, report=rep)
+    co = bodies.coords(o.data)
+    assert ((ids > 0) & (np.abs(co[:, 0]) > 0.45) & (co[:, 1] < 0.3)).sum() == 0, rep
+    assert any(r[0] in ("pair", "kept") and abs(r[1][0]) > 0.45 for r in rep), rep   # seen, left alone
+    tail = co[:, 1] > 0.45
+    assert (ids[tail] > 0).all()                                   # the tail is still its own part
+
+
+@pytest.mark.parametrize("tail_side", [0.30, 0.0])
+def test_round_cartoon_bull_parts_found_whole(tail_side):
+    """Fat belly, neckless head, horns going sideways then up, flat ears under them, thin tail
+    with a tuft: every part is found whole (grown to its neck), horns are horns, ears are
+    ears, the tail is thin and rooted at the rump."""
+    import numpy as np
+
+    import bodies
+    from forge_bpy import appendages, joints
+    ob = bodies.bull(tail_side=tail_side)
+    J = joints.estimate(ob)
+    found = {a["name"]: a for a in appendages.from_object(ob, J)}
+    assert set(found) == {"tail", "horn_l", "horn_r", "ear_l", "ear_r"}, sorted(found)
+    tail = found["tail"]
+    assert tail["thin"] and tail["cut_ok"]
+    assert np.linalg.norm(np.array(tail["chain"][0]) - (0, 0.24, 0.30)) < 0.05      # root at the rump
+    for s in "lr":
+        assert found[f"horn_{s}"]["kind"] == "horn" and found[f"ear_{s}"]["kind"] == "ear"
+        assert found[f"horn_{s}"]["chain"][-1][2] > 0.95                              # tip at the top
+
+
+def test_plan_lists_what_the_run_cuts():
+    """The parts plan makes the split decision once; the run reads it. A curled tail with a
+    side chosen: the plan lists it as separate and forge_split holds exactly that cut."""
+    import importlib
+
+    import numpy as np
+
+    import bodies
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    body, P = bodies.curled_tail(1.0)
+    col = bpy.data.collections.new("Forge Parts")
+    bpy.context.scene.collection.children.link(col)
+    for c in list(body.users_collection):
+        c.objects.unlink(body)
+    col.objects.link(body)
+    body["forge_kind"] = "body"
+    S = importlib.import_module("forge_send.steps")
+    from forge_bpy import density
+    try:
+        plan = S.plan_parts(recompute=True, side="left")
+        assert any(v.startswith("separate") for v in plan.values()), plan
+        ids = density.read_split(body.data)
+        co = bodies.coords(body.data)
+        al = np.array([bodies.arc(P, c) for c in co])
+        tail = (al[:, 0] < 0.06) & (al[:, 1] > 0.17)
+        assert ids is not None and (ids[tail] > 0).all() and ((ids > 0) & (al[:, 0] > 0.08)).sum() == 0
+        assert body.data.get("forge_onesided_planned") and S.plan_rows()
+    finally:
+        bpy.ops.wm.read_homefile(use_empty=True)
+
+
+def test_mirror_plane_is_measured_from_the_shape_not_the_box():
+    """A body whose middle is 2.5 cm off x = 0 (one-sided curled tail included): the mirror
+    plane comes from its own symmetry."""
+    from mathutils import Matrix
+
+    import bodies
+    from forge_bpy import density
+    ob = bodies.bull(tail_side=0.30)
+    ob.data.transform(Matrix.Translation((0.025, 0.0, 0.0)))
+    x0 = density.mirror_plane(ob.data)
+    assert abs(x0 - 0.025) < 0.003, x0
