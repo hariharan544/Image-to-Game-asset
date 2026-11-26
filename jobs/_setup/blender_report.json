@@ -1,5 +1,5 @@
 {
-  "time": 1795681895.862276,
+  "time": 1795682428.169237,
   "blender": "C:\\Program Files\\Blender Foundation\\Blender 5.3\\blender.exe",
   "sysinfo": {
     "blender_version": "5.3.0",
@@ -38,19 +38,5 @@
     },
     "enabled_addon_count": 14
   },
-  "smoke": {
-    "fixture": 2.7,
-    "cleanup": 2.2,
-    "retopo": 14.1,
-    "retopo_methods": [
-      "quadremesher(rerun)"
-    ],
-    "uv": 2.5,
-    "bake": 8.4,
-    "skin": 1.9,
-    "lods": 1.9,
-    "previews": 2.4,
-    "preview_engine": "BLENDER_WORKBENCH",
-    "export": 2.3
-  }
+  "smoke_error": "stage skin failed: RuntimeError: Operator bpy.ops.object.modifier_move_to_index.poll() failed, context is incorrect\nTraceback (most recent call last):\n  File \"C:\\Users\\harih\\Documents\\Image-to-Game-asset\\blender_scripts\\run_stage.py\", line 126, in tick\n    out = _start(stage, args)\n  File \"C:\\Users\\harih\\Documents\\Image-to-Game-asset\\blender_scripts\\run_stage.py\", line 98, in _start\n    return STAGES[stage](args)\n           ~~~~~~~~~~~~~^^^^^^\n  File \"C:\\Users\\harih\\Documents\\Image-to-Game-asset\\blender_scripts\\forge_bpy\\skin.py\", line 148, in run\n    res = _run_transfer(args)\n  File \"C:\\Users\\harih\\Documents\\Image-to-Game-asset\\blender_scripts\\forge_bpy\\skin.py\", line 183, in _run_transfer\n    _transfer(low, high)\n    ~~~~~~~~~^^^^^^^^^^^\n  File \"C:\\Users\\harih\\Documents\\Image-to-Game-asset\\blender_scripts\\forge_bpy\\skin.py\", line 47, in _transfer\n    bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)\n    ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^\nRuntimeError: Operator bpy.ops.object.modifier_move_to_index.poll() failed, context is incorrect\n"
 }
