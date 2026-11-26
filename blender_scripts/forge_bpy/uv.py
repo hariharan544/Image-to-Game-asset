@@ -144,18 +144,21 @@ def _uvpm_pack(obj, tex: int, margin_px: float, search_time: float, timeout: flo
         bpy.ops.object.mode_set(mode="OBJECT")
         return False
     last, stable, changed = None, 0, False
-    while time.time() - t0 < timeout:
-        yield 0.5
-        bpy.ops.object.mode_set(mode="OBJECT")
-        cur = _uv_snapshot(obj)
-        bpy.ops.object.mode_set(mode="EDIT")
-        if cur != before:
-            changed = True
-            stable = stable + 1 if cur == last else 0
-            last = cur
-            if stable >= 3 and time.time() - t0 > search_time:
-                break
-    if area:
-        area.ui_type = old_ui
-    bpy.ops.object.mode_set(mode="OBJECT")
+    try:
+        while time.time() - t0 < timeout:
+            yield 0.5
+            bpy.ops.object.mode_set(mode="OBJECT")
+            cur = _uv_snapshot(obj)
+            bpy.ops.object.mode_set(mode="EDIT")
+            if cur != before:
+                changed = True
+                stable = stable + 1 if cur == last else 0
+                last = cur
+                if stable >= 3 and time.time() - t0 > search_time:
+                    break
+    finally:                                     # always give the director's 3D view back
+        if area:
+            area.ui_type = old_ui
+        if bpy.context.mode != "OBJECT":
+            bpy.ops.object.mode_set(mode="OBJECT")
     return changed

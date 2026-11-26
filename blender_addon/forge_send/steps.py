@@ -107,8 +107,11 @@ def prepare_retopo() -> list:
     _clear("low")
     low_col = c.get_collection(c.LOW_COLLECTION)
     out = []
-    for p in parts():
+    ps = parts()
+    for p in ps:
         p.location.x = 0.0                     # "Compare with original" may have moved it aside
+    bpy.context.view_layer.update()            # matrix_world must see that before bounds are read
+    for p in ps:
         part = c.safe_name(p.name)
         p[G.ROLE] = G.kind(p) or "prop"        # keep body/prop before forge_role becomes "high"
         p[c.PART_PROP] = part
@@ -139,6 +142,7 @@ def undo_retopo() -> None:
     _clear("lod")
     _clear("low")
     for p in parts():
+        p.location.x = 0.0
         p.hide_set(False)
         for k in (C().ROLE_PROP,):
             if k in p:
@@ -220,7 +224,14 @@ def run_bake(texture_size: int, samples: int = 16, device: str = "GPU") -> dict:
     finally:
         for name, mesh in swapped.items():
             bpy.data.objects[name].data = mesh
+        hide_highs()
     return finish_bake(rep1, rep2)
+
+
+def hide_highs() -> None:
+    """Baking selects (and so un-hides) the originals; they would sit on top of the new model."""
+    for h in C().meshes_with_role("high"):
+        h.hide_set(True)
 
 
 def finish_bake(*reports) -> dict:
@@ -291,7 +302,13 @@ def import_retexture(path: str, part: str, texture_size: int, samples: int = 16,
     if low is None:
         raise RuntimeError(f"no low mesh for part {part}")
     before = {o.name for o in bpy.data.objects}
-    bpy.ops.import_scene.gltf(filepath=path)
+    ext = os.path.splitext(path)[1].lower()
+    if ext == ".fbx":
+        bpy.ops.import_scene.fbx(filepath=path)
+    elif ext in (".glb", ".gltf"):
+        bpy.ops.import_scene.gltf(filepath=path)
+    else:
+        raise RuntimeError("pick a .glb, .gltf or .fbx file")
     new = [o for o in bpy.data.objects if o.name not in before]
     meshes = [o for o in new if o.type == "MESH"]
     if not meshes:
@@ -323,6 +340,7 @@ def import_retexture(path: str, part: str, texture_size: int, samples: int = 16,
         if old_high is not None:
             old_high[c.ROLE_PROP] = "high"
         bpy.data.objects.remove(src)
+        hide_highs()
     # one material again with the new colour and the earlier normal / AO maps
     imgs = {k: bpy.data.images.get(f"T_{part}_{k}") for k in COLOUR_MAPS + DETAIL_MAPS}
     imgs = {k: v for k, v in imgs.items() if v is not None}
@@ -406,6 +424,9 @@ def build_rig(max_influences: int = 8) -> dict:
     for o in body:
         w[o.get(C().PART_PROP)] = metrics.weight_metrics(o, max_influences)
     rep["weights"] = w
+    bad = [p for p, m in w.items() if not m.get("weighted")]
+    if bad:
+        raise RuntimeError(f"Auto-Rig Pro did not skin {', '.join(bad)} - check the joints and build again")
     return rep
 
 
@@ -432,6 +453,8 @@ def pose_test() -> dict:
     arm = final_rig()
     if arm is None:
         raise RuntimeError("build the rig first")
+    if "forge_pose_switches" in arm:            # pressed twice: restore first, then start again
+        pose_test_stop()
     C().select_only(arm)
     bpy.ops.object.mode_set(mode="POSE")
     pb = arm.pose.bones
@@ -502,6 +525,8 @@ def pose_test_stop() -> None:
     for n, v in dict(arm.get("forge_pose_switches", {})).items():
         if n in arm.pose.bones:
             arm.pose.bones[n]["ik_fk_switch"] = v
+    if "forge_pose_switches" in arm:
+        del arm["forge_pose_switches"]
     bpy.context.scene.frame_set(1)
 
 
@@ -524,23 +549,23 @@ def export_engine(engine: str, bake_report: dict, unity_budget: int = 0) -> dict
     out_dir = work_dir() / "export" / engine
     originals = lows()
     temp = []
-    if engine == "unity":
-        # mobile: a lighter copy (the Unreal meshes and their 8-bone weights stay untouched)
-        total = sum(c.tri_count(o) for o in originals)
-        ratio = min(1.0, unity_budget / max(total, 1)) if unity_budget else 1.0
-        for o in originals:
-            d = c.duplicate(o, f"{o.name}_unity")
-            d[c.ROLE_PROP] = "low"
-            o[c.ROLE_PROP] = "low_keep"
-            if ratio < 0.98:
-                mod = d.modifiers.new("forge_mobile", "DECIMATE")
-                mod.ratio = ratio
-                mod.use_collapse_triangulate = True
-                c.select_only(d)
-                bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
-                bpy.ops.object.modifier_apply(modifier=mod.name)
-            temp.append(d)
     try:
+        if engine == "unity":
+            # mobile: a lighter copy (the Unreal meshes and their 8-bone weights stay untouched)
+            total = sum(c.tri_count(o) for o in originals)
+            ratio = min(1.0, unity_budget / max(total, 1)) if unity_budget else 1.0
+            for o in originals:
+                d = c.duplicate(o, f"{o.name}_unity")
+                temp.append(d)
+                d[c.ROLE_PROP] = "low"
+                o[c.ROLE_PROP] = "low_keep"
+                if ratio < 0.98:
+                    mod = d.modifiers.new("forge_mobile", "DECIMATE")
+                    mod.ratio = ratio
+                    mod.use_collapse_triangulate = True
+                    c.select_only(d)
+                    bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+                    bpy.ops.object.modifier_apply(modifier=mod.name)
         arm = c.find_armature()
         if arm is not None:
             deform = {b.name for b in arm.data.bones if b.use_deform}

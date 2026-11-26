@@ -46,7 +46,7 @@ class ForgeStageState(bpy.types.PropertyGroup):
     tex_size: EnumProperty(name="Texture size", default="2048",
                            items=[("1024", "1K", ""), ("2048", "2K", ""), ("4096", "4K", "")])
     rig_phase: StringProperty(default="")         # "" | "joints" | "built"
-    busy: StringProperty(default="")
+    busy: StringProperty(default="")             # unused since 1.2.1 (kept so old files load)
     error: StringProperty(default="")
     retopo_rep: StringProperty(default="{}")
     uv_rep: StringProperty(default="{}")
@@ -481,15 +481,35 @@ CLASSES = (ForgeStageState, FORGE_OT_collect, FORGE_OT_set_body, FORGE_OT_select
            FORGE_PT_stages)
 
 
+def _not_busy(cls, context):
+    from .stages_late import job_running
+    return not job_running()
+
+
+def _guard(op_cls):
+    """No Forge button may change the scene while a background job (Quad Remesher...) runs."""
+    old = op_cls.__dict__.get("poll")
+    if old is None:
+        op_cls.poll = classmethod(_not_busy)
+    else:
+        fn = old.__func__
+        op_cls.poll = classmethod(lambda cls, context: _not_busy(cls, context) and fn(cls, context))
+
+
 def register():
     from . import stages_late
+    for c in CLASSES:
+        if c.__name__.startswith("FORGE_OT_"):
+            _guard(c)
     for c in CLASSES + stages_late.CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.forge_stage = PointerProperty(type=ForgeStageState)
+    stages_late.register_handlers()
 
 
 def unregister():
     from . import stages_late
+    stages_late.unregister_handlers()
     del bpy.types.Scene.forge_stage
     for c in reversed(CLASSES + stages_late.CLASSES):
         bpy.utils.unregister_class(c)

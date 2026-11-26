@@ -57,10 +57,18 @@ def test_steps_4_to_9(tmp_path):
         assert bpy.data.objects["Body"].hide_get()                   # original kept, hidden
         bpy.ops.forge.step(action="retopo_compare")
         assert not bpy.data.objects["Body"].hide_get() and bpy.data.objects["Body"].location.x > 0
+        # the original moves aside as one group (props stay on it)
+        assert bpy.data.objects["Body"].location.x == bpy.data.objects["Sword"].location.x
+        # running again while compared: symmetry must come from the real (centred) position
+        assert bpy.ops.forge.step(action="retopo_run") == {"FINISHED"}, st.error
+        assert bpy.data.objects["Body_low"]["forge_symmetry_x"]
+        assert bpy.data.objects["Body"].location.x == 0
+        bpy.ops.forge.step(action="retopo_compare")
         assert bpy.ops.forge.step(action="retopo_approve") == {"FINISHED"}
         assert bpy.data.objects["Body"].location.x == 0 and st.retopo == "approved"
 
         # 5 UVs
+        lows = [o for o in bpy.data.objects if o.get("forge_role") == "low"]    # rebuilt by the 2nd run
         st.tex_size = "1024"
         assert bpy.ops.forge.step(action="uv_run") == {"FINISHED"} and st.uv == "review", st.error
         uv = json.loads(st.uv_rep)["parts"]
@@ -72,6 +80,7 @@ def test_steps_4_to_9(tmp_path):
 
         # 6 bake (CPU here)
         assert bpy.ops.forge.step(action="bake_run") == {"FINISHED"} and st.bake == "review", st.error
+        assert bpy.data.objects["Body"].hide_get() and bpy.data.objects["Sword"].hide_get()  # originals hidden
         bake = json.loads(st.bake_rep)["parts"]
         assert set(bake["Body"]["maps"]) == {"basecolor", "normal", "roughness", "metallic", "ao"}
         assert all(Path(p).exists() for p in bake["Body"]["maps"].values())
@@ -132,3 +141,35 @@ def test_joint_guess_on_t_pose():
     assert not missing_joints(J)
     t = ref_targets(J, 0.0, 1.8)
     assert {"thumb1_ref.l", "index1_base_ref.l", "foot_heel_ref.r", "head_ref.x"} <= set(t)
+
+
+def test_job_lock_lives_in_memory_and_stale_results_are_discarded():
+    F = importlib.import_module("forge_send")
+    F.register()
+    try:
+        L = importlib.import_module("forge_send.stages_late")
+        st = bpy.context.scene.forge_stage
+        st.repair = "approved"
+        hits = []
+
+        def slow():
+            yield 0.01
+            st.repair = "review"                      # the director re-opened step 3 meanwhile
+            yield 0.01
+            return {"ok": 1}
+        L.run(st, "test job", slow, lambda st, r: hits.append(r))
+        assert hits == [] and "discarded" in st.error and not L.job_running()
+        L.run(st, "test job", lambda: {"ok": 2}, lambda st, r: hits.append(r))
+        assert hits == [{"ok": 2}] and st.error == ""
+        # a busy flag saved by add-on 1.2.0 is cleared when a file loads
+        st.busy = "retopology"
+        L._JOB["on_done"] = lambda *a: None
+        L._on_load()
+        assert st.busy == "" and not L.job_running()
+        # while a job runs, step 2/3 buttons are disabled
+        L._JOB["on_done"] = lambda *a: None
+        assert not bpy.types.FORGE_OT_stage_reopen.poll(bpy.context)
+        L._JOB.clear()
+        assert bpy.types.FORGE_OT_stage_reopen.poll(bpy.context)
+    finally:
+        F.unregister()

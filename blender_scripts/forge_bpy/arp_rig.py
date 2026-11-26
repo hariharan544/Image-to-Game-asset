@@ -185,6 +185,7 @@ def _place_refs(rig, targets: dict) -> dict:
     inv = rig.matrix_world.inverted()
     placed, skipped = [], []
     order = sorted(targets, key=lambda n: len(eb[n].parent_recursive) if n in eb else 0)
+    connected = {n: eb[n].use_connect for n in order if n in eb}
     for name in order:
         b = eb.get(name)
         if b is None:
@@ -197,6 +198,11 @@ def _place_refs(rig, targets: dict) -> dict:
         b.head = inv @ head
         b.tail = inv @ tail
         placed.append(name)
+    # re-join ARP's chains (elbow = one point): ref_targets puts each child's head on its
+    # parent's tail, so this moves nothing - but dragging a joint now moves both bones
+    for name, was in connected.items():
+        if was and eb[name].parent is not None:
+            eb[name].use_connect = True
     return {"placed": len(placed), "missing_in_arp": skipped}
 
 

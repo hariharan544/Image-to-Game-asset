@@ -43,15 +43,30 @@ def _start_step(st, stage: str) -> None:
 
 # ----------------------------------------------------------------------------- background runner
 
-_JOB: dict = {}
+_JOB: dict = {}     # the running job lives in memory only: never saved in the .blend
+
+
+def job_running() -> bool:
+    return "on_done" in _JOB
+
+
+def job_label() -> str:
+    return _JOB.get("label", "") if job_running() else ""
+
+
+def _snapshot(st) -> tuple:
+    return tuple(getattr(st, s) for s in ORDER) + (st.rig_phase,)
 
 
 def _finish(result=None, error=None) -> None:
     st = bpy.context.scene.forge_stage
     done = _JOB.pop("on_done", None)
-    st.busy = ""
+    snap = _JOB.pop("snapshot", None)
+    _JOB.pop("label", None)
     if error:
         st.error = error
+    elif done and snap is not None and snap != _snapshot(st):
+        st.error = "Result discarded: an earlier step was changed while this was running. Run it again."
     elif done:
         try:
             done(st, result)
@@ -81,17 +96,17 @@ def _tick():
 
 def run(st, label: str, fn, on_done) -> None:
     """Run fn(); a generator result keeps running from a timer, then on_done(st, result)."""
-    if st.busy:
-        raise RuntimeError(f"still working: {st.busy}")
+    if job_running():
+        raise RuntimeError(f"still working: {job_label()}")
     st.error = ""
-    st.busy = label
+    _JOB["label"] = label
     _JOB["on_done"] = on_done
+    _JOB["snapshot"] = _snapshot(st)
     try:
         res = fn()
     except Exception as exc:                              # noqa: BLE001
         traceback.print_exc()
-        _JOB.pop("on_done", None)
-        st.busy = ""
+        _JOB.clear()
         st.error = f"{type(exc).__name__}: {exc}"
         return
     if hasattr(res, "__next__"):
@@ -172,8 +187,8 @@ class FORGE_OT_step(bpy.types.Operator):
 
     def execute(self, context):
         st = st_of(context)
-        if st.busy:
-            self.report({"WARNING"}, f"Still working: {st.busy}")
+        if job_running():
+            self.report({"WARNING"}, f"Still working: {job_label()}")
             return {"CANCELLED"}
         a = self.action
         try:
@@ -209,12 +224,16 @@ class FORGE_OT_step(bpy.types.Operator):
     def do_retopo_compare(self, context, st):
         highs = S.parts()
         show = any(o.hide_get() for o in highs)
+        off = 0.0
+        if show:                    # the whole original moves aside as one group, props stay on it
+            for o in highs:
+                o.location.x = 0.0
+            context.view_layer.update()
+            bounds = [S.G.world_bounds(o) for o in highs]
+            off = 1.2 * (max(b[1].x for b in bounds) - min(b[0].x for b in bounds))
         for o in highs:
             o.hide_set(not show)
-            if show:                                       # beside the new mesh, not on top of it
-                o.location.x = o.dimensions.x * 1.2 if o.location.x == 0 else o.location.x
-            else:
-                o.location.x = 0.0
+            o.location.x = off
 
     def do_retopo_approve(self, context, st):
         for o in S.parts():
@@ -433,6 +452,9 @@ def _rig_rows(rep):
     if rep.get("bones"):
         out.append((GOOD, f"{rep['bones']} bones ({rep.get('deform_bones', 0)} deform)"))
     for part, w in rep.get("weights", {}).items():
+        if not w.get("weighted", True):
+            out.append((BAD, f"{part}: not skinned"))
+            continue
         un = w.get("unweighted_verts_pct", 0)
         out.append((GOOD if un < 0.5 else BAD, f"{part}: {un:.1f}% unweighted"))
     for part, bone in rep.get("props", {}).items():
@@ -442,9 +464,10 @@ def _rig_rows(rep):
 
 def draw_late(layout, context):
     st = st_of(context)
-    if st.busy:
+    busy = job_label()
+    if busy:
         box = layout.box()
-        box.label(text=f"Working: {st.busy}...", icon="SORTTIME")
+        box.label(text=f"Working: {busy}...", icon="SORTTIME")
         box.label(text="Leave Blender alone until this finishes.")
     if st.error:
         box = layout.box()
@@ -460,7 +483,7 @@ def draw_late(layout, context):
         box = layout.box()
         _header(box, stage, status)
         body = box.column()
-        body.enabled = prev_ok and not st.busy
+        body.enabled = prev_ok and not busy
         if not prev_ok:
             body.label(text="Approve the step above first.")
         elif status != "approved":
@@ -559,6 +582,25 @@ def _draw_export(col, st):
             c.label(text=f"{engine}: {n} files", icon=GOOD)
         _btn(col, "export_open", "Open export folder", "FILE_FOLDER")
         _approve_btn(col, "export", "Done")
+
+
+@bpy.app.handlers.persistent
+def _on_load(*_args):
+    """A job cannot survive a file load (its timer is gone): forget it, clear old busy flags."""
+    _JOB.clear()
+    for sc in bpy.data.scenes:
+        if hasattr(sc, "forge_stage") and sc.forge_stage.busy:
+            sc.forge_stage.busy = ""
+
+
+def register_handlers():
+    if _on_load not in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.append(_on_load)
+
+
+def unregister_handlers():
+    if _on_load in bpy.app.handlers.load_post:
+        bpy.app.handlers.load_post.remove(_on_load)
 
 
 CLASSES = (FORGE_OT_step, FORGE_OT_import_retexture)

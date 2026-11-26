@@ -104,6 +104,19 @@ def test_collect_sizes_and_lays_out_parts_then_mirror():
     # mirrored copy still points outward
     G.repair(dup)
     assert G.analyse(dup)["ok"]
+    # each side keeps its own "before repair" copy, mirrored to its side
+    G.repair(band)
+    dup2 = G.mirror(band)
+    b1, b2 = bpy.data.meshes[band[G.BACKUP]], bpy.data.meshes[dup2[G.BACKUP]]
+    assert b1 != b2
+    x1 = sum(v.co.x for v in b1.vertices) / len(b1.vertices)
+    x2 = sum(v.co.x for v in b2.vertices) / len(b2.vertices)
+    assert abs(x1 + x2) < 1e-4 and x1 > 0
+    # moving a repaired part moves its backup too (colour bake source of welded parts)
+    band.location.z += 0.5
+    G.apply_transform(band)
+    assert abs(max(v.co.z for v in bpy.data.meshes[band[G.BACKUP]].vertices)
+               - max(v.co.z for v in band.data.vertices)) < 0.05
     # running Collect again keeps the director's placement
     before = G.world_bounds(band)
     G.collect([band], target_height=0)

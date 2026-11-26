@@ -55,6 +55,12 @@ def apply_transform(obj) -> None:
     obj.data.transform(mw)
     if mw.determinant() < 0:            # a negative scale turns the mesh inside out
         obj.data.flip_normals()
+    b = bpy.data.meshes.get(obj.get(BACKUP, ""))
+    if b is not None and b != obj.data:  # the pre-repair copy moves with the part
+        b.transform(mw)
+        if mw.determinant() < 0:
+            b.flip_normals()
+        b.update()
     obj.matrix_world = Matrix.Identity(4)
     obj.data.update()
 
@@ -164,9 +170,19 @@ def mirror(obj) -> object:
     apply_transform(obj)
     dup = obj.copy()
     dup.data = obj.data.copy()
-    dup.data.transform(Matrix.Scale(-1, 4, (1, 0, 0)))
+    flip = Matrix.Scale(-1, 4, (1, 0, 0))
+    dup.data.transform(flip)
     dup.data.flip_normals()
     dup.data.update()
+    src_backup = bpy.data.meshes.get(obj.get(BACKUP, ""))
+    if src_backup is not None:          # its own mirrored "before repair" copy
+        b = src_backup.copy()
+        b.transform(flip)
+        b.flip_normals()
+        b.use_fake_user = True
+        dup[BACKUP] = b.name
+    elif BACKUP in dup:
+        del dup[BACKUP]
     swap = {"_L": "_R", "_R": "_L", ".L": ".R", ".R": ".L"}
     base, tail = obj.name[:-2], obj.name[-2:]
     if tail not in swap:
