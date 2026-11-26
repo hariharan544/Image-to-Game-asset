@@ -1,6 +1,9 @@
 """Stage: retopology - rebuild every low part to a clean mesh inside the triangle budget.
 
 Methods (chosen by the guide, changed by the supervisor on retry):
+  quadremesher      Exoside Quad Remesher (paid add-on; best edge flow). Needs a windowed
+                    Blender with user add-ons; the orchestrator arranges that. Falls back
+                    to QuadriFlow per part when the add-on is missing, fails or times out.
   quadriflow        Blender's built-in quad remesher (needs a manifold mesh)
   voxel_quadriflow  voxel remesh first to force a manifold, then QuadriFlow
   decimate          collapse decimation - always works, triangles not quads
@@ -9,12 +12,15 @@ The chain falls through to the next method when one fails.
 
 from __future__ import annotations
 
+import time
+
 import bmesh
 import bpy
 
 from . import common as C
 
 CHAIN = {
+    "quadremesher": ["quadriflow", "voxel_quadriflow", "decimate"],   # fallback after QR
     "quadriflow": ["quadriflow", "voxel_quadriflow", "decimate"],
     "voxel_quadriflow": ["voxel_quadriflow", "decimate"],
     "decimate": ["decimate"],
@@ -101,34 +107,127 @@ def _retopo_part(obj, target_tris: int, method: str, opts: dict) -> str:
     return step
 
 
-def run(args: dict) -> dict:
-    total_budget = int(args["target_tris"])
-    method = args.get("method", "quadriflow")
-    budget_scale = float(args.get("budget_scale", 1.0))   # supervisor retry knob
-    opts = {
-        "symmetry_x": args.get("symmetry_x", False),
-        "preserve_hard_edges": args.get("preserve_hard_edges", True),
-        "seed": args.get("seed", 0),
-    }
-    lows = C.meshes_with_role("low")
+def _part_budgets(lows, total_budget: int, budget_scale: float, min_part: int) -> dict:
     areas = {o.name: _surface_area(o) for o in lows}
     total_area = sum(areas.values()) or 1.0
-    min_part = int(args.get("min_tris_per_part", 150))
+    return {o.name: max(int(total_budget * budget_scale * areas[o.name] / total_area), min_part) for o in lows}
 
-    report = {}
-    for obj in lows:
-        part_budget = max(int(total_budget * budget_scale * areas[obj.name] / total_area), min_part)
-        before = C.tri_count(obj)
-        used = _retopo_part(obj, part_budget, method, opts)
+
+def _finish_part(obj, part_budget: int, used: str, before: int, report: dict, quad_method: bool) -> None:
+    after = C.tri_count(obj)
+    # never exceed budget: final safety decimate (QR re-runs smaller first, see _qr_part)
+    if after > part_budget * 1.05:
+        _decimate(obj, part_budget)
         after = C.tri_count(obj)
-        # never exceed budget: final safety decimate
-        if after > part_budget * 1.05:
-            _decimate(obj, part_budget)
-            after = C.tri_count(obj)
-            used += "+decimate"
-        for p in obj.data.polygons:
-            p.use_smooth = True
-        report[obj.get(C.PART_PROP)] = {
-            "budget": part_budget, "tris_before": before, "tris_after": after, "method": used,
-        }
+        used += "+decimate"
+    for p in obj.data.polygons:
+        p.use_smooth = True
+    report[obj.get(C.PART_PROP)] = {"budget": part_budget, "tris_before": before,
+                                    "tris_after": after, "method": used}
+
+
+def _opts(args: dict) -> dict:
+    return {"symmetry_x": args.get("symmetry_x", False),
+            "preserve_hard_edges": args.get("preserve_hard_edges", True),
+            "seed": args.get("seed", 0)}
+
+
+def run(args: dict):
+    """Returns the result dict, or a generator (Quad Remesher waits on its engine)."""
+    method = args.get("method", "quadriflow")
+    if method == "quadremesher":
+        from .addon_trial import has_op
+        if has_op("qremesher.remesh") and hasattr(bpy.context.scene, "qremesher"):
+            return _run_qr(args)
+    return _run_builtin(args)
+
+
+def _run_builtin(args: dict) -> dict:
+    method = args.get("method", "quadriflow")
+    lows = C.meshes_with_role("low")
+    budgets = _part_budgets(lows, int(args["target_tris"]), float(args.get("budget_scale", 1.0)),
+                            int(args.get("min_tris_per_part", 150)))
+    report: dict = {}
+    for obj in lows:
+        before = C.tri_count(obj)
+        used = _retopo_part(obj, budgets[obj.name], method, _opts(args))
+        if method == "quadremesher":
+            used = "quadremesher-unavailable>" + used
+        _finish_part(obj, budgets[obj.name], used, before, report, True)
+    return {"parts": report, "total_tris": sum(r["tris_after"] for r in report.values())}
+
+
+# ----------------------------------------------------------------------------- Quad Remesher
+
+def _qr_part(obj, quads: int, args: dict, timeout: float):
+    """Generator: remesh `obj` with Quad Remesher, replace its mesh with the result.
+    Returns True on success. Measured on the user's PC: the operator returns
+    RUNNING_MODAL at once; the result appears as a new object 'Retopo_<name>' and the
+    source gets hidden."""
+    from .addon_trial import view3d_override
+    s = bpy.context.scene.qremesher
+    s.target_count = max(int(quads), 20)
+    s.adaptive_size = float(args.get("qr_adaptive_size", 50.0))
+    s.adapt_quad_count = True
+    s.use_vertex_color = False
+    s.use_materials = False
+    s.use_normals = False
+    s.autodetect_hard_edges = bool(args.get("preserve_hard_edges", True))
+    s.symmetry_x = bool(args.get("symmetry_x", False))
+    s.symmetry_y = s.symmetry_z = False
+    C.select_only(obj)
+    before = {o.name for o in bpy.data.objects}
+    try:
+        with bpy.context.temp_override(**view3d_override()):
+            bpy.ops.qremesher.remesh()
+    except RuntimeError:
+        return False
+    t0, last, stable = time.time(), None, 0
+    result = None
+    while time.time() - t0 < timeout:
+        yield 0.5
+        new = [o for o in bpy.data.objects if o.name not in before and o.type == "MESH"]
+        if new:
+            faces = sum(len(o.data.polygons) for o in new)
+            stable = stable + 1 if faces == last else 0
+            last = faces
+            if stable >= 2:
+                result = max(new, key=lambda o: len(o.data.polygons))
+                break
+    if result is None:
+        return False
+    # bring the result into the low object (keeps its name, part tag, parent, modifiers)
+    mesh = result.data.copy()
+    mesh.transform(obj.matrix_world.inverted() @ result.matrix_world)
+    _replace_mesh(obj, mesh)
+    for o in [o for o in bpy.data.objects if o.name not in before]:
+        bpy.data.objects.remove(o)
+    obj.hide_set(False)
+    obj.vertex_groups.clear()
+    return True
+
+
+def _run_qr(args: dict):
+    lows = C.meshes_with_role("low")
+    budgets = _part_budgets(lows, int(args["target_tris"]), float(args.get("budget_scale", 1.0)),
+                            int(args.get("min_tris_per_part", 150)))
+    timeout = float(args.get("qr_timeout", 300))
+    report: dict = {}
+    for obj in lows:
+        budget = budgets[obj.name]
+        before = C.tri_count(obj)
+        backup = obj.data.copy()
+        ok = yield from _qr_part(obj, budget / 2, args, timeout)
+        used = "quadremesher"
+        got = C.tri_count(obj) if ok else 0
+        if ok and got > budget * 1.05:
+            # QR's count is a target, not a cap: one smaller re-run before any decimation
+            _replace_mesh(obj, backup.copy())
+            ok = yield from _qr_part(obj, budget / 2 * (budget / got) * 0.95, args, timeout)
+            used = "quadremesher(rerun)"
+        if not ok:
+            _replace_mesh(obj, backup.copy())
+            used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
+        bpy.data.meshes.remove(backup)
+        _finish_part(obj, budget, used, before, report, True)
     return {"parts": report, "total_tris": sum(r["tris_after"] for r in report.values())}

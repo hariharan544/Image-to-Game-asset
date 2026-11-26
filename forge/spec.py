@@ -45,7 +45,8 @@ class GenerationSpec(BaseModel):
 
 class TopologySpec(BaseModel):
     target_tris: int = 10000
-    method: Literal["quadriflow", "voxel_quadriflow", "decimate"] = "quadriflow"
+    # quadremesher = Exoside Quad Remesher add-on (falls back to quadriflow when unavailable)
+    method: Literal["quadremesher", "quadriflow", "voxel_quadriflow", "decimate"] = "quadremesher"
     budget_scale: float = 1.0
     symmetry_x: bool = False
     preserve_hard_edges: bool = True

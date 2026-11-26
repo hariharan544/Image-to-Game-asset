@@ -77,9 +77,24 @@ def _error(stage: str, result_path: str, exc: BaseException) -> int:
     return 1
 
 
+def _ensure_addons(needles: list) -> None:
+    """Load the add-ons a stage needs (matched on module or display name) for this process
+    only, in case they are ticked but the preferences were never saved."""
+    import addon_utils
+    for m in addon_utils.modules():
+        hay = (m.__name__ + " " + addon_utils.module_bl_info(m).get("name", "")).lower()
+        if any(n in hay for n in needles) and not addon_utils.check(m.__name__)[1]:
+            try:
+                addon_utils.enable(m.__name__, default_set=False, persistent=False)
+            except Exception:
+                pass          # the stage itself falls back when the add-on is missing
+
+
 def _start(stage: str, args: dict):
     if args.get("load_blend"):
         bpy.ops.wm.open_mainfile(filepath=args["load_blend"])
+    if args.get("ensure_addons"):
+        _ensure_addons([n.lower() for n in args["ensure_addons"]])
     return STAGES[stage](args)
 
 

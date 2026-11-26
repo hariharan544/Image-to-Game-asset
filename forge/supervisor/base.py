@@ -30,6 +30,7 @@ def _add(key: str, delta: float, lo: float = -1e12, hi: float = 1e12, cast=float
 
 ACTIONS: dict[str, tuple[str, str, Transform]] = {
     # retopology
+    "retopo_quadremesher": ("retopo", "Use Quad Remesher (best edge flow for deformation)", _set(method="quadremesher")),
     "retopo_voxel_first": ("retopo", "Voxel-remesh before QuadriFlow (fixes non-manifold AI meshes)", _set(method="voxel_quadriflow")),
     "retopo_decimate": ("retopo", "Use decimation instead of quad remesh (always succeeds, triangles)", _set(method="decimate")),
     "retopo_reduce_budget": ("retopo", "Lower the triangle budget by 10%", _mul("budget_scale", 0.9, 0.1, 2.0)),

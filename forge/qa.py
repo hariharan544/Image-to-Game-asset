@@ -50,6 +50,10 @@ def check(stage: str, result: dict, spec: AssetSpec) -> list[Issue]:
         for part, r in _parts(result).items():
             if str(r.get("method", "")).startswith("failed"):
                 add(Issue("RETOPO_FAILED", stage, part, "every retopology method failed"))
+            elif str(r.get("method", "")).startswith("quadremesher-"):
+                add(Issue("QUADREMESHER_FALLBACK", stage, part,
+                          "Quad Remesher unavailable or failed; built-in remesher used",
+                          r.get("method"), severity="warn"))
             elif "decimate" in str(r.get("method")) and spec.topology.method != "decimate":
                 add(Issue("RETOPO_FALLBACK", stage, part,
                           "quad remesh failed, decimation was used (triangles, worse deformation)",

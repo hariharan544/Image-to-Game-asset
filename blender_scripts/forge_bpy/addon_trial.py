@@ -306,20 +306,38 @@ def _trial_arp_flow(report: dict):
         if eng not in ("UNITY", "UE", "UNREAL"):
             continue
         sc = bpy.context.scene
-        try:
-            sc.arp_engine_type = eng
-            path = os.path.join(out_dir, f"arp_trial_{eng}.fbx")
+        path = os.path.join(out_dir, f"arp_trial_{eng}.fbx")
+        entry: dict = {"path": path, "attempts": {}}
+        sc.arp_engine_type = eng
+        if eng == "UNITY" and "HUMANOID" in arp["enums"].get("arp_export_rig_type", {}).get("items", []):
+            sc.arp_export_rig_type = "HUMANOID"        # Unity Mecanim humanoid
+        else:
+            sc.arp_export_rig_type = "UNIVERSAL"
+        if eng == "UNREAL" and hasattr(sc, "arp_rename_for_ue"):
+            sc.arp_rename_for_ue = True                # UE Mannequin bone names
+        entry["settings"] = {"engine": eng, "rig_type": sc.arp_export_rig_type}
+        # the Export button's operator prepares the data the internal FBX writer needs
+        calls = (("arp.arp_export_fbx_panel", lambda: bpy.ops.arp.arp_export_fbx_panel(filepath=path)),
+                 ("arp_export_scene.fbx", lambda: bpy.ops.arp_export_scene.fbx(
+                     filepath=path, shape_keys_baked_data="{}", mesh_names_data="{}")))
+        for name, call in calls:
             for o in bpy.context.view_layer.objects:
                 o.select_set(False)
             body.select_set(True)
             arm.select_set(True)
             bpy.context.view_layer.objects.active = arm
-            with bpy.context.temp_override(**view3d_override()):
-                res = list(bpy.ops.arp_export_scene.fbx(filepath=path))
-            exports[eng] = {"result": res, "exists": os.path.exists(path),
-                            "size": os.path.getsize(path) if os.path.exists(path) else 0, "path": path}
-        except Exception as exc:
-            exports[eng] = {"error": _err(exc)[-600:]}
+            try:
+                with bpy.context.temp_override(**view3d_override()):
+                    entry["attempts"][name] = list(call())
+            except Exception as exc:
+                entry["attempts"][name] = _err(exc)[-700:]
+            yield 1.0
+            if os.path.exists(path):
+                entry["used"] = name
+                break
+        entry["exists"] = os.path.exists(path)
+        entry["size"] = os.path.getsize(path) if entry["exists"] else 0
+        exports[eng] = entry
         yield 0.5
     arp["exports"] = exports
     # read the exported skeletons back
@@ -377,11 +395,31 @@ def _trial_uvpm(report: dict):
     bpy.ops.object.mode_set(mode="EDIT")
     bpy.ops.mesh.select_all(action="SELECT")
     t0 = time.time()
+    # UVPackmaster's operators poll for a UV Editor: turn the 3D view into one for the call
+    ov = view3d_override()
+    area = ov.get("area")
+    old_ui = area.ui_type if area else None
+    u["attempts"] = {}
     try:
-        with bpy.context.temp_override(**view3d_override()):
-            u["call_result"] = list(bpy.ops.uvpackmaster4.pack(mode_id=mode_id))
-    except Exception as exc:
-        u["call_error"] = _err(exc)[-600:]
+        if area:
+            area.ui_type = "UV"
+            ov["region"] = next((r for r in area.regions if r.type == "WINDOW"), None)
+            ov["space_data"] = area.spaces.active
+        bpy.context.scene.tool_settings.use_uv_select_sync = True
+        for label, kw in (("uv_editor", ov), ("uv_editor_no_space", {k: v for k, v in ov.items() if k != "space_data"})):
+            try:
+                with bpy.context.temp_override(**kw):
+                    u["attempts"][label] = list(bpy.ops.uvpackmaster4.pack(mode_id=mode_id))
+                u["call_result"] = u["attempts"][label]
+                break
+            except Exception as exc:
+                u["attempts"][label] = _err(exc)[-400:]
+    finally:
+        pass
+    if "call_result" not in u:
+        u["call_error"] = "pack could not run in any context"
+        if area:
+            area.ui_type = old_ui
         bpy.ops.object.mode_set(mode="OBJECT")
         return
     last, stable = None, 0
@@ -396,6 +434,8 @@ def _trial_uvpm(report: dict):
             if stable >= 3:
                 break
     bpy.ops.object.mode_set(mode="OBJECT")
+    if area:
+        area.ui_type = old_ui
     u["elapsed_s"] = round(time.time() - t0, 1)
     u["uv_changed"] = last is not None
     u["after"] = metrics.uv_metrics(obj, 1024)

@@ -249,8 +249,12 @@ class Pipeline:
     def _blender(self, key: str, args: dict, attempt: int) -> dict:
         name, _ = split_key(key)
         log_path = self.job.path("logs", f"{key.replace('@', '_')}_a{attempt}.log")
+        # paid add-ons need the user's add-ons loaded and (for their engines/GPU) a window
+        needs_addons = name == "retopo" and args.get("method") == "quadremesher"
+        if needs_addons:
+            args = {**args, "ensure_addons": ["quad remesher"]}
         return run_stage(name, {k: v for k, v in args.items() if not k.startswith("_")}, log_path,
-                         blender=self.blender)
+                         blender=self.blender, windowed=needs_addons, factory_startup=not needs_addons)
 
     def _supervised_stage(self, key: str) -> None:
         job = self.job
