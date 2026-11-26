@@ -361,10 +361,33 @@ def _purge_late_results(max_age: float = 7200.0) -> int:
 
 
 def cleanup_jobs() -> None:
-    """Stop / a new run: temporary copies and stray results never stay in the scene."""
+    """Stop / a new run: temporary copies and stray results never stay in the scene, and a
+    job whose result is removed here is retired with it (nobody waits for it any more)."""
+    _purge_late_results()
     for o in list(bpy.data.objects):
         if o.get("forge_qr_proxy") or (o.name.startswith("Retopo_") and o.type == "MESH"):
+            base = _result_base(o.name)
+            if base in _QR_JOBS:
+                _QR_JOBS.pop(base, None)
             _remove_object(o)
+
+
+def _poll_late() -> float | None:
+    """Timer while abandoned jobs exist: a result the engine delivers while Blender is idle
+    (after a timeout or Stop) is removed at once, not left on top of the review mesh."""
+    try:
+        _purge_late_results()
+    except ReferenceError:
+        pass
+    return 2.0 if any(j["state"] == "abandoned" for j in _QR_JOBS.values()) else None
+
+
+def _watch_late() -> None:
+    try:
+        if not bpy.app.timers.is_registered(_poll_late):
+            bpy.app.timers.register(_poll_late, first_interval=2.0, persistent=False)
+    except (AttributeError, ValueError):
+        pass
 
 
 def _wait_limit(obj, timeout: float) -> float:
@@ -470,6 +493,7 @@ def _qr_part(obj, quads: int, args: dict, timeout: float):
         # engine may still finish stays registered so its late result is removed, never taken
         if result is None and token in _QR_JOBS:
             _QR_JOBS[token]["state"] = "abandoned"
+            _watch_late()
         else:
             _QR_JOBS.pop(token, None)
         try:
@@ -486,9 +510,22 @@ def _run_qr(args: dict):
     timeout = float(args.get("qr_timeout", 300))
     report: dict = {}
     for obj in lows:
-        budget = budgets[obj.name]
+        yield from _qr_one(obj, budgets[obj.name], args, timeout, report)
+    return {"parts": report, "total_tris": sum(r["tris_after"] for r in report.values())}
+
+
+def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
+    """One part through Quad Remesher (generator). Every temporary mesh of the part is freed
+    in the end, also when the director presses Stop half-way (each is a copy of a part that
+    can have millions of vertices)."""
+    temp: list = []
+
+    def keep_tmp(me):
+        temp.append(me.name)
+        return me
+    try:
         before = C.tri_count(obj)
-        backup = obj.data.copy()
+        backup = keep_tmp(obj.data.copy())
         target = budget * float(args.get("carve_headroom", 0.94)) / 2   # quads; room left for carving
         # ---- plan before remeshing: split off thin one-sided parts (tail...), make the body
         # symmetric from the chosen side. The remesher then gets a clean symmetric body and
@@ -521,10 +558,22 @@ def _run_qr(args: dict):
                 ids = np.where(extra > 0, extra, ids if ids is not None else 0).astype(np.int32)
         if ids is not None or mirror:
             full_backup = backup
-            backup = full_backup.copy()
+            backup = keep_tmp(full_backup.copy())
             if ids is not None:
+                STATUS["text"] = f"{_short(obj.name)}: cutting off the parts (tail...)"
+                yield 0.05
                 split_pieces = _rescue.split_off(backup, ids, split_report)
+                for _k, pme, _p in split_pieces:
+                    keep_tmp(pme)
+            if mirror and split_report:
+                # a one-sided part that could not be cut would be copied or deleted by the
+                # mirror: this body is NOT mirrored (the director is told why)
+                mirror = False
+                obj["forge_symmetry_x"] = False
+                split_report.append((0, "not mirrored: a one-sided part could not be cut off"))
             if mirror:
+                STATUS["text"] = f"{_short(obj.name)}: making it symmetric from the {side} side"
+                yield 0.05
                 _dens.symmetrize(backup, side)
                 obj["forge_symmetry_x"] = True
             _replace_mesh(obj, backup.copy())
@@ -581,7 +630,7 @@ def _run_qr(args: dict):
                 if not face_only and obj.get("forge_symmetry_x"):
                     break      # a thin part lost while mirrored: rebuild just that part (below)
                 boost(backup, shape["mask"])          # includes flattened face details
-                keep = obj.data.copy()
+                keep = keep_tmp(obj.data.copy())
                 _replace_mesh(obj, backup.copy())
                 STATUS["text"] = (f"{_short(obj.name)}: face details flattened, Quad Remesher again denser there"
                                   if face_only else f"{_short(obj.name)}: shape lost, Quad Remesher again with more detail")
@@ -637,7 +686,7 @@ def _run_qr(args: dict):
                 # mirroring (it re-rolls the whole mesh: the mirrored face is usually better,
                 # which is why this comes last)
                 obj["forge_symmetry_x"] = False
-                keep = obj.data.copy()
+                keep = keep_tmp(obj.data.copy())
                 _replace_mesh(obj, backup.copy())
                 STATUS["text"] = f"{_short(obj.name)}: shape lost while mirrored, Quad Remesher without mirror"
                 ok2 = yield from _qr_part(obj, target, args, timeout)
@@ -651,7 +700,11 @@ def _run_qr(args: dict):
                     _replace_mesh(obj, keep)
         if not ok:
             _replace_mesh(obj, (full_backup or backup).copy())
-            split_pieces = []                     # the fallback keeps the whole original
+            for _k, pme, _p in split_pieces:      # the fallback keeps the whole original
+                if pme.users == 0:
+                    bpy.data.meshes.remove(pme)
+            split_pieces = []
+            obj["forge_symmetry_x"] = False       # (the original is not the mirrored body)
             used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
         piece_fallbacks: list = []
         if ok and split_pieces:
@@ -675,7 +728,9 @@ def _run_qr(args: dict):
                     if how != "decimate" and not _same_place(src, piece.data):
                         _replace_mesh(piece, src.copy())
                         _decimate(piece, quads * 2)
-                    piece_fallbacks.append(how)
+                        how = "decimate"
+                    piece_fallbacks.append({"quadriflow": "QuadriFlow", "voxel_quadriflow": "voxel + QuadriFlow",
+                                            "decimate": "a reduced copy"}.get(how, "the cut piece as it was"))
                 for a in list(piece.data.color_attributes):   # no detail-map colours on the result
                     piece.data.color_attributes.remove(a)
                 _rescue.attach(obj, piece)
@@ -704,7 +759,8 @@ def _run_qr(args: dict):
         r = report[obj.get(C.PART_PROP)]
         # final gate: a game mesh must be closed (an opening here is a bug upstream, shown)
         d = _rescue.mesh_defects(obj.data)
-        r["open_edges"], r["bad_edges"] = int(d[0]), int(d[1])
+        r["open_edges"], r["bad_edges"], r["loose"] = int(d[0]), int(d[1]), int(d[2])
+        r["separate_parts"] = len(split_pieces)
         if piece_fallbacks:
             r["piece_fallbacks"] = piece_fallbacks
         if split_report:
@@ -716,4 +772,10 @@ def _run_qr(args: dict):
                 "lost_pct": round(100 * shape["lost_ratio"], 2), "max_gap_pct": round(100 * shape["max_rel"], 2),
                 "face_lost_pct": round(100 * shape.get("face_lost", 0.0), 2),
                 "refined": shape["refined"], "rescued": shape.get("rescued", 0)}
-    return {"parts": report, "total_tris": sum(r["tris_after"] for r in report.values())}
+    finally:
+        for name in temp:
+            m = bpy.data.meshes.get(name)
+            if m is not None and m.users == 0:
+                bpy.data.meshes.remove(m)
+
+

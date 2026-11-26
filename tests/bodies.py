@@ -9,7 +9,7 @@ CURL = [(0, 0.0, 0.97), (0, 0.12, 0.95), (0.0, 0.22, 0.80), (0.02, 0.27, 0.62), 
         (0.28, 0.27, 0.36), (0.42, 0.25, 0.36)]
 
 
-def curled_tail(curl: float = 1.0, r: float = 0.022, voxel: float = 0.008):
+def curled_tail(curl: float = 1.0, r: float = 0.022, voxel: float = 0.008, path=None):
     """The humanoid fixture with a tail rooted inside the rump on the centre line, hanging
     straight down for a while, then curling to the side (+X for curl=1, -X for -1), with a
     tuft. Returns (body object, tail polyline)."""
@@ -22,7 +22,7 @@ def curled_tail(curl: float = 1.0, r: float = 0.022, voxel: float = 0.008):
     body = bpy.data.objects["Body"]
     bm = bmesh.new()
     bm.from_mesh(body.data)
-    pts = [Vector((p[0] * curl, p[1], p[2])) for p in CURL]
+    pts = [Vector((p[0] * curl, p[1], p[2])) for p in (path or CURL)]
     for a, b in zip(pts, pts[1:]):
         d = b - a
         m = Matrix.Translation((a + b) / 2) @ d.to_track_quat("Z", "Y").to_matrix().to_4x4()
@@ -118,7 +118,8 @@ def coords(me) -> np.ndarray:
     return co.reshape(-1, 3).astype(np.float64)
 
 
-def bull(voxel: float = 0.008, tail_side: float = 0.30, leg_x: float = 0.15, leg_r: float = 0.075):
+def bull(voxel: float = 0.008, tail_side: float = 0.30, leg_x: float = 0.15, leg_r: float = 0.075,
+         ear_z: float = 0.76):
     """A round cartoon bull (fat belly, big neckless head with a muzzle, short legs, T-pose arms
     with hand balls, horns going sideways then up, flat ears under them, thin tail with a tuft
     curling to +X by tail_side)."""
@@ -152,7 +153,7 @@ def bull(voxel: float = 0.008, tail_side: float = 0.30, leg_x: float = 0.15, leg
         ball((leg_x * x, -0.03, 0.035), leg_r, (1.0, 1.4, 0.46))
         path([(0.11 * x, -0.02, 0.84), (0.22 * x, -0.02, 0.87), (0.27 * x, -0.02, 0.93), (0.26 * x, -0.02, 1.0)],
              [0.04, 0.035, 0.025, 0.006])
-        m = Matrix.Translation((0.24 * x, 0.0, 0.76)) @ Matrix.Rotation(-0.25 * x, 4, "Y") @ \
+        m = Matrix.Translation((0.24 * x, 0.0, ear_z)) @ Matrix.Rotation(-0.25 * x, 4, "Y") @ \
             Matrix.Diagonal((0.09, 0.012, 0.04, 1))
         bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=12, radius=1.0, matrix=m)
     s = tail_side

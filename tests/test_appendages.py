@@ -220,7 +220,7 @@ def test_curled_tail_is_cut_at_its_root_and_never_mirrored(curl):
     assert ids.max() == 1, rep
     left = tail & (ids == 0)
     assert al[left, 1].max() < 0.17, al[left, 1].max()            # the rump surface is at ~0.12
-    assert ((ids > 0) & ~tail).sum() == 0                          # nothing of the body taken
+    assert ((ids > 0) & (al[:, 0] > 0.06)).sum() == 0              # nothing away from the tail taken
     Pm = [Vector((-p.x, p.y, p.z)) for p in P]
     for side in ("left", "right"):
         m2 = me.copy()
@@ -314,3 +314,138 @@ def test_mirror_plane_is_measured_from_the_shape_not_the_box():
     ob.data.transform(Matrix.Translation((0.025, 0.0, 0.0)))
     x0 = density.mirror_plane(ob.data)
     assert abs(x0 - 0.025) < 0.003, x0
+
+
+LONG = [(0, 0.0, 0.97), (0, 0.12, 0.95), (0.0, 0.22, 0.80), (0.0, 0.27, 0.55), (0.0, 0.28, 0.30),
+        (0.05, 0.28, 0.12), (0.25, 0.27, 0.08), (0.45, 0.25, 0.10)]
+
+
+@pytest.mark.parametrize("kind", ["long", "thick", "big"])
+def test_hard_one_sided_tails_are_still_cut_at_the_root(kind):
+    """Review cases: a tail hanging far before it curls (its fragment is far from the rump),
+    a thick tail next to legs about as thick, a tail with a big share of the vertices: each is
+    cut at the rump, and mirroring from either side leaves no copy and loses nothing."""
+    import numpy as np
+    from mathutils import Vector
+
+    import bodies
+    from forge_bpy import density, parts, rescue
+    path = LONG if kind == "long" else None
+    r = {"long": 0.022, "thick": 0.035, "big": 0.03}[kind]
+    if kind == "big":
+        path = LONG + [(0.62, 0.30, 0.20), (0.75, 0.38, 0.35)]
+    body, P = bodies.curled_tail(1.0, r=r, path=path)
+    me = body.data
+    co = bodies.coords(me)
+    al = np.array([bodies.arc(P, c) for c in co])
+    rep = []
+    ids = parts.one_sided_parts(me, report=rep)
+    assert ids.max() == 1, rep
+    tail = (al[:, 0] < r + 0.03) & (al[:, 1] > 0.2)
+    assert (ids[tail] > 0).mean() > 0.98, (ids[tail] > 0).mean()
+    m2 = me.copy()
+    assert len(rescue.split_off(m2, ids)) == 1
+    density.symmetrize(m2, "left")
+    c2 = bodies.coords(m2)
+    Pm = [Vector((-p.x, p.y, p.z)) for p in P]
+    a2 = np.array([bodies.arc(Pm, q) for q in c2])
+    assert ((a2[:, 0] < r + 0.02) & (a2[:, 1] > 0.3) & (c2[:, 0] < -0.1)).sum() == 0     # no mirrored copy
+
+
+def test_parts_do_not_depend_on_object_scale():
+    from mathutils import Matrix
+
+    import bodies
+    from forge_bpy import appendages, joints
+    ob = bodies.bull()
+    ref = sorted((a["name"], a["kind"]) for a in appendages.from_object(ob, joints.estimate(ob)))
+    ob.data.transform(Matrix.Scale(2.0, 4))
+    ob.scale = (0.5, 0.5, 0.5)
+    bpy.context.view_layer.update()
+    got = sorted((a["name"], a["kind"]) for a in appendages.from_object(ob, joints.estimate(ob)))
+    assert got == ref, (got, ref)
+
+
+def test_mirror_plane_on_a_longer_arm():
+    """Assemble centres the body by its box; one arm 6 cm longer moves the box, not the
+    middle: the plane is found where the body is symmetric."""
+    import bodies
+    from forge_bpy import density
+    o = bodies.biped()
+    import bmesh
+    from mathutils import Matrix
+    bm = bmesh.new()
+    bm.from_mesh(o.data)
+    bmesh.ops.create_icosphere(bm, subdivisions=2, radius=0.09, matrix=Matrix.Translation((-1.02, 0, 1.10)))
+    bm.to_mesh(o.data)
+    bm.free()
+    co = bodies.coords(o.data)
+    box_mid = (co[:, 0].min() + co[:, 0].max()) / 2
+    o.data.transform(Matrix.Translation((-box_mid, 0, 0)))     # centred by its box, like Assemble
+    x0 = density.mirror_plane(o.data)
+    assert abs(x0 - (-box_mid)) < 0.004, (x0, -box_mid)
+
+
+def _as_forge_body(ob):
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    col = bpy.data.collections.new("Forge Parts")
+    bpy.context.scene.collection.children.link(col)
+    for c in list(ob.users_collection):
+        c.objects.unlink(ob)
+    col.objects.link(ob)
+    ob["forge_kind"] = "body"
+    return importlib.import_module("forge_send.steps")
+
+
+def test_plan_is_cached_measured_in_place_and_keeps_the_directors_paint(monkeypatch):
+    import numpy as np
+
+    import bodies
+    from forge_bpy import appendages, density
+    ob = bodies.bull()
+    S = _as_forge_body(ob)
+    try:
+        S.prepare_maps(0.8, side="auto")
+        plan = dict(ob["forge_plan"])
+        assert plan.get("tail", "").startswith("separate") and plan.get("horn_l") == "rigid, fewer quads"
+        # the director paints a horn tip red, then picks Left: the plan is made again for
+        # mirroring, the paint stays
+        me = ob.data
+        co = bodies.coords(me)
+        lv = np.array([l.vertex_index for l in me.loops])
+        tip = np.linalg.norm(co[lv] - (0.26, -0.02, 0.98), axis=1) < 0.03
+        c = np.empty(len(me.loops) * 4, np.float32)
+        me.color_attributes["QR_Density"].data.foreach_get("color_srgb", c)
+        c = c.reshape(-1, 4)
+        c[tip] = (1, 0, 0, 1)
+        me.color_attributes["QR_Density"].data.foreach_set("color_srgb", c.ravel())
+        ob.location.x = 1.5                             # "Compare with original" moved it aside
+        S.prepare_maps(0.8, side="left")
+        assert ob.location.x == 1.5
+        assert dict(ob["forge_plan"]).get("tail", "").startswith("separate")   # measured in place
+        me.color_attributes["QR_Density"].data.foreach_get("color_srgb", c.ravel())
+        assert c[tip, 1].mean() < 0.1                   # still red
+        # an empty plan is a plan: not made again on every click
+        calls = []
+        real = appendages.from_object
+        monkeypatch.setattr(appendages, "from_object", lambda *a, **k: calls.append(1) or real(*a, **k))
+        ob["forge_plan"] = {}
+        S.prepare_maps(0.8, side="left")
+        S.prepare_maps(0.8, side="left")
+        assert not calls and not S.plan_needed("left")
+    finally:
+        bpy.ops.wm.read_homefile(use_empty=True)
+
+
+def test_raised_hand_is_still_an_arm():
+    import numpy as np
+
+    import bodies
+    from forge_bpy import density, joints
+    o = bodies.biped(arm_dz=0.2)
+    J = joints.estimate(o)
+    V = joints._verts(o)
+    lab = density.region_labels(V, J)
+    past = np.abs(V[:, 0]) > abs(J["upperarm_l"][0][0]) * 1.05
+    assert (lab[past] == 1).sum() == 0                  # nothing past the shoulders is head

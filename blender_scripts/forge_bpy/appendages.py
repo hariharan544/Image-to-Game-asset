@@ -260,10 +260,5 @@ def _name(items: list) -> list:
 def from_object(obj, J: dict, segments: int = 5, grow: bool = True) -> list:
     from .parts import MeshArrays
     arr = MeshArrays(obj.data)
-    m = np.array(obj.matrix_world)
-    V = arr.co @ m[:3, :3].T + m[:3, 3]
-    if grow:                                      # measure in the same (world) space
-        arr.co = V
-        nr = arr.nrm @ np.linalg.inv(m[:3, :3])
-        arr.nrm = nr / np.maximum(np.linalg.norm(nr, axis=1, keepdims=True), 1e-12)
-    return find(V, arr.ev, J, segments, arr=arr if grow else None)
+    arr.to_world(np.array(obj.matrix_world))      # measure in world space, sizes included
+    return find(arr.co, arr.ev, J, segments, arr=arr if grow else None)

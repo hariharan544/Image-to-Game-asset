@@ -82,7 +82,10 @@ def body_low():
 
 def _clear(role: str) -> None:
     for o in list(C().objects_with_role(role)):
+        me = o.data if o.type == "MESH" else None
         bpy.data.objects.remove(o)
+        if me is not None and me.users == 0:      # (a low can be a multi-million copy)
+            bpy.data.meshes.remove(me)
 
 
 def clear_rig() -> None:
@@ -108,6 +111,10 @@ def prepare_retopo() -> list:
     clear_rig()
     _clear("lod")
     _clear("low")
+    try:
+        _mod("retopo").cleanup_jobs()             # first: retires the jobs of removed results
+    except Exception:                             # noqa: BLE001
+        pass
     # leftovers of a run that stopped half-way (rescue pieces, Quad Remesher results)
     for o in list(bpy.data.objects):
         if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_") \
@@ -176,7 +183,7 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
     return n
 
 
-def plan_parts(recompute: bool = False, side: str = "") -> dict:
+def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> dict:
     """The parts plan, made ONCE and used by the run (what the director sees is what runs):
     - thin parts without a twin (tail, antenna, trunk) are cut at their neck and remeshed on
       their own, then attached;
@@ -193,12 +200,14 @@ def plan_parts(recompute: bool = False, side: str = "") -> dict:
             continue
         me = p.data
         mirror = side in ("left", "right")
-        if (not recompute and dens.SPLIT_ATTR in me.attributes and p.get("forge_plan")
+        if (not recompute and dens.SPLIT_ATTR in me.attributes and "forge_plan" in p
                 and bool(me.get("forge_plan_mirror", False)) == mirror):
-            return dict(p["forge_plan"])
+            return dict(p["forge_plan"])         # (an EMPTY plan is a plan too)
+        first_plan = "forge_plan_mirror" not in me
         J = _mod("joints").estimate(p)
         apps = _mod("appendages").from_object(p, J)
         arr = parts_mod.MeshArrays(me)
+        arr.to_world(np.array(p.matrix_world))   # the same space the parts were measured in
         ids = np.zeros(len(me.vertices), np.int32)
         k = 0
         regions = []
@@ -226,8 +235,12 @@ def plan_parts(recompute: bool = False, side: str = "") -> dict:
                 out[name] = "separate: one-sided, kept as it is when mirroring"
                 ids[m & (ids == 0)] = kk
             for kind, c, why in rep:
+                where = "left" if c[0] > 0 else "right"
                 if kind == "pair":
-                    out[f"{'left' if c[0] > 0 else 'right'} side differs"] = why
+                    out[f"{where} side differs"] = why
+                elif kind == "kept":
+                    # the director must know BEFORE the run: mirroring copies/deletes it
+                    out[f"one-sided part on the {where}"] = f"not cut ({why}): mirroring changes it"
             me["forge_onesided_planned"] = True
         elif "forge_onesided_planned" in me:
             del me["forge_onesided_planned"]
@@ -240,12 +253,13 @@ def plan_parts(recompute: bool = False, side: str = "") -> dict:
             app_all |= m
             if a["kind"] == "horn":
                 horn |= m
-        if horn.any() and dens.QR_ATTR in me.color_attributes:
-            # rings=2 reaches the base too, which the head weighting would otherwise paint red
+        if horn.any() and dens.QR_ATTR in me.color_attributes and (paint or first_plan):
+            # rings=2 reaches the base too, which the head weighting would otherwise paint red.
+            # Only on a fresh map: re-planning for another side must not wipe the director's paint
             dens.boost(me, horn, rings=2, edge_factor=0.7)      # edges 1.4x longer: half the quads
         # face creases are carved on the FACE only: ear, horn and tail roots are not creases
         sa = me.attributes.get(dens.STRICT_ATTR)
-        if sa is not None and app_all.any():
+        if sa is not None and app_all.any() and (paint or first_plan):
             sv = np.empty(len(me.vertices), np.float32)
             sa.data.foreach_get("value", sv)
             sv[dens._dilate(app_all, me, 3)] = 1.0
@@ -294,13 +308,25 @@ def prepare_maps(detail: float, recompute: bool = False, side: str = "") -> int:
     """Detail map AND parts plan together, so the map the director sees (Show / Paint) is the
     map Quad Remesher gets: the plan paints the horns lighter on top of the detail map."""
     n = ensure_detail_maps(detail, recompute=recompute) if detail > 0 else 0
+    # measure the parts where they are: "Compare with original" may have moved them aside
+    moved = [(p, p.location.x) for p in parts() if p.location.x]
+    for p, _x in moved:
+        p.location.x = 0.0
+    if moved:
+        bpy.context.view_layer.update()
     try:
-        plan_parts(recompute=recompute or n > 0, side=side)   # a fresh map needs the plan again
+        fresh = recompute or n > 0
+        plan_parts(recompute=fresh, side=side, paint=fresh)   # a fresh map needs the plan again
     except Exception as exc:                          # noqa: BLE001 - remeshing still works without
         print(f"[forge] parts plan failed: {exc}")
         for p in parts():
             if G.kind(p) == "body":
                 p["forge_plan"] = {"parts plan failed": str(exc)[:80]}
+    finally:
+        for p, x in moved:
+            p.location.x = x
+        if moved:
+            bpy.context.view_layer.update()
     return n
 
 
@@ -309,7 +335,7 @@ def plan_needed(side: str) -> bool:
     for p in parts():
         if G.kind(p) == "body":
             me = p.data
-            return not (_mod("density").SPLIT_ATTR in me.attributes and p.get("forge_plan")
+            return not (_mod("density").SPLIT_ATTR in me.attributes and "forge_plan" in p
                         and bool(me.get("forge_plan_mirror", False)) == (side in ("left", "right")))
     return False
 
@@ -359,6 +385,10 @@ def stop_cleanup(label: str = "") -> None:
     """After Stop: drop half-done pieces and results, show the original parts again."""
     if "retopo" in label:
         undo_retopo()                     # a half-done retopology is of no use: start clean
+    try:
+        _mod("retopo").cleanup_jobs()     # first: retires the jobs of removed results
+    except Exception:                     # noqa: BLE001
+        pass
     for o in list(bpy.data.objects):
         if o.get("forge_rescue") or "_rescue" in o.name or o.name.startswith("Retopo_") \
                 or o.get("forge_qr_proxy"):

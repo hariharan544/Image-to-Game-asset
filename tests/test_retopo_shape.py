@@ -565,3 +565,73 @@ def test_side_choice_never_mirrors_a_prop_beside_the_body(monkeypatch):
     v = np.array([x.co[:] for x in o.data.vertices])
     assert v[:, 0].min() > 1.2, v[:, 0].min()          # still one tuft, at +X only
     assert seen and not any(seen)                       # and the remesher never mirrored it
+
+
+def test_stop_frees_every_copy_of_the_part(monkeypatch):
+    """Stop closes the job half-way: no part-sized mesh copy may stay behind in memory."""
+    from forge_bpy import common, retopo
+    o = _body_with_tail()
+    meshes0 = {m.name for m in bpy.data.meshes}
+
+    def qr(obj, quads, args, timeout):
+        yield 0.5
+        return True
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "symmetry": "left"})
+    for _ in range(3):
+        next(gen)
+    gen.close()
+    left = [m.name for m in bpy.data.meshes if m.users == 0 and m.name not in meshes0]
+    assert not left, left
+
+
+def test_a_part_that_cannot_be_cut_is_never_mirrored(monkeypatch):
+    """If the cut of a one-sided part is refused, mirroring would copy or delete it: the body
+    is not mirrored, and the report says so."""
+    import numpy as np
+
+    from forge_bpy import common, density, rescue, retopo
+    o = _body_with_tail()
+    co = np.array([v.co[:] for v in o.data.vertices])
+    density.write_split(o.data, (co[:, 0] > 1.02).astype(np.int32))
+
+    def refuse(me, ids, report=None):
+        if report is not None:
+            report.append((1, "cutting it would leave an opening in the body: kept with the body"))
+        return []
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        return retopo._quadriflow(obj, max(int(quads * 2), 600), {})
+
+    monkeypatch.setattr(rescue, "split_off", refuse)
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "symmetry": "left",
+                          "carve": False, "shape_check": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    r = rep["parts"]["Body"]
+    assert not o.get("forge_symmetry_x")
+    assert any("not mirrored" in w for w in r.get("split_kept", [])), r
+    v = np.array([x.co[:] for x in o.data.vertices])
+    assert v[:, 0].max() > 1.8 and v[:, 0].min() > -1.1                     # one tail, not two
+
+
+def test_cleanup_retires_jobs_and_late_results_are_removed_when_idle():
+    from forge_bpy import retopo
+    bpy.ops.wm.read_homefile(use_empty=True)
+    retopo._QR_JOBS.clear()
+    retopo._QR_JOBS["fq001_00001z"] = {"state": "abandoned", "t": __import__("time").time(), "limit": 900}
+    late = bpy.data.objects.new("Retopo_fq001_00001z", bpy.data.meshes.new("late"))
+    bpy.context.scene.collection.objects.link(late)
+    assert retopo._poll_late() is None              # removed it, nothing left to watch
+    assert "Retopo_fq001_00001z" not in bpy.data.objects and not retopo._QR_JOBS
+    retopo._QR_JOBS["fq001_00002z"] = {"state": "abandoned", "t": __import__("time").time(), "limit": 900}
+    stray = bpy.data.objects.new("Retopo_fq001_00002z.001", bpy.data.meshes.new("stray"))
+    bpy.context.scene.collection.objects.link(stray)
+    retopo.cleanup_jobs()
+    assert not retopo._QR_JOBS and "Retopo_fq001_00002z.001" not in bpy.data.objects

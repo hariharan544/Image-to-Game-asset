@@ -65,6 +65,13 @@ def _finish(result=None, error=None) -> None:
     done = _JOB.pop("on_done", None)
     snap = _JOB.pop("snapshot", None)
     _JOB.pop("label", None)
+    if error or (done and snap is not None and snap != _snapshot(st)):
+        for mod in ("retopo", "bake"):            # no stale progress text for the next job
+            try:
+                S._mod(mod).STATUS["text"] = ""
+            except Exception:                     # noqa: BLE001
+                pass
+        S.STATUS["text"] = ""
     if error:
         st.error = error
     elif done and snap is not None and snap != _snapshot(st):
@@ -230,6 +237,9 @@ class FORGE_OT_step(bpy.types.Operator):
             st["detail_view"] = False
             S.show_detail_map(False)
         _start_step(st, "retopo")
+        # the old result is gone the moment the run starts: if this run fails, there must be
+        # no old report and no Approve over half-built meshes
+        st.retopo, st.retopo_rep = "todo", "{}"
         st.rig_phase = ""
         qr = S.has_addon_op("qremesher.remesh")
         if not qr:
@@ -541,16 +551,15 @@ def _retopo_rows(rep):
             else:
                 out.append(("BLANK1", "    mirrored (symmetric)" if r["symmetry"]
                             else f"    not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)"))
-        if "part(s) separate" in m:
-            n_sep = m.split("+")[-1].split(" ")[0]
-            out.append(("BLANK1", f"    {n_sep} part(s) remeshed on their own, then attached"))
+        if r.get("separate_parts"):
+            out.append(("BLANK1", f"    {r['separate_parts']} part(s) remeshed on their own, then attached"))
         for how in r.get("piece_fallbacks", []):
-            out.append((WARN, f"    a part got no Quad Remesher result: Blender's {how} used"))
+            out.append((WARN, f"    a part got no Quad Remesher result: {how} used"))
         for why in r.get("split_kept", []):
             out.append((WARN, f"    {why}"))
-        if r.get("open_edges") or r.get("bad_edges"):
-            out.append((BAD, f"    mesh not closed: {r.get('open_edges', 0)} open, "
-                             f"{r.get('bad_edges', 0)} broken edges - Undo and run again"))
+        if r.get("open_edges") or r.get("bad_edges") or r.get("loose"):
+            out.append((BAD, f"    mesh not clean: {r.get('open_edges', 0)} open, {r.get('bad_edges', 0)} broken, "
+                             f"{r.get('loose', 0)} loose - Undo and run again"))
         if sh:
             if sh.get("lost_pct", 0) > 0.5:
                 out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))

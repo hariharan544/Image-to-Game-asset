@@ -42,47 +42,87 @@ class MeshArrays:
         w = np.linalg.norm(self.co[self.ev[:, 0]] - self.co[self.ev[:, 1]], axis=1) if len(self.ev) else np.ones(1)
         self.edge_len = float(np.median(w)) or 1e-6
 
+    def to_world(self, m) -> None:
+        """Measure in world space (object matrix m, 4x4 numpy): coordinates, normals, size."""
+        m = np.asarray(m, float)
+        self.co = self.co @ m[:3, :3].T + m[:3, 3]
+        nr = self.nrm @ np.linalg.inv(m[:3, :3])
+        self.nrm = nr / np.maximum(np.linalg.norm(nr, axis=1, keepdims=True), 1e-12)
+        self.size = float((self.co.max(axis=0) - self.co.min(axis=0)).max()) if self.n else 1.0
+        w = np.linalg.norm(self.co[self.ev[:, 0]] - self.co[self.ev[:, 1]], axis=1) if len(self.ev) else np.ones(1)
+        self.edge_len = float(np.median(w)) or 1e-6
+
     def local_tree(self, local: np.ndarray):
-        """BVH of the faces whose vertices are all inside `local` (a neighbourhood)."""
-        from mathutils import Vector
+        """BVH of the faces whose vertices are all inside `local` (a neighbourhood). Built from
+        arrays (no Python loop per face: a box can hold a million faces of an AI mesh)."""
         from mathutils.bvhtree import BVHTree
-        inl = local[self.lv]
-        allin = np.minimum.reduceat(inl.astype(np.int8), self.ls) > 0 if len(self.ls) else np.zeros(0, bool)
+        if not len(self.ls):
+            return None
+        inl = local[self.lv].astype(np.int8)
+        allin = np.minimum.reduceat(inl, self.ls) > 0
         idx = np.nonzero(local)[0]
         remap = np.full(self.n, -1, np.int64)
         remap[idx] = np.arange(len(idx))
-        verts = [Vector(p) for p in self.co[idx]]
         polys = []
-        for f in np.nonzero(allin)[0]:
-            s, t = self.ls[f], self.lt[f]
-            polys.append(tuple(int(x) for x in remap[self.lv[s:s + t]]))
-        return BVHTree.FromPolygons(verts, polys) if polys else None
+        for t in np.unique(self.lt[allin]):
+            sel = np.nonzero(allin & (self.lt == t))[0]
+            corners = self.ls[sel][:, None] + np.arange(t)[None, :]
+            polys += remap[self.lv[corners]].tolist()
+        if not polys:
+            return None
+        return BVHTree.FromPolygons(self.co[idx].tolist(), polys)
 
 
 def thickness(arr: MeshArrays, tree, idx: np.ndarray, limit: float) -> np.ndarray:
     """Shape diameter at the given vertices: median distance a cone of 5 inward rays travels
     before it meets the surface again (rays that meet nothing within `limit` count as limit)."""
     from mathutils import Vector
-    out = np.full(len(idx), limit)
-    if tree is None:
+    idx = np.asarray(idx, np.int64)
+    out = np.full(len(idx), float(limit))
+    if tree is None or len(idx) == 0:
         return out
-    eps = 1e-5 * arr.size
-    for j, i in enumerate(idx):
-        n = -arr.nrm[i]
-        ln = np.linalg.norm(n)
-        if ln < 1e-9:
-            continue
-        n = n / ln
-        a = np.cross(n, (0.0, 0.0, 1.0) if abs(n[2]) < 0.9 else (1.0, 0.0, 0.0))
-        a /= np.linalg.norm(a)
-        b = np.cross(n, a)
-        o = Vector(arr.co[i] + n * eps)
-        ds = []
-        for d in (n, n + 0.45 * a, n - 0.45 * a, n + 0.45 * b, n - 0.45 * b):
-            h = tree.ray_cast(o, Vector(d / np.linalg.norm(d)), limit)
-            ds.append(h[3] if h[0] is not None else limit)
-        out[j] = float(np.median(ds))
+    n = -arr.nrm[idx]
+    ln = np.linalg.norm(n, axis=1)
+    ok = ln > 1e-9
+    n[ok] /= ln[ok, None]
+    ref = np.where(np.abs(n[:, 2:3]) < 0.9, [[0.0, 0.0, 1.0]], [[1.0, 0.0, 0.0]])
+    a = np.cross(n, ref)
+    a /= np.maximum(np.linalg.norm(a, axis=1, keepdims=True), 1e-12)
+    b = np.cross(n, a)
+    dirs = np.stack([n, n + 0.45 * a, n - 0.45 * a, n + 0.45 * b, n - 0.45 * b], axis=1)
+    dirs /= np.maximum(np.linalg.norm(dirs, axis=2, keepdims=True), 1e-12)
+    orig = arr.co[idx] + n * (1e-5 * arr.size)
+    d = np.full((len(idx), 5), float(limit))
+    ray = tree.ray_cast
+    for j in np.nonzero(ok)[0]:
+        o = Vector(orig[j])
+        for r in range(5):
+            h = ray(o, Vector(dirs[j, r]), limit)
+            if h[0] is not None:
+                d[j, r] = h[3]
+    out[ok] = np.median(d[ok], axis=1)
     return out
+
+
+def trunk_thickness(arr: MeshArrays) -> float | None:
+    """How thick the body's trunk is: the front-to-back depth along the centre line, slice by
+    slice (no rays: cheap on any mesh). Upper quartile: legs and neck slices are thinner."""
+    co = arr.co
+    if arr.n < 50:
+        return None
+    x0 = float(np.median(co[:, 0]))
+    band = np.abs(co[:, 0] - x0) < 0.03 * arr.size
+    if band.sum() < 20:
+        return None
+    z = co[band, 2]
+    y = co[band, 1]
+    zb = np.floor((z - z.min()) / (0.03 * arr.size)).astype(np.int64)
+    depths = []
+    for b in np.unique(zb):
+        yy = y[zb == b]
+        if len(yy) >= 4:
+            depths.append(float(yy.max() - yy.min()))
+    return float(np.percentile(depths, 75)) if depths else None
 
 
 def _sample(idx: np.ndarray, k: int) -> np.ndarray:
@@ -94,102 +134,114 @@ def _components(n: int, a: np.ndarray, b: np.ndarray) -> np.ndarray:
     return comp(n, a, b)
 
 
-def neck_region(arr: MeshArrays, seed: np.ndarray, max_share: float = 0.15, body=None) -> dict | None:
+def neck_region(arr: MeshArrays, seed: np.ndarray, max_share: float = 0.35, body=None,
+                t_body: float | None = None) -> dict | None:
     """One part: see grow_parts."""
-    return grow_parts(arr, [seed], max_share, body)[0]
+    return grow_parts(arr, [seed], max_share, body, t_body)[0]
 
 
-def grow_parts(arr: MeshArrays, seeds: list, max_share: float = 0.15, body=None,
+def _box_state(arr: MeshArrays, st: dict, lo, hi) -> None:
+    """(Re)build a part's search neighbourhood: vertices, faces (BVH), edges, its border."""
+    local = np.all((arr.co >= lo) & (arr.co <= hi), axis=1)
+    st["local"] = local
+    st["tree"] = arr.local_tree(local)
+    st["limit"] = 2.0 * float((hi - lo).max())
+    st["le"] = arr.ev[local[arr.ev[:, 0]] & local[arr.ev[:, 1]]]
+    xb = local[arr.ev[:, 0]] != local[arr.ev[:, 1]]
+    edge_v = np.zeros(arr.n, bool)
+    edge_v[arr.ev[xb].ravel()] = True
+    st["edge_v"] = edge_v & local
+    st["lo"], st["hi"] = lo, hi
+
+
+def grow_parts(arr: MeshArrays, seeds: list, max_share: float = 0.35, body=None,
                t_body: float | None = None) -> list:
     """Grow every seed (vertices of a part, maybe only a fragment of it) over the surface while
     the surface stays thin, and stop at the neck where it turns into the thick body.
 
-    Thin = shape diameter under 2.5 stems or the geometric mean of stem and body thickness,
+    Thin = shape diameter under 2.5 stems or the geometric mean of stem and trunk thickness,
     whichever is larger: a tapering horn keeps growing to its base, a tail stops where the
-    rump begins, whatever their absolute size. All parts grow together, ring by
-    ring, and a vertex belongs to the first part that reaches it: an ear and a horn whose
-    roots touch stop at each other instead of one swallowing the other.
+    rump begins, whatever their absolute size. The trunk is measured on the body itself
+    (t_body from the caller, else trunk_thickness), never on whatever happens to be nearest
+    a fragment (a leg, the part's own hidden stem).
+    All parts grow together, ring by ring; a vertex belongs to the first part that reaches
+    it, so an ear and a horn whose roots touch stop at each other. A part that reaches the
+    edge of its search box gets a bigger box and grows on; max_share only guards against a
+    growth leaking over the body.
     Per seed: {"mask", "thickness", "body_thickness", "ring": (centre, normal_into_body,
-    radius), "ok": one short ring, "why"} or None when there is no part."""
+    radius), "ok": one short ring, "why"} or None when it is not thinner than the body."""
     n = arr.n
     label = np.zeros(n, np.int32)
+    tb = float(t_body) if t_body else (trunk_thickness(arr) or arr.size)
     if body is None:                              # surely body: everything that is no seed
         body = np.ones(n, bool)
         for sd in seeds:
             body &= ~sd
-    bidx = np.nonzero(body)[0]
-    # an even sample of the body (by area, the same on a coarse or a dense mesh): "the body
-    # nearest to a part" then covers the same patch whatever the resolution
-    bsam = bidx[:: max(1, len(bidx) // 40_000)]
     states = []
     for k, seed in enumerate(seeds, start=1):
         sidx = np.nonzero(seed)[0]
-        if len(sidx) < 8 or len(bidx) < 8:
+        if len(sidx) < 8:
             states.append(None)
             continue
-        # the body around = the body surface nearest to the part (where it will meet it), even
-        # when the visible fragment of the part is far from it (the tip of a long horn)
-        c = arr.co[sidx].mean(axis=0)
-        near = bsam[np.argsort(np.linalg.norm(arr.co[bsam] - c, axis=1))[:800]]
         slo, shi = arr.co[sidx].min(axis=0), arr.co[sidx].max(axis=0)
-        sext = float((shi - slo).max())
-        m1 = max(0.6 * sext, 0.06 * arr.size)        # room for the hidden rest of the part
-        m2 = 0.03 * arr.size
-        lo = np.minimum(slo - m1, arr.co[near].min(axis=0) - m2)
-        hi = np.maximum(shi + m1, arr.co[near].max(axis=0) + m2)
-        ext = float((hi - lo).max())
-        margin = 0.0
-        local = np.all((arr.co >= lo) & (arr.co <= hi), axis=1)
-        tree = arr.local_tree(local)
-        limit = 2.0 * (ext + margin)
-        Ts = thickness(arr, tree, sidx, limit)
+        m1 = max(0.6 * float((shi - slo).max()), 0.06 * arr.size)
+        st = {"k": k, "seed": seed, "grow": 0, "T": {}, "rejected": np.zeros(n, bool), "active": True,
+              "m1": m1}
+        _box_state(arr, st, slo - m1, shi + m1)
+        Ts = thickness(arr, st["tree"], sidx, st["limit"])
         t_stem = float(np.percentile(Ts, 30))     # the stem, not a tuft at the end
-        if t_body is None:
-            # upper quartile: some of the nearest "body" may still be the part's own hidden stem
-            tb = float(np.percentile(thickness(arr, tree, _sample(near, 400), limit), 75))
-        else:
-            tb = float(t_body)                    # the trunk, measured by the caller
         if t_stem >= 0.6 * tb:
-            states.append(None)                   # as thick as the body around: not a part
+            states.append(None)                   # as thick as the trunk: not a part
             continue
-        # thin enough to belong: well under the body, and within a few stems (a tapering horn
+        st["t_stem"], st["t_body"] = t_stem, tb
+        # thin enough to belong: well under the trunk, and within a few stems (a tapering horn
         # doubles its girth to the base; the rump is ten times a tail)
-        thr = float(max(2.5 * t_stem, np.sqrt(t_stem * tb)))
-        T = {int(i): float(t) for i, t in zip(sidx, Ts)}
-        start = sidx[(Ts < thr) & (label[sidx] == 0)]
+        st["thr"] = float(max(2.5 * t_stem, np.sqrt(t_stem * tb)))
+        st["T"].update(zip(sidx.tolist(), Ts.tolist()))
+        start = sidx[(Ts < st["thr"]) & (label[sidx] == 0)]
         label[start] = k
-        le = arr.ev[local[arr.ev[:, 0]] & local[arr.ev[:, 1]]]
-        states.append({"k": k, "local": local, "tree": tree, "limit": limit, "thr": thr, "T": T,
-                       "t_stem": t_stem, "t_body": tb, "le": le, "rejected": np.zeros(n, bool),
-                       "active": True})
-    cap = int(max_share * n)
-    while any(st and st["active"] for st in states):
-        for st in states:
-            if not st or not st["active"]:
+        states.append(st)
+    cap = int(max(max_share, 0.05) * n)
+    live = [st for st in states if st]
+    while any(st["active"] for st in live):
+        for st in live:
+            if not st["active"]:
                 continue
             le, k = st["le"], st["k"]
             a_in, b_in = label[le[:, 0]] == k, label[le[:, 1]] == k
             cand = np.unique(np.concatenate([le[a_in & ~b_in, 1], le[b_in & ~a_in, 0]]))
             cand = cand[(label[cand] == 0) & ~st["rejected"][cand]]
             if len(cand) == 0:
+                region = label == k
+                if (region & st["edge_v"]).any() and st["grow"] < 3:
+                    # cut short by the box, not by the body: a bigger box, grow on
+                    st["grow"] += 1
+                    r = np.nonzero(region)[0]
+                    m = st["m1"] * (1 + st["grow"])
+                    _box_state(arr, st, arr.co[r].min(axis=0) - m, arr.co[r].max(axis=0) + m)
+                    st["rejected"][:] = False             # (rays may have left the old box)
+                    continue
                 st["active"] = False
+                st["at_edge"] = bool((region & st["edge_v"]).any())
                 continue
             tc = thickness(arr, st["tree"], cand, st["limit"])
-            for i, t in zip(cand, tc):
-                st["T"][int(i)] = float(t)
+            st["T"].update(zip(cand.tolist(), tc.tolist()))
             ok = tc < st["thr"]
             label[cand[ok]] = k
             st["rejected"][cand[~ok]] = True
             if (label == k).sum() > cap:
                 st["active"] = False
                 st["spread"] = True
+                label[label == k] = 0                     # it leaked: free what it took
     # two fragments of ONE part (a tail the bone test cut in two) meet halfway along it: a
-    # part whose cut touches another part more than the body is that part
+    # fragment almost enclosed by another part is that part (a mere touch, like an ear root
+    # against a horn root, is not)
     ev = arr.ev
-    for _ in range(len(states)):
+    by_k = {st["k"]: st for st in live}
+    for _ in range(len(live)):
         merged = False
-        for st in states:
-            if not st or st.get("spread") or not (label == st["k"]).any():
+        for st in live:
+            if st.get("spread") or st.get("merged_into") or not (label == st["k"]).any():
                 continue
             k = st["k"]
             a_k, b_k = label[ev[:, 0]] == k, label[ev[:, 1]] == k
@@ -198,38 +250,36 @@ def grow_parts(arr: MeshArrays, seeds: list, max_share: float = 0.15, body=None,
                 continue
             vals, cnt = np.unique(other, return_counts=True)
             j = int(vals[np.argmax(cnt)])
-            if j > 0 and cnt.max() >= 0.5 * len(other):
-                target = next(t for t in states if t and t["k"] == j)
+            target = by_k.get(j)
+            if j > 0 and target and not target.get("spread") and cnt.max() >= 0.9 * len(other):
                 label[label == k] = j
                 target["T"].update(st["T"])
-                target["local"] = target["local"] | st["local"]
-                target["le"] = arr.ev[target["local"][arr.ev[:, 0]] & target["local"][arr.ev[:, 1]]]
+                lo = np.minimum(target["lo"], st["lo"])
+                hi = np.maximum(target["hi"], st["hi"])
+                local = target["local"] | st["local"]
+                target["local"], target["lo"], target["hi"] = local, lo, hi
+                target["le"] = arr.ev[local[arr.ev[:, 0]] & local[arr.ev[:, 1]]]
+                target["edge_v"] = (target["edge_v"] | st["edge_v"]) & ~(label == j)
                 st["merged_into"] = j
                 merged = True
         if not merged:
             break
     out = []
     for st in states:
-        if st is None or st.get("spread"):
+        if st is None or st.get("merged_into"):
             out.append(None)
             continue
-        if st.get("merged_into"):
-            j = st["merged_into"]
-            while True:                               # follow merges to the final part
-                t = next(x for x in states if x and x["k"] == j)
-                if not t.get("merged_into"):
-                    break
-                j = t["merged_into"]
-            out.append({"merged_into": j - 1})
+        if st.get("spread"):
+            out.append({"mask": st["seed"], "thickness": st["t_stem"], "body_thickness": st["t_body"],
+                        "ring": None, "ok": False, "why": "it grew over too much of the body"})
             continue
         if not (label == st["k"]).any():
             out.append(None)
             continue
-        out.append(_finish_part(arr, label, st))
-    # callers get the finished part for every seed of it
-    for i, r in enumerate(out):
-        if r is not None and "merged_into" in r:
-            out[i] = None
+        res = _finish_part(arr, label, st)
+        if st.get("at_edge") and res["ok"]:
+            res["ok"], res["why"] = False, "it reaches beyond the search area: no clear neck"
+        out.append(res)
     return out
 
 
@@ -248,10 +298,7 @@ def _finish_part(arr: MeshArrays, label: np.ndarray, st: dict) -> dict:
     # an island is enclosed only if it does not reach the edge of the neighbourhood (a leg cut
     # by the box edge is connected to the body outside it), touches this part, and belongs to
     # no other part
-    edge_v = np.zeros(n, bool)
-    xb = local[arr.ev[:, 0]] != local[arr.ev[:, 1]]
-    edge_v[arr.ev[xb].ravel()] = True
-    open_ids = np.unique(lab2[out_l & (edge_v | (label > 0))])
+    open_ids = np.unique(lab2[out_l & (st["edge_v"] | (label > 0))])
     ids2, cnt2 = np.unique(lab2[out_l], return_counts=True)
     if len(ids2) > 1:
         body = ids2[np.argmax(cnt2)]
@@ -262,9 +309,12 @@ def _finish_part(arr: MeshArrays, label: np.ndarray, st: dict) -> dict:
     Tv = np.array([t for i, t in st["T"].items() if region[i]])
     res = {"mask": region, "thickness": float(np.percentile(Tv, 30)) if len(Tv) else st["t_stem"],
            "body_thickness": st["t_body"], "ring": None, "ok": False, "why": ""}
-    # the cut ring: part vertices next to the rest
+    # the cut ring: part vertices next to the BODY (where it touches another part, like an
+    # ear root against a horn root, is not its neck)
     a_in, b_in = region[arr.ev[:, 0]], region[arr.ev[:, 1]]
     cross = a_in ^ b_in
+    other = np.where(a_in, arr.ev[:, 1], arr.ev[:, 0])
+    cross &= (label[other] == 0) | (label[other] == k)
     ring = np.unique(np.where(a_in[cross], arr.ev[cross, 0], arr.ev[cross, 1]))
     if len(ring) == 0:
         res["ok"], res["why"] = True, "a separate shell: taken whole, nothing to cut"
@@ -388,10 +438,11 @@ def one_sided_parts(me, taken=None, high: float = 0.05, low: float = 0.012, min_
             continue
         seeds.append((sel, p.mean(axis=0), ext))
     k = int(taken.max()) if taken is not None and len(taken) else 0
+    trunk = trunk_thickness(arr)
     for sel, c, _ext in seeds:
         if (ids[sel] > 0).mean() > 0.5:
             continue                                  # already inside a part found before
-        nk = neck_region(arr, sel, max_share, body=~far_lo)
+        nk = neck_region(arr, sel, body=~far_lo, t_body=trunk)
         if nk is None or not nk["ok"]:
             if report is not None:
                 report.append(("kept", c, nk["why"] if nk else "not thinner than the body"))

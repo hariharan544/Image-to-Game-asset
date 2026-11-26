@@ -11,6 +11,8 @@ The score is written as a colour attribute for Quad Remesher's density painting
 
 from __future__ import annotations
 
+import math
+
 import numpy as np
 
 
@@ -326,6 +328,22 @@ def region_labels(V: np.ndarray, J: dict) -> np.ndarray:
     # arms are out past the shoulders AND at arm height: ears, horns and hair beside a wide
     # head stay head (a straight |x| cut sliced through their roots)
     arm = (ax > sh_x * 1.05) & (V[:, 2] < neck_z + 0.03 * H)
+    # a hand raised above the neck is still an arm: past the shoulders and nearer an arm bone
+    # than the head
+    cand = (ax > sh_x * 1.05) & ~arm
+    if cand.any():
+        def seg_d(P, a, b):
+            ab = b - a
+            t = np.clip(((P - a) @ ab) / max(float(ab @ ab), 1e-12), 0.0, 1.0)
+            return np.linalg.norm(P - (a + t[:, None] * ab), axis=1)
+        P = V[cand]
+        d_arm = np.full(len(P), np.inf)
+        for k in ("upperarm_l", "lowerarm_l", "hand_l", "upperarm_r", "lowerarm_r", "hand_r"):
+            if k in J:
+                d_arm = np.minimum(d_arm, seg_d(P, p(k, 0), p(k, 1)))
+        d_head = seg_d(P, p("head", 0), p("head", 1)) if "head" in J else np.full(len(P), np.inf)
+        idx = np.nonzero(cand)[0]
+        arm[idx[d_arm < d_head]] = True
     lab[(V[:, 2] > neck_z) & ~arm] = 1                                # head
     lab[arm] = 2
     lab[arm & (ax > wr_x)] = 3                                        # hands
@@ -499,12 +517,12 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
     added = splits = 0
 
     def hit_at(p, n, lim):
-        """The groove floor under p: facing the same way as the surface (not the far wall of
-        a crevice or the underside of an ear), within reach."""
+        """The groove floor under p: not facing away from the surface (not the far side of a
+        sheet or the underside of an ear), within reach."""
         best = None
         for s in (1.0, -1.0):
             h = tree.ray_cast(p, n * s, lim)
-            if h[0] is not None and h[1].dot(n) > 0.5 and (best is None or h[3] < best[3]):
+            if h[0] is not None and h[1].dot(n) > 0.0 and (best is None or h[3] < best[3]):
                 best = h
         return best
 
@@ -517,9 +535,9 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
             if elen < min_edge:
                 continue
             best = None
-            # a groove narrower than one quad is about as deep as the quad is wide: deeper
-            # hits are another surface, not this groove
-            lim = min(reach, 0.75 * elen)
+            # a groove narrower than one quad is not much deeper than the quad is wide:
+            # much deeper hits are another surface, not this groove
+            lim = min(reach, 1.5 * elen)
             for k in range(1, samples + 1):
                 t = k / (samples + 1)
                 p = a.co.lerp(b.co, t)
@@ -541,10 +559,12 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
         if not marks:
             break
         new_verts = set()
+        flat_at = {}
         for _gap, e, t, hit in marks:
             if not e.is_valid:
                 continue
             _ne, nv = bmesh.utils.edge_split(e, e.verts[0], t)
+            flat_at[nv] = nv.co.copy()                   # where it sat on the bridging edge
             nv.co = hit
             new_verts.add(nv)
             splits += 1
@@ -565,6 +585,13 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
         ng = [f for f in bm.faces if len(f.verts) > 4]
         if ng:
             bmesh.ops.triangulate(bm, faces=ng)
+        # a cut that folds the surface (in the narrow gap at an ear or horn root the floor
+        # can be another wall) is put back flat: a crease may deepen a valley, never fold it
+        bm.normal_update()
+        for nv in new_verts:
+            if nv.is_valid and any(len(e.link_faces) == 2 and e.calc_face_angle(0.0) > math.radians(100)
+                                   for e in nv.link_edges):
+                nv.co = flat_at[nv]
         added = sum(len(f.verts) - 2 for f in bm.faces) - tris0
         if added >= allowance:
             break
@@ -632,9 +659,9 @@ def straddles_middle(me, cell: float = 0.02, min_share: float = 0.5) -> bool:
 
 def mirror_plane(me, max_shift: float = 0.03, samples: int = 60_000) -> float:
     """Where the body's mirror plane really is (x = x0), measured from its own symmetry, not
-    from its box (a longer hand or a curled tail moves the box centre). Robust 1-D
-    registration: each point and the nearest point to its mirror image agree on a middle;
-    the median of those middles, a few times over. Bounded to max_shift of the size."""
+    from its box (a longer arm or a curled tail moves the box centre): the x0 whose mirror
+    image lies closest to the surface (median distance of a sample), found coarse to fine
+    within max_shift of the size. One-sided parts are a minority and do not move a median."""
     from mathutils.kdtree import KDTree
     n = len(me.vertices)
     if n == 0:
@@ -649,22 +676,18 @@ def mirror_plane(me, max_shift: float = 0.03, samples: int = 60_000) -> float:
     for i, p in enumerate(co):
         kd.insert(p, i)
     kd.balance()
-    x0 = 0.0
-    for it in range(12):
-        mids = []
-        tol = (0.08 if it < 3 else 0.02) * size       # wide first (the plane may be far off)
-        for p in co[:: max(1, len(co) // 8000)]:
-            q, _i, dist = kd.find((2 * x0 - p[0], p[1], p[2]))
-            if q is not None and dist < tol:
-                mids.append(0.5 * (p[0] + q[0]))
-        if len(mids) < 100:
-            break
-        new = float(np.clip(np.median(mids), -max_shift * size, max_shift * size))
-        if abs(new - x0) < 1e-5 * size:
-            x0 = new
-            break
-        x0 = new
-    return x0
+    q = co[:: max(1, len(co) // 4000)]
+
+    def cost(x0):
+        return float(np.median([kd.find((2 * x0 - p[0], p[1], p[2]))[2] for p in q]))
+    span = max_shift * size
+    xs = np.linspace(-span, span, 13)
+    best = min(xs, key=cost)
+    step = xs[1] - xs[0]
+    while step > 1e-4 * size:
+        step *= 0.5
+        best = min((best - step, best, best + step), key=cost)
+    return float(best)
 
 
 def symmetrize(me, side: str) -> None:
