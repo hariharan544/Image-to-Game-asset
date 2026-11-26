@@ -1,0 +1,30 @@
+{
+  "project": "From Blender",
+  "engines": [
+    "unreal",
+    "unity"
+  ],
+  "style": "realistic",
+  "defaults": {
+    "review": {
+      "concept_checkpoint": false,
+      "final_checkpoint": true
+    }
+  },
+  "assets": [
+    {
+      "name": "cube",
+      "model": "../inputs/cube.glb",
+      "type": "humanoid",
+      "tier": "hero",
+      "style": "realistic"
+    },
+    {
+      "name": "bull",
+      "model": "../inputs/bull.glb",
+      "type": "humanoid",
+      "tier": "hero",
+      "style": "realistic"
+    }
+  ]
+}

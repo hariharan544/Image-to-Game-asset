@@ -1,0 +1,23 @@
+00:00.032  color_management | Using config from OCIO: "C:\Program Files\Blender Foundation\Blender 5.3\5.3\datafiles\colormanagement\config.ocio"
+16:21:26 | INFO: Data are loaded, start creating Blender stuff
+16:21:26 | INFO: Blender create Mesh node Mesh_0.001
+16:21:26 | INFO: Blender create Mesh node Mesh_1.001
+16:21:26 | INFO: Blender create Mesh node Mesh_10.001
+16:21:26 | INFO: Blender create Mesh node Mesh_11.001
+16:21:26 | INFO: Blender create Mesh node Mesh_12.001
+16:21:26 | INFO: Blender create Mesh node Mesh_13.001
+16:21:26 | INFO: Blender create Mesh node Mesh_14.001
+16:21:26 | INFO: Blender create Mesh node Mesh_15.001
+16:21:26 | INFO: Blender create Mesh node Mesh_16.001
+16:21:26 | INFO: Blender create Mesh node Mesh_17.001
+16:21:26 | INFO: Blender create Mesh node Mesh_2.001
+16:21:26 | INFO: Blender create Mesh node Mesh_3.001
+16:21:26 | INFO: Blender create Mesh node Mesh_4.001
+16:21:26 | INFO: Blender create Mesh node Mesh_5.001
+16:21:26 | INFO: Blender create Mesh node Mesh_6.001
+16:21:26 | INFO: Blender create Mesh node Mesh_7.001
+16:21:26 | INFO: Blender create Mesh node Mesh_8.001
+16:21:26 | INFO: Blender create Mesh node Mesh_9.001
+16:21:26 | INFO: glTF import finished in 0.17s
+Blender 5.3.0 (hash 02f0899d78e3 built 2026-11-10 01:33:43)
+Info: Saved as "02_cleanup_a1.blend"
