@@ -146,6 +146,8 @@ class AssetSpec(BaseModel):
     style: str = "realistic"
     engines: list[Engine] = Field(default_factory=lambda: ["unreal", "unity"])
     detachable_parts: list[str] = Field(default_factory=list)    # exported as separate swappable meshes
+    # merge every other part into one "Body" mesh (one material, no seams at joints when animated)
+    merge_body_parts: bool = True
     notes: str = ""                                              # creative direction for the supervisor
     generation: GenerationSpec = Field(default_factory=GenerationSpec)
     topology: TopologySpec = Field(default_factory=TopologySpec)

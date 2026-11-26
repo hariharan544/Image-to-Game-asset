@@ -76,11 +76,13 @@ def tunables(stage: str, spec: AssetSpec) -> dict:
 
 
 def match_parts(wanted: list[str], parts: list[str]) -> list[str]:
-    """Guide names ('sword') -> actual part names ('Sword_mesh_2'), case-insensitive substring."""
+    """Guide names -> actual part names. An exact (case-insensitive) name wins, so 'tripo_part_1'
+    never also grabs 'tripo_part_10'; otherwise substring ('sword' -> 'Sword_mesh_2')."""
     out = []
     for w in wanted:
         wl = w.lower()
-        out += [p for p in parts if wl in p.lower() and p not in out]
+        exact = [p for p in parts if p.lower() == wl]
+        out += [p for p in (exact or [p for p in parts if wl in p.lower()]) if p not in out]
     return out
 
 
@@ -243,6 +245,8 @@ class Pipeline:
             a["save_blend"] = str(job.path("blend", tdir, f"{STAGE_NAMES.index(name):02d}_{name}_a{attempt}.blend"))
         if name == "cleanup":
             a["source"] = job.artifact("tripo")["source_for_blender"]
+            a["detachable_parts"] = list(spec.detachable_parts)
+            a["merge_body_parts"] = spec.merge_body_parts
         elif name == "uv":
             a["texture_size"] = spec.texture.size
         elif name == "bake":

@@ -134,3 +134,11 @@ def test_redo_from_one_target_keeps_the_other(tmp_path):
     assert {"bake@unreal", "export@unreal", "uv@unity", "generate"} <= left
     assert not {"bake@unity", "previews@unity", "export@unity", "final_review"} & left
     assert job.tripo_task("generate") == "t1"                   # no new cloud generation
+
+
+def test_part_matching_prefers_exact_names():
+    from forge.pipeline import match_parts
+    parts = ["Body", "tripo_part_1", "tripo_part_10", "tripo_part_12", "Sword_mesh_2"]
+    assert match_parts(["tripo_part_1"], parts) == ["tripo_part_1"]          # not _10 / _12
+    assert match_parts(["sword"], parts) == ["Sword_mesh_2"]                  # substring fallback
+    assert match_parts(["TRIPO_PART_12", "nothing"], parts) == ["tripo_part_12"]

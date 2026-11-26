@@ -63,6 +63,29 @@ def _clean_mesh(obj: bpy.types.Object, merge_dist: float) -> dict:
     return {"verts_removed": merged}
 
 
+def _merge_body(meshes: list, detachable: list) -> tuple[list, list]:
+    """Join every mesh that is not a swappable part into one 'Body' (AI tools often split a
+    character into many parts: one material and no seams at joints is what a game needs)."""
+    names = [m.name.lower() for m in meshes]
+    wl = [w.lower() for w in detachable]
+
+    def keep(m):   # exact name match first, else substring (same rule as the orchestrator)
+        n = m.name.lower()
+        return any(n == w or (w not in names and w in n) for w in wl)
+
+    kept = [m for m in meshes if keep(m)]          # decide before joining: joined objects vanish
+    body = [m for m in meshes if m not in kept]
+    if len(body) < 2:
+        return meshes, []
+    merged = [m.name for m in body]
+    C.select_only(*body, active=body[0])
+    bpy.ops.object.join()
+    joined = bpy.context.view_layer.objects.active
+    joined.name = "Body"
+    joined.data.name = "Body"
+    return [joined] + kept, merged
+
+
 def run(args: dict) -> dict:
     src = args["source"]
     target_height = args.get("target_height_m")       # None = keep AI scale
@@ -107,6 +130,10 @@ def run(args: dict) -> dict:
     C.select_only(*bpy.data.objects)
     bpy.ops.object.transform_apply(location=True, rotation=True, scale=True)
 
+    merged_from = []
+    if args.get("merge_body_parts", True):
+        meshes, merged_from = _merge_body(meshes, args.get("detachable_parts", []))
+
     diag = (size * scale).length
     merge_dist = max(diag * merge_dist_ratio, 1e-7)
 
@@ -145,6 +172,7 @@ def run(args: dict) -> dict:
         "bone_count": len(arm.data.bones) if arm else 0,
         "scale_applied": scale,
         "unit_fix": unit_fix,
+        "merged_into_body": merged_from,
         "height_m": size.z * scale,
         "cleanup": stats,
     }
