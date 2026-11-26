@@ -94,3 +94,21 @@ def test_resample_chain_even_spacing():
     assert len(pts) == 5 and pts[0].length == 0 and (pts[-1] - pts[0]).length > 3
     steps = [(pts[i + 1] - pts[i]).length for i in range(4)]
     assert max(steps) - min(steps) < 0.3            # about 1 unit each along the 4-unit path
+
+
+def test_budget_goes_to_head_hands_and_joints():
+    import numpy as np
+
+    from forge_bpy import density, joints
+    body = _creature()
+    J = joints.estimate(body)
+    V = joints._verts(body)
+    f, _w, _n = density.region_factors(V, J)
+
+    def at(p):
+        return f[np.argmin(np.linalg.norm(V - np.array(p), axis=1))]
+    head, belly = at((0, -0.12, 1.66)), at((0, -0.16, 1.1))
+    hand, elbow = at((0.78, 0, 1.42)), at(tuple(J["lowerarm_l"][0]))
+    assert head > 1.5 and hand > 1.3 and elbow >= 1.3 and belly < 0.8, (head, hand, elbow, belly)
+    reg = density.region_tris(body, J)
+    assert {"head", "body", "arms", "legs"} <= set(reg) and sum(reg.values()) > 0

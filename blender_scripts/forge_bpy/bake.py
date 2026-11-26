@@ -104,9 +104,66 @@ class _ChannelAsEmission:
                 nt.links.new(prev, out.inputs["Surface"])
 
 
+def build_cage(low, high, max_rel: float = 0.02, min_rel: float = 0.0015, smooth: int = 4):
+    """A bake cage fitted to this part: a copy of the low mesh pushed out at each vertex only
+    as far as the original surface lies outside it there (plus a margin), smoothed.
+
+    With one fixed extrusion for the whole model, rays in deep, narrow places (eye socket,
+    inside an ear, horn base, mouth corner) start beyond a NEIGHBOURING surface and fetch its
+    colour: smears. Fitted per vertex, every ray starts just outside the right surface."""
+    import numpy as np
+    from mathutils.bvhtree import BVHTree
+    dg = bpy.context.evaluated_depsgraph_get()
+    tree = BVHTree.FromObject(high, dg)
+    inv_h = high.matrix_world.inverted()
+    mw = low.matrix_world
+    me = low.data
+    diag = max(low.dimensions.length, 1e-6)
+    lo_d, hi_d = diag * min_rel, diag * max_rel
+    n = len(me.vertices)
+    push = np.full(n, lo_d)
+    for i, v in enumerate(me.vertices):
+        p = inv_h @ (mw @ v.co)
+        nrm = (inv_h.to_3x3() @ (mw.to_3x3() @ v.normal)).normalized()
+        hit = tree.ray_cast(p, nrm, hi_d)                 # original surface outside this point?
+        if hit[0] is not None:
+            push[i] = max(lo_d, hit[3] * 1.25 + lo_d)
+        else:
+            near = tree.find_nearest(p, hi_d)
+            if near[0] is not None:
+                push[i] = max(lo_d, min(near[3] * 1.25 + lo_d, hi_d))
+    # smooth the push between neighbours so the cage does not fold
+    ev = np.empty(len(me.edges) * 2, np.int32)
+    me.edges.foreach_get("vertices", ev)
+    a, b = ev[0::2], ev[1::2]
+    deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)
+    for _ in range(smooth):
+        avg = (np.bincount(a, weights=push[b], minlength=n) + np.bincount(b, weights=push[a], minlength=n)) / deg
+        push = np.maximum(push, 0.5 * push + 0.5 * avg)   # never below what the vertex needs
+    cage_me = me.copy()
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    nr = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("normal", nr)
+    co = co.reshape(-1, 3) + nr.reshape(-1, 3) * (push[:, None] / max(mw.to_scale()[0], 1e-9))
+    cage_me.vertices.foreach_set("co", co.astype(np.float32).ravel())
+    cage_me.update()
+    cage = bpy.data.objects.new(f"{low.name}_cage", cage_me)
+    cage.matrix_world = mw.copy()
+    bpy.context.scene.collection.objects.link(cage)
+    cage.hide_render = True
+    cage["forge_cage"] = True
+    return cage, float(push.max())
+
+
+_CAGE: dict = {"name": None}
+
+
 def _bake(map_type: str, extrusion: float, max_ray: float, margin: int) -> None:
     kw = dict(use_selected_to_active=True, cage_extrusion=extrusion, max_ray_distance=max_ray,
               margin=margin, use_clear=False)       # keep the sentinel where rays miss
+    if _CAGE["name"]:
+        kw.update(use_cage=True, cage_object=_CAGE["name"], cage_extrusion=0.0)
     if map_type == "basecolor":
         bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"}, **kw)
     elif map_type == "normal":
@@ -316,30 +373,40 @@ def run(args: dict) -> dict:
             continue
         diag = max(low.dimensions.length, 1e-6)
         extrusion = diag * extrusion_ratio
+        cage = None
+        if args.get("fitted_cage", True):
+            cage, reach = build_cage(low, high)
+            _CAGE["name"] = cage.name
+            extrusion = max(reach, diag * 0.002)          # max ray reach beyond the cage
         mat = _bake_material(low)
         baked = {}
         cov = _uv_coverage(low, size)
         misses = {}
-        for mtype in maps_wanted:
-            non_color = mtype != "basecolor"
-            img = _new_image(f"T_{part}_{mtype}", size, non_color, SENTINEL)
-            _set_target(mat, img)
-            C.select_only(high, low, active=low)
-            if mtype == "metallic":
-                with _ChannelAsEmission([high], "Metallic"):
+        try:
+            for mtype in maps_wanted:
+                non_color = mtype != "basecolor"
+                img = _new_image(f"T_{part}_{mtype}", size, non_color, SENTINEL)
+                _set_target(mat, img)
+                C.select_only(high, low, active=low)
+                if mtype == "metallic":
+                    with _ChannelAsEmission([high], "Metallic"):
+                        _bake(mtype, extrusion, extrusion * 4, margin)
+                else:
                     _bake(mtype, extrusion, extrusion * 4, margin)
-            else:
-                _bake(mtype, extrusion, extrusion * 4, margin)
-            misses[mtype] = _resolve_sentinel(img, cov, mtype)
-            if args.get("despeckle", True):
-                specks.setdefault(part, {})[mtype] = _despeckle(img, mtype)
-            if mtype == "metallic":
-                cleaned[part] = _clean_metallic(img, float(args.get("metallic_floor", 0.35)))
-            path = os.path.join(out_dir, f"T_{part}_{mtype}.png")
-            img.filepath_raw = path
-            img.file_format = "PNG"
-            img.save()
-            baked[mtype] = img
+                misses[mtype] = _resolve_sentinel(img, cov, mtype)
+                if args.get("despeckle", True):
+                    specks.setdefault(part, {})[mtype] = _despeckle(img, mtype)
+                if mtype == "metallic":
+                    cleaned[part] = _clean_metallic(img, float(args.get("metallic_floor", 0.35)))
+                path = os.path.join(out_dir, f"T_{part}_{mtype}.png")
+                img.filepath_raw = path
+                img.file_format = "PNG"
+                img.save()
+                baked[mtype] = img
+        finally:
+            if cage is not None:
+                _CAGE["name"] = None
+                bpy.data.objects.remove(cage)
         entry = {"maps": {k: os.path.join(out_dir, f"T_{part}_{k}.png") for k in baked}}
         if part in cleaned:
             entry["metallic_cleanup"] = cleaned[part]

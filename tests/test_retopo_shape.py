@@ -187,3 +187,64 @@ def test_despeckle_removes_dots_keeps_edges():
     for y, x in ((20, 10), (30, 20), (31, 21), (50, 10)):
         assert np.allclose(px[y, x, :3], (0.6, 0.35, 0.2), atol=0.05), (y, x, px[y, x])
     assert np.allclose(px[:, 38:42], edge_before)   # the patch border is untouched
+
+
+def _plane(name, z, size=2.0, cuts=8):
+    import bmesh as bm_
+    from mathutils import Matrix
+    bm = bm_.new()
+    bm_.ops.create_grid(bm, x_segments=cuts, y_segments=cuts, size=size / 2, matrix=Matrix.Translation((0, 0, z)))
+    me = bpy.data.meshes.new(name)
+    bm.to_mesh(me)
+    bm.free()
+    o = bpy.data.objects.new(name, me)
+    bpy.context.scene.collection.objects.link(o)
+    return o
+
+
+def _flat_material(name, rgb):
+    m = bpy.data.materials.new(name)
+    m.use_nodes = True
+    bsdf = next(n for n in m.node_tree.nodes if n.type == "BSDF_PRINCIPLED")
+    bsdf.inputs["Base Color"].default_value = (*rgb, 1)
+    return m
+
+
+@pytest.mark.parametrize("fitted", [False, True])
+def test_fitted_cage_does_not_pick_up_a_neighbouring_surface(tmp_path, fitted):
+    """Like the inside of the bull's ear: the right surface is just above the new one, a
+    NEIGHBOURING surface (the ear's back) a little further. A fixed bake distance starts the
+    rays beyond the neighbour and fetches its colour (the smear); the fitted cage does not."""
+    import numpy as np
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    low = _plane("Ear_low", 0.0)
+    bpy.context.view_layer.objects.active = low
+    low.select_set(True)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    right = _plane("Ear", 0.004)
+    right.data.materials.append(_flat_material("skin", (0.8, 0.1, 0.1)))      # red: correct
+    back = _plane("Back", 0.018)
+    back.data.materials.append(_flat_material("back", (0.1, 0.1, 0.8)))       # blue: neighbour
+    # one "high" object with both surfaces (as in a real mesh)
+    bpy.ops.object.select_all(action="DESELECT")
+    right.select_set(True)
+    back.select_set(True)
+    bpy.context.view_layer.objects.active = right
+    bpy.ops.object.join()
+    for o, role in ((low, "low"), (right, "high")):
+        o["forge_role"], o["forge_part"] = role, "Ear"
+    rep = bake.run({"texture_size": 64, "texture_dir": str(tmp_path), "maps": ["basecolor"], "samples": 1,
+                    "device": "CPU", "cage_extrusion_ratio": 0.01, "fitted_cage": fitted, "despeckle": False})
+    img = bpy.data.images.load(rep["parts"]["Ear"]["maps"]["basecolor"])
+    px = np.array(img.pixels[:]).reshape(64, 64, 4)[16:48, 16:48, :3].reshape(-1, 3)
+    red = float(np.mean(px[:, 0] > px[:, 2]))
+    if fitted:
+        assert red > 0.95, red              # the right colour everywhere
+    else:
+        assert red < 0.5, red               # the old fixed distance shows the smear
+    assert not [o for o in bpy.data.objects if o.get("forge_cage")]

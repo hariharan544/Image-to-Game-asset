@@ -123,9 +123,14 @@ def qr_colours(density: np.ndarray) -> np.ndarray:
     return np.clip(out, 0.0, 1.0)
 
 
-def write_qr_density(me, score: np.ndarray, strength: float = 0.8, make_active: bool = True) -> None:
-    """Corner-domain byte colours in sRGB, as Quad Remesher's density brush paints them."""
-    point = qr_colours(qr_density(score, strength))
+def write_qr_density(me, score: np.ndarray, strength: float = 0.8, make_active: bool = True,
+                     factor=None) -> None:
+    """Corner-domain byte colours in sRGB, as Quad Remesher's density brush paints them.
+    factor: optional per-vertex multiplier (importance of the body region)."""
+    dens = qr_density(score, strength)
+    if factor is not None:
+        dens = np.clip(dens * factor, 0.25, 4.0)
+    point = qr_colours(dens)
     nl = len(me.loops)
     lv = np.empty(nl, np.int32)
     me.loops.foreach_get("vertex_index", lv)
@@ -247,3 +252,62 @@ def asymmetry(me, tol_rel: float = 0.006, max_samples: int = 60_000) -> float:
         if hit[0] is None or hit[3] > tol_rel * size:
             off += 1
     return off / len(idx)
+
+
+
+# ----------------------------------------------------------------------------- budget by region
+
+# how much each body region deserves, relative to its surface (games: faces are seen close
+# up and animate; hands gesture; joints bend; a belly or a back is a big smooth area)
+REGION_WEIGHT = {"head": 1.8, "neck": 1.15, "hand": 1.5, "foot": 1.15, "ball": 1.15,
+                 "pelvis": 0.7, "upperarm": 0.85, "lowerarm": 0.9, "thigh": 0.8, "calf": 0.9}
+JOINT_WEIGHT = 1.35
+JOINTS = ("lowerarm", "calf", "upperarm", "thigh", "hand", "foot", "neck")   # bone heads = bends
+
+
+def region_of(key: str) -> str:
+    base = key.rsplit("_", 1)[0] if key.endswith(("_l", "_r")) else key
+    return base
+
+
+def region_factors(V: np.ndarray, J: dict):
+    """Per-vertex importance multiplier and region name index, from the guessed joints."""
+    from .appendages import _dist_to_segments, _segments
+    segs = _segments(J)
+    d, which, where = _dist_to_segments(V, segs)
+    names = [region_of(k) for _a, _b, k in segs]
+    f = np.array([REGION_WEIGHT.get(n, 1.0) for n in names])[which]
+    # rings of extra quads where joints bend: near the head (t~0) of the joint's bone
+    H = float(V[:, 2].max() - V[:, 2].min()) or 1.0
+    for i, (a, _b, k) in enumerate(segs):
+        if region_of(k) in JOINTS:
+            near = np.linalg.norm(V - a, axis=1) < 0.06 * H
+            f[near] = np.maximum(f[near], JOINT_WEIGHT)
+    return f, which, names
+
+
+def region_tris(low_obj, J: dict) -> dict:
+    """Triangles per body region of the new mesh (for the director's budget view)."""
+    from .appendages import _dist_to_segments, _segments
+    me = low_obj.data
+    me.calc_loop_triangles()
+    n = len(me.loop_triangles)
+    if n == 0:
+        return {}
+    tv = np.empty(n * 3, np.int32)
+    me.loop_triangles.foreach_get("vertices", tv)
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    cen = co[tv.reshape(-1, 3)].mean(axis=1)
+    m = np.array(low_obj.matrix_world)
+    P = cen @ m[:3, :3].T + m[:3, 3]
+    segs = _segments(J)
+    _d, which, _w = _dist_to_segments(P, segs)
+    out: dict = {}
+    for i, (_a, _b, k) in enumerate(segs):
+        r = region_of(k)
+        r = {"lowerarm": "arms", "upperarm": "arms", "thigh": "legs", "calf": "legs", "foot": "feet",
+             "ball": "feet", "hand": "hands", "pelvis": "body", "neck": "head", "head": "head"}.get(r, r)
+        out[r] = out.get(r, 0) + int((which == i).sum())
+    return out

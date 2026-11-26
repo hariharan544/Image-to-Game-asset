@@ -219,6 +219,13 @@ class FORGE_OT_step(bpy.types.Operator):
 
         def done(st, rep):
             S._mod("retopo").STATUS["text"] = ""
+            body = S.body_low()
+            if body is not None:                      # where the triangles went, by body region
+                try:
+                    J = S._mod("joints").estimate(body)
+                    rep["regions"] = S._mod("density").region_tris(body, J)
+                except Exception as exc:              # noqa: BLE001
+                    print(f"[forge] region report skipped: {exc}")
             for o in S.lows():                    # show whether mirror symmetry was used
                 r = rep.get("parts", {}).get(o.get("forge_part"))
                 if r is not None:
@@ -476,6 +483,14 @@ def _retopo_rows(rep):
                 out.append(("BLANK1", f"    shape kept{fixed}"))
     if rep.get("total_tris"):
         out.append(("INFO", f"total {rep['total_tris']:,} triangles"))
+    reg = rep.get("regions") or {}
+    if reg:
+        tot = max(sum(reg.values()), 1)
+        order = sorted(reg.items(), key=lambda kv: -kv[1])
+        line = ", ".join(f"{k} {100 * v // tot}%" for k, v in order[:4])
+        out.append(("BLANK1", f"    {line}"))
+        if len(order) > 4:
+            out.append(("BLANK1", "    " + ", ".join(f"{k} {100 * v // tot}%" for k, v in order[4:])))
     return out
 
 

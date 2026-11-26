@@ -146,7 +146,16 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
     for p in parts():
         me = p.data
         if recompute or dens.QR_ATTR not in me.color_attributes:
-            dens.write_qr_density(me, dens.detail_score(me), strength, make_active=False)
+            factor = None
+            if G.kind(p) == "body" and strength > 0:
+                # spend the budget where it matters: face, hands, joints more; belly, back less
+                try:
+                    J = _mod("joints").estimate(p)
+                    V = _mod("joints")._verts(p)
+                    factor = dens.region_factors(V, J)[0] ** strength
+                except Exception as exc:              # noqa: BLE001
+                    print(f"[forge] region weights skipped: {exc}")
+            dens.write_qr_density(me, dens.detail_score(me), strength, make_active=False, factor=factor)
             if G.kind(p) == "body" and strength > 0:
                 # thin extra parts (tail, ears, horns) collapse in a retopology: 4x density
                 try:
