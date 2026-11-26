@@ -314,28 +314,33 @@ def _run_qr(args: dict):
         budget = budgets[obj.name]
         before = C.tri_count(obj)
         backup = obj.data.copy()
-        ok = yield from _qr_part(obj, budget / 2, args, timeout)
+        target = budget / 2                      # quads
+        ok = yield from _qr_part(obj, target, args, timeout)
         used = "quadremesher"
         got = C.tri_count(obj) if ok else 0
-        if ok and got > budget * 1.05:
-            # QR's count is a target, not a cap: one smaller re-run before any decimation
+        if ok and (got > budget * 1.05 or got < budget * 0.7):
+            # QR's count is a target, not a cap (and a density map can make it undershoot):
+            # one corrected re-run before any decimation
+            target = target * (budget / max(got, 1)) * (0.95 if got > budget else 1.0)
             _replace_mesh(obj, backup.copy())
-            ok = yield from _qr_part(obj, budget / 2 * (budget / got) * 0.95, args, timeout)
+            ok = yield from _qr_part(obj, target, args, timeout)
             used = "quadremesher(rerun)"
         shape = None
         if ok and args.get("shape_check", True):
             # did a thin part (tail, tuft, nail tip) collapse? paint it denser and run again
             from .density import boost, shape_loss
             tol = float(args.get("shape_tolerance", 0.008))
+            max_lost = float(args.get("shape_max_lost", 0.002))
             shape = shape_loss(backup, obj.data, tol)
             shape["refined"] = 0
+            shape["rescued"] = 0
             for _ in range(int(args.get("shape_retries", 2))):
-                if shape["lost_ratio"] < float(args.get("shape_max_lost", 0.002)):
+                if shape["lost_ratio"] < max_lost:
                     break
                 boost(backup, shape["mask"])
                 keep = obj.data.copy()
                 _replace_mesh(obj, backup.copy())
-                ok2 = yield from _qr_part(obj, budget / 2, args, timeout)
+                ok2 = yield from _qr_part(obj, target, args, timeout)
                 if not ok2:
                     _replace_mesh(obj, keep)
                     break
@@ -343,7 +348,30 @@ def _run_qr(args: dict):
                 refined = shape["refined"] + 1
                 shape = shape_loss(backup, obj.data, tol)
                 shape["refined"] = refined
+                shape["rescued"] = 0
                 used = "quadremesher(shape-fixed)"
+            if shape["lost_ratio"] >= max_lost and args.get("shape_rescue", True):
+                # still missing: retopologize each lost region on its own and fuse it back
+                from . import rescue
+                total_area = max(rescue.area(backup), 1e-9)
+                rescued = 0
+                for region in rescue.regions(backup, shape["mask"])[:4]:
+                    piece_me = rescue.extract(backup, region)
+                    piece = bpy.data.objects.new(f"{obj.name}_rescue", piece_me)
+                    for col in obj.users_collection:
+                        col.objects.link(piece)
+                    quads = max(150, int(target * 3 * rescue.area(piece_me) / total_area))
+                    ok3 = yield from _qr_part(piece, quads, args, timeout)
+                    if ok3:
+                        rescue.fuse(obj, piece)
+                        rescued += 1
+                    bpy.data.objects.remove(piece)
+                    if piece_me.users == 0:
+                        bpy.data.meshes.remove(piece_me)
+                if rescued:
+                    refined, shape = shape["refined"], shape_loss(backup, obj.data, tol)
+                    shape["refined"], shape["rescued"] = refined, rescued
+                    used = "quadremesher(rescued)"
         if not ok:
             _replace_mesh(obj, backup.copy())
             used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
@@ -352,5 +380,5 @@ def _run_qr(args: dict):
         if shape is not None:
             report[obj.get(C.PART_PROP)]["shape"] = {
                 "lost_pct": round(100 * shape["lost_ratio"], 2), "max_gap_pct": round(100 * shape["max_rel"], 2),
-                "refined": shape["refined"]}
+                "refined": shape["refined"], "rescued": shape.get("rescued", 0)}
     return {"parts": report, "total_tris": sum(r["tris_after"] for r in report.values())}

@@ -217,6 +217,7 @@ class FORGE_OT_step(bpy.types.Operator):
             self.report({"WARNING"}, "Quad Remesher not found: Blender's own remesher is used")
 
         def done(st, rep):
+            S.clay_lows()
             _save_rep(st, "retopo_rep", rep)
             st.retopo = "review"
         run(st, "retopology (Quad Remesher)" if qr else "retopology",
@@ -460,6 +461,8 @@ def _retopo_rows(rep):
                 out.append(("BLANK1", "    paint the lost part red (Paint), run again"))
             else:
                 fixed = f", fixed {sh['refined']}x" if sh.get("refined") else ""
+                if sh.get("rescued"):
+                    fixed += f", {sh['rescued']} thin part(s) rebuilt"
                 out.append(("BLANK1", f"    shape kept{fixed}"))
     if rep.get("total_tris"):
         out.append(("INFO", f"total {rep['total_tris']:,} triangles"))

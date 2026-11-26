@@ -190,6 +190,19 @@ def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8):
     return _mod("retopo").run(args)
 
 
+def clay_lows() -> None:
+    """Plain grey on the new meshes until the bake (the original's material would show the
+    density colours and confuse)."""
+    mat = bpy.data.materials.get("FORGE_clay") or bpy.data.materials.new("FORGE_clay")
+    mat.diffuse_color = (0.62, 0.62, 0.62, 1.0)
+    for o in lows():
+        o.data.materials.clear()
+        o.data.materials.append(mat)
+        a = o.data.color_attributes.get("QR_Density")
+        if a is not None:
+            o.data.color_attributes.remove(a)
+
+
 def undo_retopo() -> None:
     clear_rig()
     _clear("lod")

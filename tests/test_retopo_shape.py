@@ -11,9 +11,10 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_scripts
 
 def _body_with_tail():
     import bmesh
+    bpy.ops.wm.read_homefile(use_empty=True)          # each test starts from an empty scene
     from mathutils import Matrix
     bm = bmesh.new()
-    bmesh.ops.create_icosphere(bm, subdivisions=4, radius=1.0)
+    bmesh.ops.create_icosphere(bm, subdivisions=6, radius=1.0)
     res = bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.04, radius2=0.02, depth=1.0,
                                 matrix=Matrix.Translation((1.45, 0, 0)) @ Matrix.Rotation(1.5708, 4, "Y"))
     vs = set(res["verts"])
@@ -59,7 +60,8 @@ def test_lost_tail_is_detected_painted_and_remeshed(monkeypatch):
         return True
 
     monkeypatch.setattr(retopo, "_qr_part", fake_qr)
-    gen = retopo._run_qr({"target_tris": 100000, "qr_timeout": 5})
+    from forge_bpy import common
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5})
     try:
         while True:
             next(gen)
@@ -70,3 +72,47 @@ def test_lost_tail_is_detected_painted_and_remeshed(monkeypatch):
     assert shape["refined"] == 1 and shape["lost_pct"] < 0.2, shape
     assert max(v.co.x for v in o.data.vertices) > 1.9            # the tail is back
     assert rep["parts"]["Body"]["method"] == "quadremesher(shape-fixed)"
+
+
+def test_thin_part_rescued_when_remesher_keeps_losing_it(monkeypatch):
+    import bmesh as bm_
+    import numpy as np
+
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    from forge_bpy import retopo
+    from forge_send import geometry as G
+    o = _body_with_tail()
+    calls = []
+
+    def stubborn_qr(obj, quads, args, timeout):
+        """Always drops the tail when the body is in the same mesh (as on the director's PC)."""
+        yield 0.0
+        bm = bm_.new()
+        bm.from_mesh(obj.data)
+        has_body = any(v.co.x < 0.5 for v in bm.verts)
+        if has_body:
+            bm_.ops.delete(bm, geom=[v for v in bm.verts if v.co.x > 1.05], context="VERTS")
+            holes = [e for e in bm.edges if e.is_boundary]
+            if holes:
+                bm_.ops.holes_fill(bm, edges=holes)
+        bm.to_mesh(obj.data)
+        bm.free()
+        calls.append("body" if has_body else "piece")
+        return True
+
+    monkeypatch.setattr(retopo, "_qr_part", stubborn_qr)
+    from forge_bpy import common
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    shape = rep["parts"]["Body"]["shape"]
+    assert calls == ["body", "body", "body", "piece"], calls     # 2 density retries, then the rescue
+    assert shape["rescued"] == 1 and shape["max_gap_pct"] < 2.0, shape   # was: the whole tail (~50%)
+    assert max(v.co.x for v in o.data.vertices) > 1.9              # the tail is back
+    a = G.analyse(o)
+    assert a["pieces"] == 1 and a["holes"] == 0, a                  # fused into one closed surface
+    assert rep["parts"]["Body"]["method"] == "quadremesher(rescued)"
+    assert not [x for x in bpy.data.objects if x.name.endswith("_rescue")]
