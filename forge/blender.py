@@ -1,0 +1,78 @@
+"""Run one Blender stage headless and return its result.
+
+Blender is found via (first hit wins):
+  1. FORGE_BLENDER env var (path to blender.exe)
+  2. newest  C:/Program Files/Blender Foundation/Blender */blender.exe  (Windows)
+  3. `blender` on PATH
+  4. the `bpy` pip module in the current Python (dev / CI only)
+"""
+
+from __future__ import annotations
+
+import glob
+import json
+import os
+import re
+import shutil
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+from typing import Optional
+
+SCRIPT = Path(__file__).resolve().parent.parent / "blender_scripts" / "run_stage.py"
+
+
+class BlenderError(RuntimeError):
+    pass
+
+
+def _version_key(path: str) -> tuple:
+    m = re.search(r"Blender (\d+)\.(\d+)", path)
+    return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
+
+
+def find_blender() -> Optional[list[str]]:
+    env = os.environ.get("FORGE_BLENDER")
+    if env:
+        return [env]
+    candidates = glob.glob(r"C:/Program Files/Blender Foundation/Blender */blender.exe")
+    if candidates:
+        return [max(candidates, key=_version_key)]
+    exe = shutil.which("blender")
+    if exe:
+        return [exe]
+    try:
+        import importlib.util
+        if importlib.util.find_spec("bpy") is not None:
+            return [sys.executable]
+    except (ImportError, ValueError):
+        pass
+    return None
+
+
+def run_stage(stage: str, args: dict, log_path: Path, timeout: float = 3600,
+              blender: Optional[list[str]] = None) -> dict:
+    cmd_base = blender or find_blender()
+    if not cmd_base:
+        raise BlenderError("Blender not found. Install Blender 4.2+ or set FORGE_BLENDER to blender.exe")
+    with tempfile.TemporaryDirectory(prefix="forge_") as tmp:
+        a = Path(tmp) / "args.json"
+        r = Path(tmp) / "result.json"
+        a.write_text(json.dumps(args), encoding="utf-8")
+        if cmd_base[0] == sys.executable and "blender" not in Path(cmd_base[0]).name.lower():
+            cmd = [*cmd_base, str(SCRIPT), stage, str(a), str(r)]
+        else:
+            cmd = [*cmd_base, "-b", "--factory-startup", "-P", str(SCRIPT), "--", stage, str(a), str(r)]
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(log_path, "w", encoding="utf-8") as log:
+            try:
+                proc = subprocess.run(cmd, stdout=log, stderr=subprocess.STDOUT, timeout=timeout)
+            except subprocess.TimeoutExpired as exc:
+                raise BlenderError(f"stage {stage} timed out after {timeout}s") from exc
+        if not r.exists():
+            raise BlenderError(f"stage {stage} crashed (exit {proc.returncode}); see {log_path}")
+        payload = json.loads(r.read_text(encoding="utf-8"))
+    if not payload.get("ok"):
+        raise BlenderError(f"stage {stage} failed: {payload.get('error')}\n{payload.get('traceback', '')}")
+    return payload["result"]

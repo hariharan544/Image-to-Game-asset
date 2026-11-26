@@ -1,0 +1,45 @@
+# ============================================================================
+#  CREATIVE GUIDE - the only file the creative director edits.
+#  One entry per asset: an image + a few plain choices. Everything technical
+#  (polygon budgets, texture sizes, rig spec, export settings) comes from the
+#  profiles in guides/profiles/ and can be overridden per asset if needed.
+# ============================================================================
+
+project: Example Game
+
+engines: [unreal, unity]   # export for both
+style: realistic           # realistic | stylized | lowpoly  (add your own in profiles/styles)
+
+defaults:
+  review:
+    concept_checkpoint: true   # look at the 4 generated views before the 3D model is made
+    final_checkpoint: true     # look at the finished asset before it is exported
+  supervisor:
+    backend: rules             # rules = built-in checks; llm = your local AI supervisor
+
+assets:
+  - name: knight
+    image: ../inputs/knight.png
+    type: humanoid             # humanoid | creature | weapon | prop | vehicle | environment
+    tier: hero                 # hero | standard | background  (how close the camera gets)
+    detachable_parts: [sword, shield, helmet]   # exported separately so they can be swapped
+    notes: >
+      Battle-worn plate armour, cape must stay a separate part.
+      Keep the face clean and symmetrical.
+    overrides:
+      topology: {target_height_m: 1.85}
+      rig:
+        sockets: {socket_weapon_r: hand_r, socket_shield_l: hand_l, socket_helmet: head}
+
+  - name: treasure_chest
+    image: ../inputs/chest.png
+    type: prop
+    tier: standard
+    notes: Wooden chest with iron bands. Lid should be a separate part.
+    detachable_parts: [lid]
+
+  - name: fire_sword
+    image: ../inputs/fire_sword.png
+    type: weapon
+    tier: hero
+    style: stylized

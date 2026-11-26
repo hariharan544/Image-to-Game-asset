@@ -1,0 +1,3 @@
+# PBR realism: full map set, detailed generation.
+generation: {texture_quality: detailed, geometry_quality: detailed}
+texture: {maps: [basecolor, normal, roughness, metallic, ao]}

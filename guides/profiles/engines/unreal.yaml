@@ -1,0 +1,2 @@
+# Unreal Engine 5. UE supports more influences, but 4 keeps one asset valid for both engines.
+rig: {spec: unreal, max_influences: 8}

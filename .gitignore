@@ -1,0 +1,18 @@
+# secrets
+.env
+# pipeline outputs
+jobs/
+datasets/
+training/runs/
+training/output/
+inputs/*
+!inputs/README.md
+# python
+__pycache__/
+*.pyc
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+# blender
+*.blend1

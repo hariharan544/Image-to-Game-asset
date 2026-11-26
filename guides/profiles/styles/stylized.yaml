@@ -1,0 +1,4 @@
+# Hand-painted / cartoon look: softer normals, colour carries the detail.
+generation: {texture_quality: detailed, geometry_quality: standard}
+texture: {maps: [basecolor, normal, roughness, ao]}
+uv: {smooth_angle_deg: 60}

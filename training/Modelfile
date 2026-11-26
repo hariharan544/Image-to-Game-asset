@@ -1,0 +1,6 @@
+# Ollama model definition for the fine-tuned supervisor.
+#   ollama create forge-supervisor -f training/Modelfile
+# FROM must point at the GGUF produced in training/README.md step 4.
+FROM ./output/forge-supervisor.gguf
+PARAMETER temperature 0.1
+PARAMETER num_ctx 8192

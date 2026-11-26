@@ -1,0 +1,5 @@
+# Faceted low-poly art: flat shading, no normal map, small budgets.
+generation: {texture_quality: standard, geometry_quality: standard}
+texture: {maps: [basecolor, roughness]}
+topology: {method: decimate, budget_scale: 0.25}
+uv: {smooth_angle_deg: 5}

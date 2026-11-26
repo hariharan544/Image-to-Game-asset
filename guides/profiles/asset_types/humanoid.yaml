@@ -1,0 +1,9 @@
+# Bipedal characters: heroes, NPCs, enemies.
+generation: {use_multiview: true, generate_parts: true}
+topology: {symmetry_x: true, preserve_hard_edges: false}
+uv: {method: min_stretch}
+rig: {enabled: true, rig_type: biped}
+tiers:
+  hero:       {topology: {target_tris: 80000}, texture: {size: 4096}, uv: {texel_density_px_per_m: 1024}}
+  standard:   {topology: {target_tris: 40000}, texture: {size: 2048}, uv: {texel_density_px_per_m: 512}}
+  background: {topology: {target_tris: 15000}, texture: {size: 1024}, uv: {texel_density_px_per_m: 256}}

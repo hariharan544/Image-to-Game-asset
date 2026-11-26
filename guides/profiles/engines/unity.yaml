@@ -1,0 +1,3 @@
+# Unity (HDRP by default for AAA; set export.unity_pipeline: urp for URP).
+rig: {spec: unity, max_influences: 4}
+export: {unity_pipeline: hdrp}

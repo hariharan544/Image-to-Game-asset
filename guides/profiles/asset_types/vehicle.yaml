@@ -1,0 +1,9 @@
+# Cars, carts, ships, mechs (rig only when it has moving parts).
+generation: {use_multiview: true, generate_parts: true}
+topology: {symmetry_x: true, preserve_hard_edges: true}
+uv: {method: angle_seams}
+rig: {enabled: false}
+tiers:
+  hero:       {topology: {target_tris: 120000}, texture: {size: 4096}, uv: {texel_density_px_per_m: 1024}}
+  standard:   {topology: {target_tris: 50000},  texture: {size: 2048}, uv: {texel_density_px_per_m: 512}}
+  background: {topology: {target_tris: 15000},  texture: {size: 1024}, uv: {texel_density_px_per_m: 256}}
