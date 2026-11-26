@@ -21,7 +21,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import bpy  # noqa: E402
 
-from forge_bpy import bake, cleanup, finalize, fixture, metrics, retopo, skin, sysinfo, uv  # noqa: E402
+from forge_bpy import addon_probe, bake, cleanup, finalize, fixture, metrics, retopo, skin, sysinfo, uv  # noqa: E402
 
 STAGES = {
     "cleanup": cleanup.run,
@@ -35,6 +35,7 @@ STAGES = {
     "export": finalize.export,
     "sysinfo": sysinfo.run,
     "fixture": fixture.run,
+    "addon_probe": addon_probe.run,
 }
 
 

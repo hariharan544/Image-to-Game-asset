@@ -119,6 +119,16 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
         state = "enabled" if a["enabled"] else ("installed, NOT enabled" if a["installed"] else "not installed")
         say(f"{'[OK]' if a['enabled'] else '[--]'} {label}: {state}")
 
+    if any(info["addons"][k]["installed"] for k in info["addons"]):
+        try:
+            probe = run_stage("addon_probe", {}, work / "logs" / "addon_probe.log", blender=blender,
+                              factory_startup=False)
+            (work / "addon_probe.json").write_text(json.dumps(probe, indent=2), encoding="utf-8")
+            counts = {k: len(v["operators"]) for k, v in probe["addons"].items()}
+            say(f"[OK] Add-on probe: operators found {counts} -> {work / 'addon_probe.json'}")
+        except BlenderError as exc:
+            say(f"[!] Add-on probe failed: {str(exc).splitlines()[0]}")
+
     if not skip_smoke and ok:
         say("Running the pipeline smoke test inside your Blender ...")
         try:

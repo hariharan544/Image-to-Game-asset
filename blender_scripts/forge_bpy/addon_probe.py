@@ -1,0 +1,120 @@
+"""Stage: document the scripting surface of the paid add-ons in *this* Blender.
+
+Reports, for Quad Remesher, UVPackmaster and Auto-Rig Pro:
+  - module name, display name, version, enabled state
+  - every operator in their bpy.ops namespaces, with parameters for the
+    operators Forge is likely to drive (remesh / pack / smart rig / export ...)
+  - their settings PropertyGroups on Scene / WindowManager with current values
+Forge's add-on adapters are written against this report.
+Run without --factory-startup.
+"""
+
+from __future__ import annotations
+
+import addon_utils
+import bpy
+
+ADDONS = {
+    "quad_remesher": {"names": ("quad remesher", "quad_remesh", "quadremesh", "qremesh"),
+                      "ops_ns": ("qremesh", "quadremesh", "quad_remesh"),
+                      "props": ("qremesh", "quadremesh", "quad_remesh"),
+                      "focus": ("remesh",)},
+    "uvpackmaster": {"names": ("uvpackmaster", "uvpm"),
+                     "ops_ns": ("uvpackmaster", "uvpm"),
+                     "props": ("uvpm", "uvpackmaster"),
+                     "focus": ("pack", "engine", "group", "align", "scale", "texel")},
+    "auto_rig_pro": {"names": ("auto-rig pro", "auto_rig_pro", "autorigpro", "auto rig pro"),
+                     "ops_ns": ("arp",),
+                     "props": ("arp",),
+                     "focus": ("smart", "match", "bind", "export", "guess", "auto_scale", "init",
+                               "skin", "retarget", "remap", "add_marker", "go_detect")},
+}
+MAX_FIELDS = 200
+
+
+def _value(v):
+    if isinstance(v, (bool, int, float, str)) or v is None:
+        return v
+    try:
+        return list(v)[:16]
+    except TypeError:
+        return str(v)[:80]
+
+
+def _op_params(op) -> list[dict]:
+    out = []
+    try:
+        rna = op.get_rna_type()
+    except Exception as exc:  # some add-on ops fail introspection
+        return [{"error": str(exc)[:200]}]
+    for p in rna.properties:
+        if p.identifier == "rna_type":
+            continue
+        entry = {"id": p.identifier, "type": p.type}
+        if p.type == "ENUM":
+            entry["items"] = [i.identifier for i in p.enum_items][:40]
+        try:
+            d = getattr(p, "default", None)
+            entry["default"] = _value(d)
+        except Exception:
+            pass
+        out.append(entry)
+    return out
+
+
+def _group_fields(owner, attr) -> dict:
+    grp = getattr(owner, attr, None)
+    if grp is None or not hasattr(grp, "bl_rna"):
+        return {"value": _value(grp)}
+    fields = {}
+    for p in list(grp.bl_rna.properties)[:MAX_FIELDS]:
+        if p.identifier == "rna_type":
+            continue
+        try:
+            v = getattr(grp, p.identifier)
+            if hasattr(v, "bl_rna") and not isinstance(v, (str, bytes)):
+                v = f"<{type(v).__name__}>"
+            fields[p.identifier] = {"type": p.type, "value": _value(v)}
+        except Exception as exc:
+            fields[p.identifier] = {"type": p.type, "error": str(exc)[:80]}
+    return fields
+
+
+def run(args: dict) -> dict:
+    mods = list(addon_utils.modules())
+    report = {"blender": bpy.app.version_string, "addons": {}}
+    for key, spec in ADDONS.items():
+        found = []
+        for m in mods:
+            info = addon_utils.module_bl_info(m)
+            hay = (m.__name__ + " " + info.get("name", "")).lower()
+            if any(n in hay for n in spec["names"]):
+                found.append({"module": m.__name__, "name": info.get("name"),
+                              "version": _value(info.get("version")),
+                              "enabled": addon_utils.check(m.__name__)[1]})
+        ops = {}
+        for ns in dir(bpy.ops):
+            if not any(n in ns.lower() for n in spec["ops_ns"]):
+                continue
+            group = getattr(bpy.ops, ns)
+            for name in dir(group):
+                if name.startswith("_"):
+                    continue
+                full = f"{ns}.{name}"
+                op = getattr(group, name)
+                if any(f in name.lower() for f in spec["focus"]):
+                    ops[full] = {"params": _op_params(op)}
+                    try:
+                        ops[full]["description"] = op.get_rna_type().description[:200]
+                    except Exception:
+                        pass
+                else:
+                    ops[full] = None          # listed, parameters not needed yet
+        props = {}
+        for owner_name, owner_type, owner in (("Scene", bpy.types.Scene, bpy.context.scene),
+                                              ("WindowManager", bpy.types.WindowManager, bpy.context.window_manager)):
+            for attr in dir(owner_type):
+                if any(n in attr.lower() for n in spec["props"]):
+                    props[f"{owner_name}.{attr}"] = _group_fields(owner, attr)
+        report["addons"][key] = {"found": found, "operators": ops, "settings": props}
+    return report

@@ -12,9 +12,9 @@ import addon_utils
 import bpy
 
 # substrings of add-on module names -> the tools Forge will drive in later phases
-KNOWN_ADDONS = {
-    "quad_remesher": ("quad_remesh", "quadremesh", "qremesh"),
-    "auto_rig_pro": ("auto_rig_pro", "auto-rig-pro", "autorigpro"),
+KNOWN_ADDONS = {   # matched against "module name + display name", lower-case
+    "quad_remesher": ("quad remesher", "quad_remesh", "quadremesh", "qremesh"),
+    "auto_rig_pro": ("auto-rig pro", "auto_rig_pro", "auto-rig-pro", "autorigpro"),
     "uvpackmaster": ("uvpackmaster", "uvpm"),
 }
 
@@ -38,12 +38,14 @@ def _cycles_devices() -> dict:
 
 
 def run(args: dict) -> dict:
-    enabled = sorted({m.__name__ for m in addon_utils.modules() if addon_utils.check(m.__name__)[1]})
-    installed = sorted({m.__name__ for m in addon_utils.modules()})
+    mods = list(addon_utils.modules())
+    label = {m.__name__: (m.__name__ + " " + addon_utils.module_bl_info(m).get("name", "")).lower() for m in mods}
+    enabled = sorted(n for n in label if addon_utils.check(n)[1])
+    installed = sorted(label)
     detected = {}
     for key, needles in KNOWN_ADDONS.items():
-        hit_enabled = [n for n in enabled if any(s in n.lower() for s in needles)]
-        hit_installed = [n for n in installed if any(s in n.lower() for s in needles)]
+        hit_enabled = [n for n in enabled if any(s in label[n] for s in needles)]
+        hit_installed = [n for n in installed if any(s in label[n] for s in needles)]
         detected[key] = {"enabled": bool(hit_enabled), "installed": bool(hit_installed),
                          "module": (hit_enabled or hit_installed or [None])[0]}
     devices = _cycles_devices()

@@ -35,6 +35,13 @@ it in your Blender and exports it for Unreal and Unity. Open
 `jobs\_setup\smoke\export\unreal\SK_SetupTest.fbx` in Unreal, or the Unity one, to see the output
 format. The full report is in `jobs\_setup\blender_report.json`.
 
+## Paid add-ons: probe report
+
+When Quad Remesher, UVPackmaster or Auto-Rig Pro are installed, `forge setup-blender` also writes
+`jobs\_setup\addon_probe.json`. It lists each add-on's version, its operators and parameters, and
+its settings, as they exist in *your* Blender. Forge's add-on adapters are written against this
+file, so send it over after the first setup run.
+
 ## Manual steps (if you prefer)
 
 1. **Blender.** Install the latest release from blender.org, or run
