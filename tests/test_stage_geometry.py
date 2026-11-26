@@ -71,7 +71,7 @@ def test_make_solid_welds_overlapping_pieces():
     bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=0.3, radius2=0.0, depth=1.0,
                           matrix=Matrix.Translation((0.6, 0, 1.0)))      # a horn pushed into the head
     o = _obj("BullBody", bm)
-    o["forge_role"] = "body"
+    o["forge_kind"] = "body"
     rep = G.analyse(o)
     assert rep["big_pieces"] == 2 and rep["needs_weld"]
     G.make_solid(o, resolution=64)
@@ -88,7 +88,7 @@ def test_collect_sizes_and_lays_out_parts_then_mirror():
     bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=0.5, radius2=0.5, depth=0.3)
     band = _obj("wrist band", bm)
     info = G.collect([body, bell, band], target_height=1.8)
-    assert body.get("forge_role") == "body" and bell.get("forge_role") == "prop"
+    assert body.get("forge_kind") == "body" and bell.get("forge_kind") == "prop"
     assert info["body"] == "BullBody2" and set(info["new"]) == {"bell", "wrist band"}
     lo, hi = G.world_bounds(body)
     assert abs((hi.z - lo.z) - 1.8) < 1e-3 and abs(lo.z) < 1e-4 and abs(lo.x + hi.x) < 1e-3

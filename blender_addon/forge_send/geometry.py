@@ -13,7 +13,7 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 PARTS_COLLECTION = "Forge Parts"
-ROLE = "forge_role"            # "body" | "prop"
+ROLE = "forge_kind"            # "body" | "prop"   (forge_role is the pipeline's high/low)
 BACKUP = "forge_backup_mesh"   # mesh datablock name kept for "Undo repair"
 
 # starting size of a newly generated prop, as a fraction of the body height (guessed by name)
@@ -29,7 +29,12 @@ def mesh_parts(scene) -> list:
     col = bpy.data.collections.get(PARTS_COLLECTION)
     if not col:
         return []
-    return [o for o in col.objects if o.type == "MESH"]
+    parts = [o for o in col.objects if o.type == "MESH"]
+    for o in parts:                       # files from add-on 1.1 stored the kind in forge_role
+        if ROLE not in o and o.get("forge_role") in ("body", "prop"):
+            o[ROLE] = o["forge_role"]
+            del o["forge_role"]
+    return parts
 
 
 def body_of(parts: list):

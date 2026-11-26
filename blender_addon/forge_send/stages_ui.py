@@ -21,8 +21,6 @@ from . import geometry as G
 STATUS = [("todo", "To do", ""), ("review", "Waiting for you", ""), ("approved", "Approved", "")]
 ICON = {"todo": "COLORSET_13_VEC", "review": "COLORSET_04_VEC", "approved": "COLORSET_03_VEC"}
 OK_ICON, BAD_ICON = "COLORSET_03_VEC", "COLORSET_01_VEC"
-NEXT_STAGES = ["4  Retopology (Quad Remesher)", "5  UVs (UVPackmaster)", "6  Detail bake (normal + AO)",
-               "7  Colour texture (AI, on the clean model)", "8  Rig + pose test", "9  Export Unreal / Unity"]
 
 
 class ForgeStageState(bpy.types.PropertyGroup):
@@ -34,6 +32,27 @@ class ForgeStageState(bpy.types.PropertyGroup):
                            description="Detail of the welded shell (higher = finer, heavier)")
     report: StringProperty(default="{}")          # JSON: part -> analysis after repair
     fixed: StringProperty(default="{}")           # JSON: part -> what the repair did
+    # steps 4-9 (stages_late.py)
+    retopo: EnumProperty(items=STATUS, default="todo")
+    uv: EnumProperty(items=STATUS, default="todo")
+    bake: EnumProperty(items=STATUS, default="todo")
+    colour: EnumProperty(items=STATUS, default="todo")
+    rig: EnumProperty(items=STATUS, default="todo")
+    export: EnumProperty(items=STATUS, default="todo")
+    budget: IntProperty(name="Triangles (Unreal)", default=30000, min=500, max=500000,
+                        description="Triangle budget for the whole character in Unreal (all parts together)")
+    budget_unity: IntProperty(name="Triangles (Unity)", default=8000, min=300, max=200000,
+                              description="Triangle budget for the Unity mobile version")
+    tex_size: EnumProperty(name="Texture size", default="2048",
+                           items=[("1024", "1K", ""), ("2048", "2K", ""), ("4096", "4K", "")])
+    rig_phase: StringProperty(default="")         # "" | "joints" | "built"
+    busy: StringProperty(default="")
+    error: StringProperty(default="")
+    retopo_rep: StringProperty(default="{}")
+    uv_rep: StringProperty(default="{}")
+    bake_rep: StringProperty(default="{}")
+    rig_rep: StringProperty(default="{}")
+    export_rep: StringProperty(default="{}")
 
 
 # ----------------------------------------------------------------------------- helpers
@@ -210,12 +229,8 @@ class FORGE_OT_reopen(bpy.types.Operator):
     stage: StringProperty()
 
     def execute(self, context):
-        st = _st(context)
-        if self.stage == "assemble":
-            st.assemble = "review"
-            st.repair = "todo"
-        elif self.stage == "repair":
-            st.repair = "review"
+        from .stages_late import reopen
+        reopen(_st(context), self.stage)
         return {"FINISHED"}
 
 
@@ -455,13 +470,9 @@ class FORGE_PT_stages(bpy.types.Panel):
                 row.alert = True
                 row.operator("forge.stage_undo_repair", icon="CANCEL")
 
-        # ---------------------------------------------------------------- next
-        box = layout.box()
-        box.enabled = False
-        col = box.column(align=True)
-        col.label(text="Coming next:")
-        for s in NEXT_STAGES:
-            col.label(text=s, icon="COLORSET_13_VEC")
+        # ---------------------------------------------------------------- steps 4-9
+        from .stages_late import draw_late
+        draw_late(layout, context)
 
 
 CLASSES = (ForgeStageState, FORGE_OT_collect, FORGE_OT_set_body, FORGE_OT_select_part, FORGE_OT_to_cursor,
@@ -471,12 +482,14 @@ CLASSES = (ForgeStageState, FORGE_OT_collect, FORGE_OT_set_body, FORGE_OT_select
 
 
 def register():
-    for c in CLASSES:
+    from . import stages_late
+    for c in CLASSES + stages_late.CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.forge_stage = PointerProperty(type=ForgeStageState)
 
 
 def unregister():
+    from . import stages_late
     del bpy.types.Scene.forge_stage
-    for c in reversed(CLASSES):
+    for c in reversed(CLASSES + stages_late.CLASSES):
         bpy.utils.unregister_class(c)

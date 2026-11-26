@@ -1,0 +1,134 @@
+"""Steps 4-9 of the in-Blender workflow, clicked through on a test character.
+
+Quad Remesher / UVPackmaster / Auto-Rig Pro are not installed here: the steps must fall
+back (Blender remesher / packer) or stop with a clear message (rig), never crash.
+"""
+
+import importlib
+import json
+import sys
+from pathlib import Path
+
+import pytest
+
+bpy = pytest.importorskip("bpy")
+
+ROOT = Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(ROOT / "blender_addon"))
+sys.path.insert(0, str(ROOT / "blender_scripts"))
+
+
+def test_steps_4_to_9(tmp_path):
+    from forge_bpy import fixture
+
+    F = importlib.import_module("forge_send")
+    F.register()
+    try:
+        fixture.humanoid({"out": str(tmp_path / "h.glb")})      # body + sword + skeleton
+        for o in list(bpy.data.objects):
+            if o.type == "ARMATURE":
+                bpy.data.objects.remove(o)
+        body, sword = bpy.data.objects["Body"], bpy.data.objects["Sword"]
+        for o in (body, sword):
+            o.parent = None
+            o.vertex_groups.clear()
+            for m in list(o.modifiers):
+                o.modifiers.remove(m)
+        bpy.context.view_layer.update()
+        for o in bpy.context.view_layer.objects:
+            o.select_set(o.name in ("Body", "Sword"))
+        bpy.ops.wm.save_as_mainfile(filepath=str(tmp_path / "hero.blend"))
+        st = bpy.context.scene.forge_stage
+        st.height_m = 1.8
+        assert bpy.ops.forge.stage_collect() == {"FINISHED"}
+        assert bpy.ops.forge.stage_approve_layout() == {"FINISHED"}
+        assert bpy.ops.forge.stage_repair() == {"FINISHED"}
+        assert bpy.ops.forge.stage_approve_repair() == {"FINISHED"}
+
+        # 4 retopology (no Quad Remesher here -> Blender's remesher, reported as a fallback)
+        st.budget = 4000
+        assert bpy.ops.forge.step(action="retopo_run") == {"FINISHED"}, st.error
+        assert st.retopo == "review", st.error
+        rep = json.loads(st.retopo_rep)
+        assert set(rep["parts"]) == {"Body", "Sword"} and rep["total_tris"] <= 4000 * 1.1
+        lows = [o for o in bpy.data.objects if o.get("forge_role") == "low"]
+        assert len(lows) == 2 and all(o.name.endswith("_low") for o in lows)
+        assert bpy.data.objects["Body_low"]["forge_symmetry_x"] and not bpy.data.objects["Sword_low"]["forge_symmetry_x"]
+        assert bpy.data.objects["Body"].hide_get()                   # original kept, hidden
+        bpy.ops.forge.step(action="retopo_compare")
+        assert not bpy.data.objects["Body"].hide_get() and bpy.data.objects["Body"].location.x > 0
+        assert bpy.ops.forge.step(action="retopo_approve") == {"FINISHED"}
+        assert bpy.data.objects["Body"].location.x == 0 and st.retopo == "approved"
+
+        # 5 UVs
+        st.tex_size = "1024"
+        assert bpy.ops.forge.step(action="uv_run") == {"FINISHED"} and st.uv == "review", st.error
+        uv = json.loads(st.uv_rep)["parts"]
+        assert all(r["has_uv"] and r["overlap_pct"] < 1.0 for r in uv.values()), uv
+        bpy.ops.forge.step(action="uv_checker")
+        assert all(o.data.materials[0].name == "FORGE_UV_CHECKER" for o in lows)
+        assert bpy.ops.forge.step(action="uv_approve") == {"FINISHED"}
+        assert all(o.data.materials[0].name != "FORGE_UV_CHECKER" for o in lows)
+
+        # 6 bake (CPU here)
+        assert bpy.ops.forge.step(action="bake_run") == {"FINISHED"} and st.bake == "review", st.error
+        bake = json.loads(st.bake_rep)["parts"]
+        assert set(bake["Body"]["maps"]) == {"basecolor", "normal", "roughness", "metallic", "ao"}
+        assert all(Path(p).exists() for p in bake["Body"]["maps"].values())
+        assert bake["Body"]["bake_miss_ratio"] < 0.1
+        mat = bpy.data.objects["Body_low"].data.materials[0]
+        imgs = {n.image.name for n in mat.node_tree.nodes if n.type == "TEX_IMAGE"}
+        assert {"T_Body_basecolor", "T_Body_normal"} <= imgs
+        assert bpy.ops.forge.step(action="bake_approve") == {"FINISHED"}
+
+        # 7 colour: Tripo round trip with the exported part (same shape) re-imported
+        assert bpy.ops.forge.step(action="colour_tripo") == {"FINISHED"}
+        glb = tmp_path / "hero_forge" / "retexture" / "Sword.glb"
+        assert glb.exists()
+        bpy.context.view_layer.objects.active = bpy.data.objects["Sword_low"]
+        assert bpy.ops.forge.import_retexture(filepath=str(glb)) == {"FINISHED"}, st.error
+        m = bpy.data.objects["Sword_low"].data.materials
+        assert len(m) == 1 and {"T_Sword_basecolor", "T_Sword_normal"} <= {
+            n.image.name for n in m[0].node_tree.nodes if n.type == "TEX_IMAGE"}
+        assert len([o for o in bpy.data.objects if o.type == "MESH"]) == 4   # import cleaned up
+        assert bpy.ops.forge.step(action="colour_approve") == {"FINISHED"}
+
+        # 8 rig: Auto-Rig Pro missing -> clear message, nothing broken
+        try:
+            bpy.ops.forge.step(action="rig_place")
+        except RuntimeError:
+            pass
+        assert "Auto-Rig Pro" in st.error and st.rig == "todo"
+
+        # 9 export without a rig (static meshes) - Unreal + Unity
+        S = importlib.import_module("forge_send.steps")
+        bake_rep = json.loads(st.bake_rep)
+        un = S.export_engine("unreal", bake_rep)
+        ui = S.export_engine("unity", bake_rep, unity_budget=1500)
+        assert Path(un["meshes"]["body"]).exists() and Path(ui["meshes"]["body"]).exists()
+        assert any(p.endswith("_ORM.png") for p in un["textures"]["Body"].values())
+        assert Path(un["preview"]).exists()
+        names = sorted(o.name for o in bpy.data.objects if o.type == "MESH")
+        assert names == ["Body", "Body_low", "Sword", "Sword_low"], names     # temp copies gone
+    finally:
+        F.unregister()
+
+
+def test_joint_guess_on_t_pose():
+    from forge_bpy import fixture, joints
+    from mathutils import Vector
+
+    fixture.humanoid({"out": "/tmp/_forge_h.glb"})
+    J = joints.estimate(bpy.data.objects["Body"])
+    ref = {n: Vector(h) for n, p, h, t in fixture.UE_SKELETON}
+    pairs = {"pelvis": "pelvis", "neck": "neck_01", "head": "head"}
+    for s in "lr":
+        for k in ("clavicle", "upperarm", "lowerarm", "hand", "thigh", "calf", "foot", "ball"):
+            pairs[f"{k}_{s}"] = f"{k}_{s}"
+    worst = max((J[k][0] - ref[v]).length for k, v in pairs.items())
+    assert worst < 0.08 * 1.8, worst                       # within 8% of the body height
+    assert J["hand_l"][0].x > 0 and J["hand_r"][0].x < 0 and J["_front"] == -1.0
+    from forge_bpy.arp_rig import missing_joints, ref_targets
+    assert not missing_joints(J)
+    t = ref_targets(J, 0.0, 1.8)
+    assert {"thumb1_ref.l", "index1_base_ref.l", "foot_heel_ref.r", "head_ref.x"} <= set(t)

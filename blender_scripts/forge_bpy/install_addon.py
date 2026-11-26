@@ -26,6 +26,9 @@ def run(args: dict) -> dict:
         addon_utils.disable(name, default_set=True)
     shutil.rmtree(dst, ignore_errors=True)
     shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
+    # the step-by-step panel runs the pipeline's stage code inside Blender: ship a copy
+    shutil.copytree(os.path.dirname(os.path.abspath(__file__)), os.path.join(dst, "forge_bpy"),
+                    ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
     with open(os.path.join(dst, "forge_project.json"), "w", encoding="utf-8") as f:
         json.dump({"project": args["project"], "forge": args.get("forge_exe")}, f, indent=2)
     # a scripts/addons folder created just now is not on Blender's import path yet

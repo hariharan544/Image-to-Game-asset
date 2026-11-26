@@ -48,7 +48,7 @@ def _quadriflow(obj, target_tris: int, opts: dict) -> bool:
         res = bpy.ops.object.quadriflow_remesh(
             mode="FACES",
             target_faces=max(int(target_tris / 2), 50),   # quads -> 2 tris each
-            use_mesh_symmetry=bool(opts.get("symmetry_x", False)),
+            use_mesh_symmetry=bool(obj.get("forge_symmetry_x", opts.get("symmetry_x", False))),
             use_preserve_sharp=bool(opts.get("preserve_hard_edges", True)),
             use_preserve_boundary=True,
             preserve_attributes=False,
@@ -266,7 +266,7 @@ def _qr_part(obj, quads: int, args: dict, timeout: float):
     s.use_materials = False
     s.use_normals = False
     s.autodetect_hard_edges = bool(args.get("preserve_hard_edges", True))
-    s.symmetry_x = bool(args.get("symmetry_x", False))
+    s.symmetry_x = bool(obj.get("forge_symmetry_x", args.get("symmetry_x", False)))
     s.symmetry_y = s.symmetry_z = False
     C.select_only(obj)
     before = {o.name for o in bpy.data.objects}

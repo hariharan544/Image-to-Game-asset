@@ -200,21 +200,15 @@ def _place_refs(rig, targets: dict) -> dict:
     return {"placed": len(placed), "missing_in_arp": skipped}
 
 
-def build(args: dict) -> dict:
-    """Run inside a stage. Returns a report; raises on failure (caller falls back)."""
-    src = next((o for o in bpy.data.objects if o.type == "ARMATURE" and o.get(C.ROLE_PROP) == "rig"
-                and not o.get("forge_arp")), None)
-    if src is None:
-        raise RuntimeError("no source armature to rebuild")
-    joints = find_joints(src)
+def place(joints: dict, lows: list, args: dict):
+    """Append Auto-Rig Pro's reference rig and move its bones onto `joints`.
+    Returns (ref_rig, report). The director may adjust the reference bones afterwards."""
     miss = missing_joints(joints)
     if miss:
-        raise RuntimeError(f"source skeleton lacks joints ARP needs: {miss}")
-    lows = C.meshes_with_role("low")
+        raise RuntimeError(f"joints missing: {miss}")
     ground = min((o.matrix_world @ Vector(c)).z for o in lows for c in o.bound_box)
     top = max((o.matrix_world @ Vector(c)).z for o in lows for c in o.bound_box)
     targets = ref_targets(joints, ground, top)
-
     C.ensure_object_mode()
     before = {o.name for o in bpy.data.objects}
     bpy.context.scene.cursor.location = (0, 0, 0)
@@ -225,23 +219,45 @@ def build(args: dict) -> dict:
     if rig is None:
         raise RuntimeError(f"ARP append produced no reference rig ({[o.name for o in new_arms]})")
     rig.location = (0, 0, 0)
+    for o in bpy.data.objects:
+        if o.name not in before and o != rig:
+            o["forge_arp_helper"] = True
     report = {"source_joints": sorted(k for k in joints if not k.startswith("_")),
               "spine_bones": len(joints.get("_spine", []))}
     report.update(_place_refs(rig, targets))
+    bpy.ops.object.mode_set(mode="OBJECT")
+    return rig, report
+
+
+def nearest_bone(rig, point: Vector, deform_only: bool = True) -> str:
+    """Name of the (deform) bone whose segment is closest to `point` (world space)."""
+    from mathutils.geometry import intersect_point_line
+    inv = rig.matrix_world.inverted()
+    p = inv @ point
+    best, best_d = None, float("inf")
+    for b in rig.data.bones:
+        if deform_only and not b.use_deform:
+            continue
+        q, t = intersect_point_line(p, b.head_local, b.tail_local)
+        q = b.head_local if t < 0 else (b.tail_local if t > 1 else q)
+        d = (p - q).length
+        if d < best_d:
+            best, best_d = b.name, d
+    return best
+
+
+def finish(rig, body: list, props: list, args: dict) -> dict:
+    """match_to_rig, bind the body (heat map), weld each prop 100% to one bone."""
+    report: dict = {}
+    C.select_only(rig)
+    bpy.ops.object.mode_set(mode="EDIT")
     with bpy.context.temp_override(**_ov()):
         bpy.ops.arp.match_to_rig()
     bpy.ops.object.mode_set(mode="OBJECT")
     rig = bpy.data.objects.get(rig.name)
     rig[C.ROLE_PROP] = "rig"
     rig["forge_arp"] = True
-    for o in bpy.data.objects:
-        if o.name not in before and o != rig:
-            o["forge_arp_helper"] = True
-
-    detachable = set(args.get("detachable_parts", []))
-    body = [o for o in lows if o.get(C.PART_PROP) not in detachable]
-    props = [o for o in lows if o.get(C.PART_PROP) in detachable]
-    for o in lows:                      # drop the AI skeleton binding
+    for o in body + props:              # drop any older binding
         for m in [m for m in o.modifiers if m.type == "ARMATURE"]:
             o.modifiers.remove(m)
         mw = o.matrix_world.copy()
@@ -255,6 +271,7 @@ def build(args: dict) -> dict:
     for o in bpy.context.view_layer.objects:
         o.select_set(False)
     for o in body:
+        o.hide_set(False)
         o.select_set(True)
     rig.select_set(True)
     bpy.context.view_layer.objects.active = rig
@@ -262,7 +279,6 @@ def build(args: dict) -> dict:
         bpy.ops.arp.bind_to_rig()
     report["bind_engine"] = engine
     # ARP's binding does not respect the engine's influence limit nor normalise: do it here
-    # (measured on the first real asset: 1217 vertices over the limit, 74% not normalised)
     from .skin import _cleanup_weights
     deform = {b.name for b in rig.data.bones if b.use_deform}
     max_inf = int(args.get("max_influences", 4))
@@ -270,23 +286,48 @@ def build(args: dict) -> dict:
     report["weight_cleanup"] = {o.get(C.PART_PROP): _cleanup_weights(o, max_inf, min_w, deform) for o in body}
     report["body_vertex_groups"] = {o.get(C.PART_PROP): len(o.vertex_groups) for o in body}
 
-    # props: 100% to their socket bone (engine sockets attach to the same bone)
+    # props: 100% to one bone - the named socket bone, else the nearest deform bone
     sockets = args.get("sockets", {})
     report["props"] = {}
     for p in props:
-        key = next((v for k, v in sockets.items() if p.get(C.PART_PROP).lower() in k.lower()), "hand_r")
-        bone = ARP_SOCKET_BONES.get(key, "hand.r")
-        if bone not in rig.data.bones:
-            bone = "hand.r"
+        part = p.get(C.PART_PROP)
+        key = next((v for k, v in sockets.items() if part.lower() in k.lower()), None)
+        bone = ARP_SOCKET_BONES.get(key) if key else None
+        if not bone or bone not in rig.data.bones:
+            lo = p.matrix_world @ Vector(p.bound_box[0])
+            hi = p.matrix_world @ Vector(p.bound_box[6])
+            bone = nearest_bone(rig, (lo + hi) / 2) or "hand.r"
         vg = p.vertex_groups.new(name=bone)
         vg.add(list(range(len(p.data.vertices))), 1.0, "REPLACE")
         m = p.modifiers.new("Armature", "ARMATURE")
         m.object = rig
         p.parent = rig
         p.matrix_parent_inverse = rig.matrix_world.inverted()
-        report["props"][p.get(C.PART_PROP)] = bone
+        report["props"][part] = bone
     report["sockets"] = {k: ARP_SOCKET_BONES.get(v, v) for k, v in sockets.items()}
+    report["rig"] = rig.name
+    report["bones"] = len(rig.data.bones)
+    report["deform_bones"] = sum(1 for b in rig.data.bones if b.use_deform)
+    return report
 
+
+def build(args: dict) -> dict:
+    """Full-auto pipeline: rebuild the AI (Tripo) skeleton as an ARP rig.
+    Returns a report; raises on failure (caller falls back)."""
+    src = next((o for o in bpy.data.objects if o.type == "ARMATURE" and o.get(C.ROLE_PROP) == "rig"
+                and not o.get("forge_arp")), None)
+    if src is None:
+        raise RuntimeError("no source armature to rebuild")
+    joints = find_joints(src)
+    miss = missing_joints(joints)
+    if miss:
+        raise RuntimeError(f"source skeleton lacks joints ARP needs: {miss}")
+    lows = C.meshes_with_role("low")
+    rig, report = place(joints, lows, args)
+    detachable = set(args.get("detachable_parts", []))
+    body = [o for o in lows if o.get(C.PART_PROP) not in detachable]
+    props = [o for o in lows if o.get(C.PART_PROP) in detachable]
+    report.update(finish(rig, body, props, args))
     # the AI skeleton is no longer needed (high meshes keep theirs only as bake sources)
     for o in list(bpy.data.objects):
         if o.type == "MESH" and o.get(C.ROLE_PROP) == "high":
@@ -296,7 +337,4 @@ def build(args: dict) -> dict:
     bpy.data.objects.remove(src)
     for o in C.meshes_with_role("weights"):       # rig-file meshes were only a weight source
         bpy.data.objects.remove(o)
-    report["rig"] = rig.name
-    report["bones"] = len(rig.data.bones)
-    report["deform_bones"] = sum(1 for b in rig.data.bones if b.use_deform)
     return report
