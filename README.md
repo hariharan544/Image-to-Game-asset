@@ -68,6 +68,31 @@ Tips for Studio downloads:
 * **Set `topology: {target_height_m: ...}`** to fix the real-world size. A model that comes in
   centimetres is detected and scaled automatically.
 
+## The Blender panel: Tripo Studio → Bridge → Blender → Forge
+
+The easiest way to work with option B is the **Send to Forge** panel inside Blender. Install it
+once, with every Blender window closed:
+
+```bat
+.venv\Scripts\forge.exe install-blender-addon
+```
+
+Daily workflow:
+1. In **Tripo Studio**, generate and auto-rig the character. Click **Export → Send to Blender**
+   (Tripo DCC Bridge).
+2. In Blender, select the model, press **N** and open the **Forge** tab.
+3. Set the **name**, **type**, **tier**, **swappable parts** (select parts → ➕), **height**,
+   **notes** and, optionally, the **concept image**.
+4. Click **Send to Forge**. The panel:
+   * exports a GLB to `inputs\`;
+   * adds the asset to `guides\from_blender.yaml`;
+   * starts the pipeline in a console window.
+5. The panel shows the status. When it says *Waiting for you*, click **Open review**, then
+   **Approve**, or **Reject** with notes and a stage to rebuild from (e.g. `bake@unity`).
+
+The pipeline's own Blender windows switch the Tripo Bridge off inside themselves, so the
+Bridge always stays connected to *your* Blender.
+
 ## Making assets (the director's workflow)
 
 1. Put concept images in `inputs/`: one object per image, plain background.

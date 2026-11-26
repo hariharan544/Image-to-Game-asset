@@ -161,6 +161,32 @@ def cmd_setup_blender(a) -> int:
                addon_trial2=a.addon_trial2)
 
 
+def cmd_install_addon(a) -> int:
+    """Install + enable the "Send to Forge" panel in the user's Blender."""
+    from .blender import BlenderError, find_blender, run_stage
+    root = Path(__file__).resolve().parent.parent
+    blender = [a.blender] if a.blender else find_blender()
+    if not blender:
+        print("Blender not found (run `forge setup-blender` first)", file=sys.stderr)
+        return 1
+    venv = root / ".venv" / ("Scripts/forge.exe" if os.name == "nt" else "bin/forge")
+    print("Close every Blender window first - an open Blender overwrites the preferences when it quits.")
+    try:
+        res = run_stage("install_addon", {"src": str(root / "blender_addon" / "forge_send"),
+                                          "project": str(root), "forge_exe": str(venv) if venv.exists() else None},
+                        Path(a.jobs) / "_setup" / "logs" / "install_addon.log",
+                        blender=blender, factory_startup=False)
+    except BlenderError as exc:
+        print(f"[X] install failed: {exc}", file=sys.stderr)
+        return 1
+    if not res.get("enabled"):
+        print(f"[X] installed to {res['installed_to']} but could not be enabled: {res.get('errors')}")
+        return 1
+    print(f"[OK] Forge panel installed and enabled ({res['installed_to']}).")
+    print("     Open Blender > 3D Viewport > press N > 'Forge' tab.")
+    return 0
+
+
 def main(argv=None) -> int:
     _load_dotenv()
     p = argparse.ArgumentParser(prog="forge", description="Image -> game-ready 3D asset pipeline")
@@ -195,6 +221,10 @@ def main(argv=None) -> int:
     b.add_argument("--addon-trial2", action="store_true",
                    help="Auto-Rig Pro full flow (rig, bind, engine export) + a real UVPackmaster pack")
     b.set_defaults(fn=cmd_setup_blender)
+
+    ia = sub.add_parser("install-blender-addon", help="install the 'Send to Forge' panel into Blender")
+    ia.add_argument("--blender", help="path to blender.exe (default: the one Forge uses)")
+    ia.set_defaults(fn=cmd_install_addon)
 
     c = sub.add_parser("check", help="verify the environment")
     c.set_defaults(fn=cmd_check)

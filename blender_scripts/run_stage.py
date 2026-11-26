@@ -32,7 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import bpy  # noqa: E402
 
 from forge_bpy import (addon_probe, addon_trial, bake, cleanup, finalize, fixture,  # noqa: E402
-                       metrics, retopo, skin, sysinfo, uv)
+                       install_addon, metrics, retopo, skin, sysinfo, uv)
 
 STAGES = {
     "cleanup": cleanup.run,
@@ -49,6 +49,7 @@ STAGES = {
     "addon_probe": addon_probe.run,
     "addon_trial": addon_trial.run,
     "addon_trial2": addon_trial.run_v2,
+    "install_addon": install_addon.run,
 }
 
 
@@ -88,6 +89,19 @@ def _ensure_addons(needles: list) -> None:
                 addon_utils.enable(m.__name__, default_set=False, persistent=False)
             except Exception:
                 pass          # the stage itself falls back when the add-on is missing
+
+
+def _disable_addons(needles: list) -> None:
+    """Switch add-ons off for this process only (preferences are not saved). Used for the Tripo
+    DCC Bridge: it binds to one Blender, which must be the director's, not a pipeline window."""
+    import addon_utils
+    for m in addon_utils.modules():
+        hay = (m.__name__ + " " + addon_utils.module_bl_info(m).get("name", "")).lower()
+        if any(n in hay for n in needles) and addon_utils.check(m.__name__)[1]:
+            try:
+                addon_utils.disable(m.__name__, default_set=False)
+            except Exception:
+                pass
 
 
 def _start(stage: str, args: dict):
@@ -139,6 +153,7 @@ def run_windowed(stage: str, args: dict, result_path: str) -> None:
                 state["loaded"] = True
                 return 0.5
             if state["gen"] is None:
+                _disable_addons(["tripo"])            # keep the DCC Bridge for the director's Blender
                 if args.get("ensure_addons"):
                     _ensure_addons([n.lower() for n in args["ensure_addons"]])
                 out = _in_view3d(lambda: STAGES[stage](args))
