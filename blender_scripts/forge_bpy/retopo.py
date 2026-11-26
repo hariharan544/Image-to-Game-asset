@@ -146,8 +146,87 @@ def _opts(args: dict) -> dict:
             "seed": args.get("seed", 0)}
 
 
+def _shell_count(obj) -> int:
+    bm = bmesh.new()
+    bm.from_mesh(obj.data)
+    bm.verts.ensure_lookup_table()
+    seen, shells = set(), 0
+    for v in bm.verts:
+        if v.index in seen:
+            continue
+        shells += 1
+        stack = [v]
+        while stack:
+            cur = stack.pop()
+            if cur.index in seen:
+                continue
+            seen.add(cur.index)
+            stack.extend(e.other_vert(cur) for e in cur.link_edges)
+    bm.free()
+    return shells
+
+
+def _displace(obj, dist: float) -> None:
+    mod = obj.modifiers.new("forge_offset", "DISPLACE")
+    mod.direction = "NORMAL"
+    mod.mid_level = 0.0
+    mod.strength = dist
+    C.select_only(obj)
+    bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+
+
+def _fuse(obj, voxel_rel: float, max_tris: int, close_rel: float = 0.006) -> dict:
+    """Melt all shells of a part into ONE watertight surface (voxel remesh), like a sculptor's
+    DynaMesh before ZRemesher. Closes the gaps between touching pieces, open paper-thin parts
+    (hair spikes) and holes, and drops buried duplicate geometry. The original detail is not
+    lost: it is baked back from the untouched high mesh."""
+    shells_before = _shell_count(obj)
+    size = max(obj.dimensions) or 1.0
+    close = size * close_rel
+    if close > 0:                     # morphological close: inflate so touching pieces overlap ...
+        _displace(obj, close)
+    mod = obj.modifiers.new("forge_fuse", "REMESH")
+    mod.mode = "VOXEL"
+    mod.voxel_size = max(size * voxel_rel, 1e-4)
+    mod.adaptivity = 0.0
+    mod.use_smooth_shade = True
+    C.select_only(obj)
+    bpy.ops.object.modifier_move_to_index(modifier=mod.name, index=0)
+    bpy.ops.object.modifier_apply(modifier=mod.name)
+    if close > 0:                     # ... and deflate back to the original size
+        _displace(obj, -close)
+    if C.tri_count(obj) > max_tris:                 # keep the remesher's input reasonable
+        _decimate(obj, max_tris)
+    return {"shells_before": shells_before, "shells_after": _shell_count(obj),
+            "voxel_size_m": round(size * voxel_rel, 5), "gap_closed_m": round(close * 2, 5)}
+
+
 def run(args: dict):
     """Returns the result dict, or a generator (Quad Remesher waits on its engine)."""
+    fused = {}
+    if args.get("fuse_shells"):
+        skip = set(args.get("detachable_parts", []))      # props are often hard-surface: keep edges
+        for obj in C.meshes_with_role("low"):
+            if obj.get(C.PART_PROP) not in skip:
+                fused[obj.get(C.PART_PROP)] = _fuse(obj, float(args.get("fuse_voxel_rel", 0.004)),
+                                                    int(args.get("fuse_max_tris", 400000)),
+                                                    float(args.get("fuse_close_rel", 0.006)))
+    res = _dispatch(args)
+    if not fused:
+        return res
+    if isinstance(res, dict):
+        res["fused"] = fused
+        return res
+
+    def wrap():
+        out = yield from res
+        out["fused"] = fused
+        return out
+    return wrap()
+
+
+def _dispatch(args: dict):
     method = args.get("method", "quadriflow")
     if method == "quadremesher":
         from .addon_trial import has_op

@@ -1,6 +1,6 @@
 # Animals, monsters, non-humanoid characters.
 generation: {use_multiview: true, generate_parts: true}
-topology: {symmetry_x: true, preserve_hard_edges: false}
+topology: {symmetry_x: true, preserve_hard_edges: false, fuse_shells: true}
 uv: {method: min_stretch}
 rig: {enabled: true, rig_type: quadruped}
 tiers:                      # AAA budgets (Unreal)

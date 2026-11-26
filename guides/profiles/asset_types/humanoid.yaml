@@ -1,6 +1,6 @@
 # Bipedal characters: heroes, NPCs, enemies.
 generation: {use_multiview: true, generate_parts: true}
-topology: {symmetry_x: true, preserve_hard_edges: false}
+topology: {symmetry_x: true, preserve_hard_edges: false, fuse_shells: true}
 uv: {method: min_stretch}
 rig: {enabled: true, rig_type: biped, method: auto_rig_pro}
 tiers:                      # AAA budgets (Unreal)

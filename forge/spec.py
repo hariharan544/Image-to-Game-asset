@@ -53,6 +53,11 @@ class TopologySpec(BaseModel):
     symmetry_x: bool = False
     preserve_hard_edges: bool = True
     lod_ratios: list[float] = Field(default_factory=lambda: [1.0, 0.5, 0.25, 0.12])
+    # fuse all shells of non-swappable parts into one watertight surface before remeshing
+    # (closes gaps/holes from AI segmentation; detail comes back through the bake)
+    fuse_shells: bool = False
+    fuse_voxel_rel: float = 0.004                # voxel size as a fraction of the part's size
+    fuse_close_rel: float = 0.006                # closes gaps up to 2x this (fraction of size)
     target_height_m: Optional[float] = None      # real-world height; None keeps AI scale
 
 

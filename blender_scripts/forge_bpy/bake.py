@@ -106,7 +106,7 @@ class _ChannelAsEmission:
 
 def _bake(map_type: str, extrusion: float, max_ray: float, margin: int) -> None:
     kw = dict(use_selected_to_active=True, cage_extrusion=extrusion, max_ray_distance=max_ray,
-              margin=margin, use_clear=True)
+              margin=margin, use_clear=False)       # keep the sentinel where rays miss
     if map_type == "basecolor":
         bpy.ops.object.bake(type="DIFFUSE", pass_filter={"COLOR"}, **kw)
     elif map_type == "normal":
@@ -117,6 +117,65 @@ def _bake(map_type: str, extrusion: float, max_ray: float, margin: int) -> None:
         bpy.ops.object.bake(type="EMIT", **kw)
     elif map_type == "ao":
         bpy.ops.object.bake(type="AO", **kw)
+
+
+# a colour no bake produces: magenta. Pre-filled, left untouched where rays miss.
+SENTINEL = (1.0, 0.0, 1.0, 1.0)
+NEUTRAL = {"normal": (0.5, 0.5, 1.0), "metallic": (0.0, 0.0, 0.0), "ao": (1.0, 1.0, 1.0)}
+
+
+def _uv_coverage(low, size: int) -> np.ndarray:
+    """Boolean mask (size x size, row 0 = v 0) of texels inside the low mesh's UV islands."""
+    from . import metrics
+    uvs, _ = metrics._uv_tris(low)
+    res = min(size, 1024)
+    if uvs is None or not len(uvs):
+        return np.ones((size, size), bool)
+    small = metrics._coverage(np.clip(uvs, 0, 1), res) > 0
+    k = size // res
+    return np.kron(small, np.ones((k, k), bool)) if k > 1 else small
+
+
+def _resolve_sentinel(img, cov: np.ndarray, mtype: str, iterations: int = 32) -> float:
+    """Count bake misses (sentinel texels inside UV islands) and fill them from neighbouring
+    texels; texels outside the islands get a neutral value. Returns the miss ratio."""
+    w, h = img.size
+    px = np.empty(w * h * 4, dtype=np.float32)
+    img.pixels.foreach_get(px)
+    px = px.reshape(h, w, 4)
+    sent = (px[..., 0] > 0.99) & (px[..., 1] < 0.01) & (px[..., 2] > 0.99)
+    if cov.shape != sent.shape:
+        cov = np.ones_like(sent)
+    miss = sent & cov
+    ratio = float(miss.sum()) / max(int(cov.sum()), 1)
+    if miss.any():
+        rgb = px[..., :3]
+        valid = ~sent
+        todo = miss.copy()
+        for _ in range(iterations):              # grow valid colours into the holes
+            if not todo.any():
+                break
+            acc = np.zeros_like(rgb)
+            cnt = np.zeros(todo.shape, np.float32)
+            for dy, dx in ((1, 0), (-1, 0), (0, 1), (0, -1)):
+                v = np.roll(valid, (dy, dx), axis=(0, 1))
+                acc += np.roll(rgb, (dy, dx), axis=(0, 1)) * v[..., None]
+                cnt += v
+            grow = todo & (cnt > 0)
+            rgb[grow] = acc[grow] / cnt[grow][:, None]
+            valid = valid | grow
+            todo = todo & ~grow
+        if todo.any():                           # very large holes: average colour of the part
+            rgb[todo] = rgb[valid & cov].mean(axis=0) if (valid & cov).any() else 0.5
+        px[..., :3] = rgb
+    outside = sent & ~cov
+    if outside.any():
+        good = (~sent) & cov
+        neutral = NEUTRAL.get(mtype) or (px[..., :3][good].mean(axis=0) if good.any() else (0.5, 0.5, 0.5))
+        px[..., :3][outside] = neutral
+    px[..., 3] = 1.0
+    img.pixels.foreach_set(px.ravel())
+    return ratio
 
 
 def _clean_metallic(img, floor: float) -> dict:
@@ -201,10 +260,11 @@ def run(args: dict) -> dict:
         extrusion = diag * extrusion_ratio
         mat = _bake_material(low)
         baked = {}
+        cov = _uv_coverage(low, size)
+        misses = {}
         for mtype in maps_wanted:
             non_color = mtype != "basecolor"
-            fill = (0.5, 0.5, 1.0, 1.0) if mtype == "normal" else (0, 0, 0, 1)
-            img = _new_image(f"T_{part}_{mtype}", size, non_color, fill)
+            img = _new_image(f"T_{part}_{mtype}", size, non_color, SENTINEL)
             _set_target(mat, img)
             C.select_only(high, low, active=low)
             if mtype == "metallic":
@@ -212,6 +272,7 @@ def run(args: dict) -> dict:
                     _bake(mtype, extrusion, extrusion * 4, margin)
             else:
                 _bake(mtype, extrusion, extrusion * 4, margin)
+            misses[mtype] = _resolve_sentinel(img, cov, mtype)
             if mtype == "metallic":
                 cleaned[part] = _clean_metallic(img, float(args.get("metallic_floor", 0.35)))
             path = os.path.join(out_dir, f"T_{part}_{mtype}.png")
@@ -222,9 +283,9 @@ def run(args: dict) -> dict:
         entry = {"maps": {k: os.path.join(out_dir, f"T_{part}_{k}.png") for k in baked}}
         if part in cleaned:
             entry["metallic_cleanup"] = cleaned[part]
-        if "basecolor" in baked:
-            util = float(args.get("uv_utilization", {}).get(part, 0.7))
-            entry["bake_miss_ratio"] = round(_miss_ratio(baked["basecolor"], util), 4)
+        # share of texels inside the UV islands where the bake rays found nothing (now filled)
+        entry["bake_miss_ratio"] = round(max(misses.values(), default=0.0), 4)
+        entry["bake_misses"] = {k: round(v, 4) for k, v in misses.items()}
         _final_material(low, baked)
         bpy.data.materials.remove(mat)
         report[part] = entry

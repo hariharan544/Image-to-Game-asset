@@ -62,7 +62,9 @@ def tunables(stage: str, spec: AssetSpec) -> dict:
     t, u, x = spec.topology, spec.uv, spec.texture
     return {
         "cleanup": {"target_height_m": t.target_height_m, "merge_distance_ratio": 1e-5},
-        "retopo": {"target_tris": t.target_tris, "budget_scale": t.budget_scale, "method": t.method,
+        "retopo": {"fuse_shells": t.fuse_shells, "fuse_voxel_rel": t.fuse_voxel_rel,
+                   "fuse_close_rel": t.fuse_close_rel,
+                   "target_tris": t.target_tris, "budget_scale": t.budget_scale, "method": t.method,
                    "symmetry_x": t.symmetry_x, "preserve_hard_edges": t.preserve_hard_edges, "seed": 0},
         "uv": {"method": u.method, "angle_limit_deg": u.angle_limit_deg, "margin_px": u.margin_px,
                "smooth_angle_deg": u.smooth_angle_deg, "packer": u.packer,
@@ -254,6 +256,9 @@ class Pipeline:
                 a["rig_source"] = job.artifact("tripo")["rig_source"]
             a["detachable_parts"] = list(spec.detachable_parts)
             a["merge_body_parts"] = spec.merge_body_parts
+        elif name == "retopo":
+            parts = job.stage("cleanup")["attempts"][-1]["result"].get("parts", [])
+            a["detachable_parts"] = match_parts(spec.detachable_parts, parts)
         elif name == "uv":
             a["texture_size"] = spec.texture.size
         elif name == "bake":

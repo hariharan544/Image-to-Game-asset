@@ -163,6 +163,56 @@ def cmd_setup_blender(a) -> int:
                addon_trial2=a.addon_trial2)
 
 
+def cmd_report(a) -> int:
+    """A short, paste-able text summary of a job (instead of sending files)."""
+    job = Job.load(a.job)
+    m = job.m
+    out = [f"JOB {m['asset']}: {m['status']}" + (f" (waiting on {m.get('waiting_on')})" if m.get("waiting_on") else "")]
+    tr = m["artifacts"].get("tripo", {})
+    out.append(f"source: {tr.get('source', 'tripo api')}  rig file: {'yes' if tr.get('rig_source') else 'no'}")
+    for key in stage_order(job.spec.engines):
+        st = m["stages"].get(key)
+        if not st:
+            continue
+        att = (st.get("attempts") or [{}])[-1]
+        r = att.get("result") or {}
+        name = key.split("@")[0]
+        info = ""
+        if name == "cleanup":
+            info = (f"parts={r.get('parts')} rigged={r.get('rigged')} bones={r.get('bone_count')} "
+                    f"height={round(r.get('height_m') or 0, 3)}m merged={len(r.get('merged_into_body') or [])}")
+        elif name == "retopo":
+            info = " ".join(f"{p}:{v.get('tris_after')}tris/{v.get('method')}" for p, v in r.get("parts", {}).items())
+            if r.get("fused"):
+                info += " fused=" + ",".join(f"{p}:{f['shells_before']}->{f['shells_after']}shells"
+                                             for p, f in r["fused"].items())
+        elif name == "uv":
+            info = " ".join(f"{p}:util={v.get('utilization')} overlap={v.get('overlap_pct')} {v.get('packer')}"
+                            for p, v in r.get("parts", {}).items())
+        elif name == "bake":
+            info = " ".join(f"{p}:misses={v.get('bake_miss_ratio')} metal={(v.get('metallic_cleanup') or {}).get('metal_pct')}%"
+                            for p, v in r.get("parts", {}).items())
+        elif name == "skin":
+            a_ = r.get("arp") or {}
+            info = f"{r.get('rig_system')} refs={a_.get('placed')} deform={a_.get('deform_bones')}"
+            if r.get("arp_fallback_reason"):
+                info += f" FALLBACK: {r['arp_fallback_reason'][:120]}"
+        elif name == "metrics":
+            for p, v in r.get("parts", {}).items():
+                me, w = v.get("mesh", {}), v.get("weights", {})
+                info += (f"{p}: tris={me.get('tris')} shells={me.get('shells')} holes(boundary)={me.get('boundary_edges')} "
+                         f"ngons={me.get('ngons')} over_influence={w.get('verts_over_influence_limit')} ")
+        issues = [f"{i['code']}({i['severity'][0]})" for i in att.get("issues", [])]
+        dec = (att.get("decision") or {}).get("action", "")
+        out.append(f"  {key:22} {st.get('status'):16} {info} {' '.join(issues)} {('-> ' + dec) if dec else ''}".rstrip())
+        if att.get("error"):
+            out.append(f"      ERROR: {att['error'].splitlines()[0][:200]}")
+    for c, v in m.get("checkpoints", {}).items():
+        out.append(f"review {c}: {v.get('status')} {v.get('notes', '')}")
+    print("\n".join(out))
+    return 0
+
+
 def cmd_install_addon(a) -> int:
     """Install + enable the "Send to Forge" panel in the user's Blender."""
     from .blender import BlenderError, find_blender, run_stage
@@ -223,6 +273,10 @@ def main(argv=None) -> int:
     b.add_argument("--addon-trial2", action="store_true",
                    help="Auto-Rig Pro full flow (rig, bind, engine export) + a real UVPackmaster pack")
     b.set_defaults(fn=cmd_setup_blender)
+
+    rp = sub.add_parser("report", help="short text summary of a job, to paste into a chat")
+    rp.add_argument("job", help="job folder, e.g. jobs\\bull")
+    rp.set_defaults(fn=cmd_report)
 
     ia = sub.add_parser("install-blender-addon", help="install the 'Send to Forge' panel into Blender")
     ia.add_argument("--blender", help="path to blender.exe (default: the one Forge uses)")
