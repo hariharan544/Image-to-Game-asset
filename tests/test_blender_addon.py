@@ -68,3 +68,22 @@ def test_install_then_send(tmp_path):
     assert a.review.concept_checkpoint is False
     # the armature travelled with the selected mesh
     assert b"Armature" in model.read_bytes() or b"pelvis" in model.read_bytes()
+
+
+def test_panel_status_states():
+    sys.path.insert(0, str(ROOT / "blender_addon"))
+    import forge_send as F
+    base = {"spec": {"engines": ["unreal", "unity"]}, "stages": {"concept": {"status": "skipped"},
+                                                               "generate": {"status": "done"},
+                                                               "cleanup": {"status": "done"}}}
+    assert F.job_state(None)["state"] == "none"
+    assert F.job_state({**base, "status": "running"})["title"] == "Working: retopology (Unreal AAA)"
+    assert F.job_state({**base, "status": "running"})["progress"] == (3, 20)
+    assert F.job_state({**base, "status": "awaiting_review", "waiting_on": "final"})["state"] == "needs_you"
+    esc = {**base, "status": "awaiting_review", "waiting_on": "escalation_uv@unity"}
+    esc["stages"] = {**base["stages"], "uv@unity": {"status": "awaiting_review", "attempts": [
+        {"issues": [{"code": "UV_OVERLAP", "severity": "error"}], "decision": {"reason": "x"}}]}}
+    st = F.job_state(esc)
+    assert st["state"] == "error" and "UV unwrap (Unity mobile)" in st["title"] and "UV_OVERLAP" in st["lines"][0]
+    assert F.job_state({**base, "status": "done"})["state"] == "done"
+    assert F.job_state({**base, "status": "failed"})["state"] == "error"

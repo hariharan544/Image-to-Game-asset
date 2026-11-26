@@ -202,6 +202,7 @@ class ForgeSettings(bpy.types.PropertyGroup):
     auto_run: BoolProperty(name="Start the pipeline", default=True)
     reject_notes: StringProperty(name="What is wrong")
     redo_from: EnumProperty(name="Rebuild from", items=REDO)
+    show_help: BoolProperty(name="How it works", default=False)
 
 
 # ----------------------------------------------------------------------------- operators
@@ -310,7 +311,10 @@ class FORGE_OT_open_review(bpy.types.Operator):
 
     def execute(self, context):
         root = project_dir() / "jobs" / context.scene.forge.asset_name
-        for sub in ("review/final", "review/concept", "export", ""):
+        m = job_manifest(project_dir(), context.scene.forge.asset_name) or {}
+        subs = ("export", "review/final", "") if m.get("status") == "done" else \
+            ("review/final", "review/concept", "export", "")
+        for sub in subs:
             p = root / sub
             if p.exists():
                 open_folder(p)
@@ -346,6 +350,80 @@ class FORGE_OT_review(bpy.types.Operator):
 
 # ----------------------------------------------------------------------------- UI
 
+# ----------------------------------------------------------------------------- job state
+
+SHARED = ["concept", "generate", "cleanup"]
+TARGET_STAGES = ["retopo", "uv", "bake", "skin", "lods", "metrics", "previews"]
+FRIENDLY = {"concept": "concept views", "generate": "3D model", "cleanup": "clean-up & merge",
+            "retopo": "retopology", "uv": "UV unwrap", "bake": "texture bake", "skin": "rigging",
+            "lods": "LODs", "metrics": "quality check", "previews": "preview renders",
+            "final_review": "your review", "export": "export"}
+ENGINE_LABEL = {"unreal": "Unreal AAA", "unity": "Unity mobile"}
+# icon per state: Blender's coloured bone-group swatches
+STATE_ICON = {"error": "COLORSET_01_VEC", "running": "COLORSET_02_VEC", "done": "COLORSET_03_VEC",
+              "needs_you": "COLORSET_04_VEC", "none": "INFO"}
+
+
+def stage_order(engines: list) -> list:
+    return (SHARED + [f"{st}@{e}" for e in engines for st in TARGET_STAGES]
+            + ["final_review"] + [f"export@{e}" for e in engines])
+
+
+def friendly(key: str) -> str:
+    name, _, eng = key.partition("@")
+    text = FRIENDLY.get(name, name)
+    return f"{text} ({ENGINE_LABEL.get(eng, eng)})" if eng else text
+
+
+def job_state(m) -> dict:
+    """What the director needs to know about a job, in plain words."""
+    if m is None:
+        return {"state": "none", "title": "Not sent yet",
+                "lines": ["Select your model, fill in the fields", "above and click Send to Forge."]}
+    engines = (m.get("spec") or {}).get("engines") or ["unreal", "unity"]
+    order = stage_order(engines)
+    stages = m.get("stages", {})
+    finished = [k for k in order if stages.get(k, {}).get("status") in ("done", "skipped")]
+    current = next((k for k in order if stages.get(k, {}).get("status") not in ("done", "skipped")), None)
+    progress = (len(finished), len(order))
+    status = m.get("status")
+    waiting = m.get("waiting_on") or ""
+    if status == "done":
+        return {"state": "done", "title": "Done - game-ready", "progress": progress,
+                "lines": ["Exports for " + " and ".join(ENGINE_LABEL.get(e, e) for e in engines) + ".",
+                          "Click Open exports to get the files."]}
+    if status == "failed":
+        err = (stages.get(current or "", {}) or {}).get("error") or "see the console / logs"
+        return {"state": "error", "title": f"Error in {friendly(current or '?')}", "progress": progress,
+                "lines": [err, "Fix it, then click Run / continue.", "Or send the job logs for help."]}
+    if status == "awaiting_review":
+        if waiting == "final":
+            return {"state": "needs_you", "title": "Your approval is needed", "progress": progress,
+                    "lines": ["1. Click Open review: renders + report", "   for both versions.",
+                              "2. Looks right? Click Approve -> export.",
+                              "3. Not right? Write what is wrong, pick", "   Rebuild from, click Reject."]}
+        if waiting == "concept":
+            return {"state": "needs_you", "title": "Check the concept views", "progress": progress,
+                    "lines": ["Open review: do the 4 views match?", "Approve to make the 3D model."]}
+        key = waiting.removeprefix("escalation_")
+        att = (stages.get(key, {}).get("attempts") or [{}])[-1]
+        reason = (att.get("decision") or {}).get("reason", "")
+        codes = sorted({i["code"] for i in att.get("issues", []) if i.get("severity") == "error"})
+        return {"state": "error", "title": f"Stopped at {friendly(key)}", "progress": progress,
+                "lines": ["Problem: " + (", ".join(codes) or reason or "?"),
+                          "Approve = accept it as it is.",
+                          "Reject + Rebuild from = try again."]}
+    if status in ("running", "pending") and current:
+        return {"state": "running", "title": f"Working: {friendly(current)}", "progress": progress,
+                "lines": ["Small Blender windows open and close", "by themselves - leave them alone."]}
+    return {"state": "running", "title": f"Status: {status}", "progress": progress, "lines": []}
+
+
+def _wrap(text: str, width: int = 42) -> list:
+    import textwrap
+    return textwrap.wrap(str(text), width) or [""]
+
+
 class FORGE_PT_panel(bpy.types.Panel):
     bl_label = "Send to Forge"
     bl_idname = "FORGE_PT_panel"
@@ -355,7 +433,47 @@ class FORGE_PT_panel(bpy.types.Panel):
 
     def draw(self, context):
         s = context.scene.forge
-        col = self.layout.column(align=False)
+        layout = self.layout
+
+        # ---------------------------------------------------------------- status first
+        if s.asset_name:
+            m = job_manifest(project_dir(), s.asset_name)
+            st = job_state(m)
+            box = layout.box()
+            head = box.row()
+            head.alert = st["state"] == "error"            # red text for errors
+            head.label(text=st["title"], icon=STATE_ICON[st["state"]])
+            if st.get("progress"):
+                done_n, total = st["progress"]
+                box.progress(factor=done_n / max(total, 1), text=f"Stage {min(done_n + 1, total)} of {total}") \
+                    if hasattr(box, "progress") else box.label(text=f"Stage {done_n} of {total}")
+            col = box.column(align=True)
+            col.alert = st["state"] == "error"
+            for line in st["lines"]:
+                for part in _wrap(line):
+                    col.label(text=part)
+            if m is not None:
+                row = box.row(align=True)
+                row.scale_y = 1.3
+                row.operator("forge.open_review", icon="FILE_FOLDER",
+                             text="Open exports" if st["state"] == "done" else "Open review")
+                row.operator("forge.run", icon="PLAY")
+            if m is not None and m.get("status") == "awaiting_review":
+                row = box.row()
+                row.scale_y = 1.6
+                op = row.operator("forge.review", text="Approve", icon="CHECKMARK")
+                op.approve = True
+                box.separator()
+                box.prop(s, "reject_notes")
+                box.prop(s, "redo_from")
+                row = box.row()
+                row.alert = True                          # red reject button
+                op = row.operator("forge.review", text="Reject", icon="CANCEL")
+                op.approve = False
+
+        # ---------------------------------------------------------------- send form
+        col = layout.column(align=False)
+        col.label(text="Asset", icon="OUTLINER_OB_ARMATURE")
         row = col.row(align=True)
         row.prop(s, "asset_name")
         row.operator("forge.use_selection_name", text="", icon="EYEDROPPER")
@@ -370,29 +488,44 @@ class FORGE_PT_panel(bpy.types.Panel):
         col.prop(s, "notes")
         col.prop(s, "image")
         col.prop(s, "auto_run")
-        col.operator("forge.send", icon="EXPORT")
+        row = col.row()
+        row.scale_y = 1.4
+        row.operator("forge.send", icon="EXPORT")
 
-        if not s.asset_name:
-            return
-        m = job_manifest(project_dir(), s.asset_name)
-        box = self.layout.box()
-        if m is None:
-            box.label(text="Not sent yet", icon="INFO")
-            return
-        status = m.get("status", "?")
-        box.label(text=f"Status: {status}", icon="CHECKMARK" if status == "done" else "TIME")
-        if m.get("waiting_on"):
-            box.label(text=f"Waiting for you: {m['waiting_on']}", icon="ERROR")
-        row = box.row(align=True)
-        row.operator("forge.open_review", icon="FILE_FOLDER")
-        row.operator("forge.run", icon="PLAY")
-        if status == "awaiting_review":
-            op = box.operator("forge.review", text="Approve", icon="CHECKMARK")
-            op.approve = True
-            box.prop(s, "reject_notes")
-            box.prop(s, "redo_from")
-            op = box.operator("forge.review", text="Reject", icon="CANCEL")
-            op.approve = False
+        # ---------------------------------------------------------------- help
+        hb = layout.box()
+        hb.prop(s, "show_help", icon="TRIA_DOWN" if s.show_help else "TRIA_RIGHT",
+                text="How it works", emboss=False)
+        if s.show_help:
+            c = hb.column(align=True)
+            for line in (
+                "1. Select your model in the viewport",
+                "   (its skeleton is included).",
+                "2. Name it, pick Type / Tier / Style.",
+                "   Swappable parts: select them, press +.",
+                "   Rig source: only when the skeleton",
+                "   is in a separate rigged copy.",
+                "3. Send to Forge: a console window runs",
+                "   the pipeline; this box shows progress.",
+                "4. Blue = your turn: Open review, then",
+                "   Approve or Reject (+ Rebuild from).",
+                "5. Green = done: Open exports.",
+                "   Red = problem: read the message;",
+                "   Run / continue retries.",
+            ):
+                c.label(text=line)
+
+
+def _redraw_forge_panels():
+    """Keep the status box live while the pipeline runs (reads a small JSON file)."""
+    try:
+        for win in bpy.context.window_manager.windows:
+            for area in win.screen.areas:
+                if area.type == "VIEW_3D":
+                    area.tag_redraw()
+    except Exception:
+        pass
+    return 2.0
 
 
 CLASSES = (ForgePrefs, ForgeSettings, FORGE_OT_use_selection_name, FORGE_OT_mark_detachable, FORGE_OT_send,
@@ -403,9 +536,13 @@ def register():
     for c in CLASSES:
         bpy.utils.register_class(c)
     bpy.types.Scene.forge = PointerProperty(type=ForgeSettings)
+    if not bpy.app.background:
+        bpy.app.timers.register(_redraw_forge_panels, first_interval=2.0, persistent=True)
 
 
 def unregister():
+    if bpy.app.timers.is_registered(_redraw_forge_panels):
+        bpy.app.timers.unregister(_redraw_forge_panels)
     del bpy.types.Scene.forge
     for c in reversed(CLASSES):
         bpy.utils.unregister_class(c)
