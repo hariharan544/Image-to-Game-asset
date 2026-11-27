@@ -108,6 +108,39 @@ _ATTR_FIELDS = {"FLOAT": ("value", 1, "f4"), "INT": ("value", 1, "i4"), "INT8": 
                 "QUATERNION": ("value", 4, "f4")}
 
 
+def _tied_by_neighbours(me, co, order):
+    """`order` (vertices sorted by place) with every run of points on the very same spot put
+    in the order of their neighbours' places: two points on one spot are then told apart by
+    the surface around them, not by the order they came in (a result built in threads can
+    give them in either order). Two that still tie have their neighbours on the same spots
+    too - copies of each other, a doubled sheet - and keep the order they came in."""
+    import numpy as np
+    s = co[order]
+    same = np.all(s[1:] == s[:-1], axis=1)
+    if not same.any():
+        return order
+    place = np.empty(len(co), np.int64)
+    place[order] = np.cumsum(np.concatenate([[0], ~same]))      # one number per spot
+    tied = np.zeros(len(co), bool)
+    tied[order[1:][same]] = True
+    tied[order[:-1][same]] = True
+    ev = np.empty(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    ev = ev[tied[ev[:, 0]] | tied[ev[:, 1]]]
+    around: dict = {}
+    for a, b in ev.tolist():
+        around.setdefault(a, []).append(int(place[b]))
+        around.setdefault(b, []).append(int(place[a]))
+    out = order.copy()
+    starts = np.nonzero(np.concatenate([[True], ~same]))[0].tolist() + [len(order)]
+    for i, j in zip(starts, starts[1:]):
+        if j - i > 1:
+            run = order[i:j].tolist()
+            out[i:j] = sorted(run, key=lambda v: sorted(around.get(v, [])))
+    return out
+
+
 def canonical_order(me, by_position: bool = False) -> bool:
     """Rewrite a mesh with its faces in one fixed order: each face starting at its lowest
     vertex, the faces sorted by their corners; every attribute goes with its element. Some
@@ -115,10 +148,11 @@ def canonical_order(me, by_position: bool = False) -> bool:
     order, which changes from run to run: the same surface then comes in another order, and
     a subdivision or a remesher makes a different mesh of it. The vertices keep their order,
     or with `by_position` are sorted by where they are (x, then y, then z: for a result whose
-    vertex order itself changes from run to run - the exact boolean works in threads; points
-    on the very same spot keep their order, a weld then makes them one). False (left as it
-    is) for a mesh with shape keys, vertex weights or an attribute of a kind it cannot carry
-    across (custom split normals, matrices, text): rather unordered than missing data."""
+    vertex order itself changes from run to run - the exact boolean works in threads). Points
+    on the very same spot are told apart by where their neighbours are, never by the order
+    they came in (see _tied_by_neighbours). False (left as it is) for a mesh with shape keys,
+    vertex weights or an attribute of a kind it cannot carry across (custom split normals,
+    matrices, text): rather unordered than missing data."""
     import numpy as np
     nf, nl, nv = len(me.polygons), len(me.loops), len(me.vertices)
     if not nf or me.shape_keys or any(v.groups for v in me.vertices):
@@ -129,6 +163,8 @@ def canonical_order(me, by_position: bool = False) -> bool:
     me.vertices.foreach_get("co", co)
     co = co.reshape(-1, 3)
     vperm = np.lexsort((co[:, 2], co[:, 1], co[:, 0])) if by_position else np.arange(nv)
+    if by_position:
+        vperm = _tied_by_neighbours(me, co, vperm)
     vnew = np.empty(nv, np.int64)
     vnew[vperm] = np.arange(nv)                     # old vertex -> its new number
     lv = np.empty(nl, np.int64)

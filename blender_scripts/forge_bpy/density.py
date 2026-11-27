@@ -775,6 +775,66 @@ def read_split(me):
     return ids if ids.any() else None
 
 
+FINGERPRINT_STEP = 1e-6          # coordinates are compared on a grid this fine against the mesh's size
+
+
+def fingerprint(me, ordered: bool = False) -> tuple:
+    """(vertices, faces, sha1 of the coordinates, sha1 of the faces) of a mesh: two meshes with
+    the same fingerprint are the same surface. Coordinates are rounded to a grid of
+    FINGERPRINT_STEP x the mesh's size (its largest extent), so the last bits of a float do
+    not count, whatever the mesh's scale. Used to prove that two runs did the same thing (the
+    plan's dry run and the real run, or one run and the next).
+
+    By default the fingerprint does not depend on the order of the elements: the vertices are
+    hashed sorted by place, each face as the places of its corners (starting at its lowest
+    corner, in its own winding), the faces sorted. With `ordered`, the mesh is hashed in its own
+    vertex and face order: the same surface in another order gives another fingerprint (a
+    remesher makes a different mesh of it)."""
+    import hashlib
+    nv, nf, nl = len(me.vertices), len(me.polygons), len(me.loops)
+    co = np.empty(nv * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    lv = np.empty(nl, np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    lt = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    ls = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_start", ls)
+    if nv:
+        lo = co.min(axis=0)
+        step = FINGERPRINT_STEP * (float((co.max(axis=0) - lo).max()) or 1.0)
+        q = np.rint((co - lo) / step).astype(np.int64)
+    else:
+        q = np.zeros((0, 3), np.int64)
+    # one number per place: each axis spans at most 1 / FINGERPRINT_STEP grid steps (20 bits)
+    key = (q[:, 0] << 42) | (q[:, 1] << 21) | q[:, 2]
+    hv, hf = hashlib.sha1(), hashlib.sha1()
+    if ordered:                                      # (a face's corners follow each other in the loops)
+        hv.update(key.tobytes())
+        hf.update(lt.tobytes())
+        hf.update(lv.tobytes())
+        return nv, nf, hv.hexdigest(), hf.hexdigest()
+    hv.update(np.sort(key).tobytes())
+    for t in np.unique(lt).tolist():                 # faces with the same number of corners together
+        sel = np.nonzero(lt == t)[0]
+        rows = key[lv[ls[sel][:, None] + np.arange(t)[None, :]]]
+        # each face read from its lowest corner on, in its own winding: of its t rotations the
+        # one that reads lowest (the lowest corner, unless a degenerate face has it twice)
+        every = np.arange(len(rows))
+        best = rows.copy()
+        for i in range(1, t):
+            alt = np.roll(rows, -i, axis=1)
+            diff = alt != best
+            first = np.argmax(diff, axis=1)
+            lower = diff.any(axis=1) & (alt[every, first] < best[every, first])
+            best[lower] = alt[lower]
+        best = best[np.lexsort(best.T[::-1])]
+        hf.update(np.int64(t).tobytes())
+        hf.update(best.tobytes())
+    return nv, nf, hv.hexdigest(), hf.hexdigest()
+
+
 def pick_side(me) -> str:
     """'left' or 'right': the side with more surface detail (the better kept one)."""
     s = detail_score(me, scales=(6,))

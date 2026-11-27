@@ -706,8 +706,9 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                     keep_tmp(pme)
             blocked = backup.get("forge_mirror_blocked") or full_backup.get("forge_mirror_blocked")
             from .appendages import plain_name
-            names = {k: "the " + plain_name(v) for k, v in dict(full_backup.get("forge_split_names") or {}).items()
-                     if v}
+            # (by part id: the plan stored them as it found them)
+            names = {k: "the " + plain_name(v) for k, v in sorted(
+                dict(full_backup.get("forge_split_names") or {}).items(), key=lambda kv: int(kv[0])) if v}
             split_names = names
             # a part kept with the body that is its own mirror image (a fin on the middle line)
             # is left as it is by the mirror: only a one-sided one blocks it

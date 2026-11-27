@@ -80,6 +80,9 @@ def test_make_solid_welds_overlapping_pieces():
 
 
 def test_collect_sizes_and_lays_out_parts_then_mirror():
+    # an empty scene first: Collect picks the body among every part in the scene, and a body
+    # an earlier test left there (the suite run in another order) would be taken instead
+    bpy.ops.wm.read_homefile(use_empty=True)
     body = broken_body("BullBody2")
     bm = bmesh.new()
     bmesh.ops.create_cube(bm, size=1.0)
