@@ -117,10 +117,13 @@ def canonical_order(me, by_position: bool = False) -> bool:
     or with `by_position` are sorted by where they are (x, then y, then z: for a result whose
     vertex order itself changes from run to run - the exact boolean works in threads; points
     on the very same spot keep their order, a weld then makes them one). False (left as it
-    is) for a mesh with shape keys or vertex weights."""
+    is) for a mesh with shape keys, vertex weights or an attribute of a kind it cannot carry
+    across (custom split normals, matrices, text): rather unordered than missing data."""
     import numpy as np
     nf, nl, nv = len(me.polygons), len(me.loops), len(me.vertices)
     if not nf or me.shape_keys or any(v.groups for v in me.vertices):
+        return False
+    if any(not a.is_internal and a.name != "position" and a.data_type not in _ATTR_FIELDS for a in me.attributes):
         return False
     co = np.empty(nv * 3, np.float32)
     me.vertices.foreach_get("co", co)
