@@ -20,6 +20,47 @@ import numpy as np
 from .density import _dilate
 
 
+def _in_order(bm, elems) -> list:
+    """Bmesh elements of one kind (vertices, edges or faces) as a list in mesh order. A set
+    (or dict) of bmesh elements runs in memory-address order, which changes from run to run
+    and with whatever ran before in the process: anything summed over, sampled from, picked
+    first from or handed to a bmesh op must come in a fixed order, or the same input gives a
+    mesh a few last bits different - and a remesher makes another mesh of that."""
+    elems = list(elems)
+    if not elems:
+        return elems
+    seq = (bm.verts if isinstance(elems[0], bmesh.types.BMVert) else
+           bm.edges if isinstance(elems[0], bmesh.types.BMEdge) else bm.faces)
+    seq.index_update()
+    return sorted(elems, key=lambda x: x.index)
+
+
+def _extrude_edges(bm, edges) -> dict:
+    """What bmesh.ops.extrude_edge_only does to open edges, built in the order of `edges`:
+    the op makes its wall faces and side edges walking a table keyed by memory address, so
+    their order and direction change from run to run. Each wall runs along its edge the
+    other way than the face already there (wound like it). {"geom": new vertices, the new
+    edges along the old ones, the walls}."""
+    new_of: dict = {}
+    verts, along, walls = [], [], []
+
+    def copy(v):
+        w = new_of.get(v)
+        if w is None:
+            w = new_of[v] = bm.verts.new(v.co, v)
+            verts.append(w)
+        return w
+    for e in edges:
+        a, b = e.verts
+        if e.link_loops and e.link_loops[0].vert is a:
+            a, b = b, a
+        a2, b2 = copy(a), copy(b)
+        f = e.link_loops[0].face if e.link_loops else None
+        walls.append(bm.faces.new((a, b, b2, a2), f) if f is not None else bm.faces.new((a, b, b2, a2)))
+        along.append(bm.edges.get((a2, b2)))
+    return {"geom": verts + along + walls}
+
+
 def _edges(me) -> np.ndarray:
     ev = np.empty(len(me.edges) * 2, np.int32)
     me.edges.foreach_get("vertices", ev)
@@ -77,7 +118,7 @@ def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_
         first = len(bm.verts)
         plug = _plug(bm, cut or open_edges, *shape)
     elif open_edges and bm.verts:
-        ring = {v for e in open_edges for v in e.verts}
+        ring = _in_order(bm, {v for e in open_edges for v in e.verts})     # (summed in mesh order)
         root = sum((v.co for v in ring), Vector()) / len(ring)
         centre = sum((v.co for v in bm.verts), Vector()) / len(bm.verts)
         # this cut crosses the lost part wherever the loss ended, often slanted across it: the
@@ -97,14 +138,15 @@ def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_
         # plug: two rings going into the body, narrowing, then closed
         edges = open_edges
         for depth, shrink in ((0.6, 0.85), (1.2, 0.6)):
-            res = bmesh.ops.extrude_edge_only(bm, edges=edges)
+            res = _extrude_edges(bm, edges)
             new_v = [g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)]
             for v in new_v:
                 rel = v.co - root
                 rel -= out * rel.dot(out)                    # radial part
                 v.co = root - out * (radius * depth) + rel * shrink
+            is_new = set(new_v)
             edges = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge)
-                     and all(x in new_v for x in g.verts)]
+                     and all(x in is_new for x in g.verts)]
         plug = (root, out, radius)
         res = bmesh.ops.holes_fill(bm, edges=[e for e in bm.edges if e.is_boundary], sides=100000)
         ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
@@ -188,9 +230,19 @@ PLUG_TAPER = (0.85, 0.6)  # each plug ring's width, against the one before
 PLUG_INTO = 0.3           # a plug wall leaves the ring at least this steeply into the solid (sine)
 
 
-def _loops_of(edges) -> list:
+def _first_step(start, es):
+    """Of the two open edges at a loop's first vertex, the one to walk first: the one whose
+    face runs into `start` (the walk then goes against the faces already there, so a fan
+    over it is wound like them); else towards the lower-numbered neighbour. A fixed rule:
+    the same loop is always walked the same way, in whatever order its edges came."""
+    fwd = [e for e in es if e.link_loops and e.link_loops[0].vert is not start]
+    return fwd[0] if len(fwd) == 1 else min(es, key=lambda e: e.other_vert(start).index)
+
+
+def _loops_of(bm, edges) -> list:
     """The vertex loops (in order) of edges that form simple closed loops; [] for any part
-    that is not one (a vertex on more than two of the edges)."""
+    that is not one (a vertex on more than two of the edges). Each loop starts at its first
+    vertex in mesh order and runs the way _first_step says."""
     adj: dict = {}
     for e in edges:
         for v in e.verts:
@@ -198,10 +250,10 @@ def _loops_of(edges) -> list:
     if any(len(es) != 2 for es in adj.values()):
         return []
     loops, seen = [], set()
-    for start in adj:
+    for start in _in_order(bm, adj):
         if start in seen:
             continue
-        loop, v, e = [start], start, adj[start][0]
+        loop, v, e = [start], start, _first_step(start, adj[start])
         seen.add(start)
         while True:
             w = e.other_vert(v)
@@ -254,23 +306,25 @@ def _plug(bm, open_edges, depth: float = 1.0, width: float = 1.0, level: float |
     every wall goes down, the lid cannot fold. A ring that never goes round the axis keeps
     its own outline and heights. Returns (root, axis from the body into the part, radius)."""
     from mathutils import Vector
-    ring = {v for e in open_edges for v in e.verts}
+    ring = _in_order(bm, {v for e in open_edges for v in e.verts})     # (summed in mesh order)
     root = sum((v.co for v in ring), Vector()) / len(ring)
     out, radius, wound_out = _ring_axis(bm, open_edges, root)
     step = PLUG_STEP * depth * radius
     mid = float(np.median([(v.co - root).dot(out) for v in ring]))
+    on_ring = set(ring)
 
     def extrude(edges):
-        res = bmesh.ops.extrude_edge_only(bm, edges=edges)
-        vs = {g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)}
-        es = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge) and all(x in vs for x in g.verts)]
+        res = _extrude_edges(bm, edges)
+        vs = [g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)]
+        is_new = set(vs)
+        es = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge) and all(x in is_new for x in g.verts)]
         return vs, es
 
     def outline(vs, es, taper) -> tuple:
         """Each vertex's new offset from the axis, and the vertices whose loop goes round it."""
         radial = {v: (v.co - root) - out * (v.co - root).dot(out) for v in vs}
         round_ = set()
-        for loop in _loops_of(es):
+        for loop in _loops_of(bm, es):
             star = _star_radial(loop, out, radial)
             if star is None:
                 continue
@@ -289,7 +343,7 @@ def _plug(bm, open_edges, depth: float = 1.0, width: float = 1.0, level: float |
     ring1, edges = extrude(open_edges)
     radial, _r = outline(ring1, edges, PLUG_TAPER[0] * width)
     for v in ring1:
-        parent = next((e.other_vert(v) for e in v.link_edges if e.other_vert(v) in ring), None)
+        parent = next((e.other_vert(v) for e in v.link_edges if e.other_vert(v) in on_ring), None)
         along = (v.co - root).dot(out)
         top = along if level is None else min(along, mid + level * radius)
         to = root + out * (top - step) + radial[v]
@@ -307,7 +361,7 @@ def _plug(bm, open_edges, depth: float = 1.0, width: float = 1.0, level: float |
         v.co = root + out * (floor if v in round_ else along - step) + radial[v]
     before = set(bm.verts)
     _fan_fill(bm, edges)
-    for c in set(bm.verts) - before:               # a level lid: its centre on the axis
+    for c in [v for v in bm.verts if v not in before]:     # a level lid: its centre on the axis
         if all(e.other_vert(c) in round_ for e in c.link_edges):
             c.co = root + out * floor
     still = [e for e in bm.edges if e.is_boundary]
@@ -438,6 +492,11 @@ def fuse(target, piece_obj, plug=None) -> str:
     dg = bpy.context.evaluated_depsgraph_get()
     dg.update()
     new = bpy.data.meshes.new_from_object(target.evaluated_get(dg))
+    # the exact boolean works in threads: the same union comes in another vertex and face
+    # order each run (measured: same points and faces, different order), and the weld
+    # below keeps the first of two doubles - put it in order by position first
+    from .common import canonical_order
+    canonical_order(new, by_position=True)
     target.modifiers.remove(mod)
     for m in others:
         m.show_viewport = True
@@ -496,13 +555,13 @@ def clean_seam(me, piece_obj) -> None:
         hit = tree.find_nearest(v.co)
         if hit[0] is not None and hit[3] < tol:
             near.add(v)
-    seam = [v for v in near if any(n not in near for n in (e.other_vert(v) for e in v.link_edges))]
+    seam = [v for v in bm.verts if v in near and any(n not in near for n in (e.other_vert(v) for e in v.link_edges))]
     band = set(seam)
     for _ in range(2):                                   # a couple of rings around the crossing
         band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
     if band:
         for _ in range(3):
-            bmesh.ops.smooth_vert(bm, verts=list(band), factor=0.5, use_axis_x=True, use_axis_y=True,
+            bmesh.ops.smooth_vert(bm, verts=_in_order(bm, band), factor=0.5, use_axis_x=True, use_axis_y=True,
                                   use_axis_z=True)
     ng = [f for f in bm.faces if len(f.verts) > 4]
     if ng:
@@ -520,7 +579,7 @@ def clean_seam(me, piece_obj) -> None:
                 short.add(min(f.edges, key=lambda e: e.calc_length()))
         if not short:
             break
-        bmesh.ops.collapse(bm, edges=list(short), uvs=True)
+        bmesh.ops.collapse(bm, edges=_in_order(bm, short), uvs=True)
         band = {v for v in band if v.is_valid}
     # holes or broken (3+ face) edges the union or the collapses can leave on the crossing
     # line: cut the faces around them out and fill the opening cleanly
@@ -545,7 +604,8 @@ def clean_seam(me, piece_obj) -> None:
                 bmesh.ops.triangulate(bm, faces=ng)
             still = [e for e in bm.edges if e.is_boundary]
             if still:                                   # a tangled little hole: weld its rim first
-                rim = list({v for e in still for v in e.verts})
+                # (in mesh order: of two doubles the first one listed stays)
+                rim = _in_order(bm, {v for e in still for v in e.verts})
                 bmesh.ops.remove_doubles(bm, verts=rim, dist=size * 3e-3)
                 still = [e for e in bm.edges if e.is_valid and e.is_boundary]
                 if still:
@@ -735,7 +795,8 @@ def tidy(me, max_hole: int = 64) -> dict:
     bad = {v for e in bm.edges if e.is_boundary or len(e.link_faces) > 2 for v in e.verts}
     if bad:                                        # (a seam left unwelded by a join)
         size = max((max(v.co[i] for v in bm.verts) - min(v.co[i] for v in bm.verts)) for i in range(3))
-        bmesh.ops.remove_doubles(bm, verts=list(bad), dist=size * 2e-5)
+        # (in mesh order: of two doubles the first one listed stays)
+        bmesh.ops.remove_doubles(bm, verts=_in_order(bm, bad), dist=size * 2e-5)
     bmesh.ops.dissolve_degenerate(bm, dist=tol, edges=list(bm.edges))
     out["stacked"] = _drop_stacked(bm)
     _drop_loose(bm)
@@ -898,7 +959,9 @@ def _fan_fill(bm, edges, tag=None) -> int:
     """Close every simple boundary loop (each vertex on exactly two of its open edges) with a
     fan of triangles around a new centre vertex: works on loops that are not flat or not
     convex, which the hole fillers sometimes refuse. Pinched loops are left (the caller then
-    moves the cut one ring further)."""
+    moves the cut one ring further). Each loop starts at its first vertex in mesh order and
+    runs the way _first_step says: the same loop always gets the same fan (the centre summed
+    in the same order), wound like the faces around it, in whatever order its edges came."""
     from mathutils import Vector
     adj: dict = {}
     for e in edges:
@@ -906,10 +969,11 @@ def _fan_fill(bm, edges, tag=None) -> int:
             adj.setdefault(v, []).append(e)
     seen: set = set()
     made = 0
-    for start, es in list(adj.items()):
+    for start in _in_order(bm, adj):
+        es = adj[start]
         if start in seen or len(es) != 2:
             continue
-        loop, v, e = [start], start, es[0]
+        loop, v, e = [start], start, _first_step(start, es)
         seen.add(start)
         while True:
             w = e.other_vert(v)
@@ -925,8 +989,8 @@ def _fan_fill(bm, edges, tag=None) -> int:
         if not loop or len(loop) < 3:
             continue
         c = bm.verts.new(sum((x.co for x in loop), Vector()) / len(loop))
-        if tag is not None:
-            c[tag] = start[tag]
+        if tag is not None:                         # (the loop's part: an old hole on it has none)
+            c[tag] = next((x[tag] for x in loop if x[tag]), 0)
         for i in range(len(loop)):
             try:
                 bm.faces.new((loop[i], loop[(i + 1) % len(loop)], c))
@@ -985,7 +1049,7 @@ def _drop_cut_scraps(bm, tag, _unused=None, max_share: float = 0.05) -> int:
         seen |= shell
         if len(shell) > cap:
             continue
-        verts = list({v for f in shell for v in f.verts})
+        verts = _in_order(bm, {v for f in shell for v in f.verts})     # (the same sample every run)
         sample = [v.co.copy() for v in verts[:: max(1, len(verts) // 7)]][:7]
         if not _inside(bm, shell, sample):
             continue
@@ -1294,10 +1358,11 @@ def _inside_from(bm, tree, seed_pt, root, reach: float, eps: float) -> set:
     return comp
 
 
-def _cut_edges(kill: set) -> list:
-    """Edges between a face to delete and a face to keep: the opening the cut will make."""
-    return list({e for f in kill for e in f.edges
-                 if len(e.link_faces) == 2 and (e.link_faces[0] in kill) != (e.link_faces[1] in kill)})
+def _cut_edges(bm, kill: set) -> list:
+    """Edges between a face to delete and a face to keep: the opening the cut will make (in
+    mesh order)."""
+    return _in_order(bm, {e for f in kill for e in f.edges
+                          if len(e.link_faces) == 2 and (e.link_faces[0] in kill) != (e.link_faces[1] in kill)})
 
 
 def _open_cut(bm, kill: set, root, reach: float):
@@ -1324,7 +1389,7 @@ def _open_cut(bm, kill: set, root, reach: float):
                 return [], "hole"
             kill.update(e.link_faces[0] for e in holes)
             rimv = {v for f in kill for v in f.verts}
-        seeds = {g for v in rimv for g in v.link_faces if g not in kill}
+        seeds = _in_order(bm, {g for v in rimv for g in v.link_faces if g not in kill})
         comps, seen = [], set()
         for f0 in seeds:
             if f0 in seen:
@@ -1342,6 +1407,8 @@ def _open_cut(bm, kill: set, root, reach: float):
             comps.append(comp)
         if not comps:
             return [], "inside"
+        # the biggest piece stays (of two the same size: the one first in mesh order - the
+        # seeds come in mesh order, and max keeps the first)
         best = max(comps, key=len)
         islands = [c for c in comps if c is not best]
         for c in islands:
@@ -1349,7 +1416,7 @@ def _open_cut(bm, kill: set, root, reach: float):
                 return [], "island"
             kill.update(c)
         deg: dict = {}
-        for e in _cut_edges(kill):
+        for e in _cut_edges(bm, kill):
             for v in e.verts:
                 deg[v] = deg.get(v, 0) + 1
         pinch = [v for v, n in deg.items() if n > 2]
@@ -1358,7 +1425,7 @@ def _open_cut(bm, kill: set, root, reach: float):
         kill.update(f for v in pinch for f in v.link_faces)
     else:
         return [], "openings"
-    opening = _cut_edges(kill)
+    opening = _cut_edges(bm, kill)
     bmesh.ops.delete(bm, geom=list(kill), context="FACES")
     return [e for e in opening if e.is_valid], None
 
@@ -1471,7 +1538,7 @@ def _joint_faults(bm, band: set, t_full, before: int, rad: float = 0.0):
     bm.verts.index_update()
     bm.faces.index_update()
     bm.faces.ensure_lookup_table()
-    blist = list(bfaces)
+    blist = sorted(bfaces, key=lambda f: f.index)
     tb = BVHTree.FromPolygons([v.co.copy() for v in bm.verts], [tuple(v.index for v in f.verts) for f in blist])
     tall = BVHTree.FromBMesh(bm)
     for i, j in tb.overlap(tall):
@@ -1514,24 +1581,25 @@ def _bridge(bm, t_full, before: int, cuts: int, rad: float = 0.0, seat: bool = T
     if not joint:
         return "bridge"
     js = set(joint)
-    cross = list({e for f in joint for e in f.edges if not e[lay] and all(g in js for g in e.link_faces)})
+    cross = _in_order(bm, {e for f in joint for e in f.edges if not e[lay] and all(g in js for g in e.link_faces)})
     if cross and cuts:
         inner = set(bmesh.ops.subdivide_edges(bm, edges=cross, cuts=cuts, use_grid_fill=True)["geom_inner"])
         joint = [f for f in bm.faces if f in js or any(v in inner for v in f.verts)]
         if cuts == 1 and seat:
-            mids = [g for g in inner if isinstance(g, bmesh.types.BMVert)]
+            mids = [v for v in bm.verts if v in inner]
     # (read after the subdivision: it invalidates vertex references, not the edge layer)
     rim_b = {v for e in bm.edges if e[lay] == 2 for v in e.verts}
     rim_p = {v for e in bm.edges if e[lay] == 1 for v in e.verts}
     band = {v for f in joint for v in f.verts}
     for _ in range(2):
         band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
+    band_l = _in_order(bm, band)
     done, shell, why = 0, None, None
     for total in JOINT_RELAX:
         for _ in range(total - done):
-            bmesh.ops.smooth_vert(bm, verts=list(band), factor=0.5, use_axis_x=True, use_axis_y=True,
+            bmesh.ops.smooth_vert(bm, verts=band_l, factor=0.5, use_axis_x=True, use_axis_y=True,
                                   use_axis_z=True)
-            for v in band:
+            for v in band_l:
                 hit = t_full.find_nearest(v.co)
                 if hit[0] is not None:
                     v.co = hit[0]
@@ -1539,7 +1607,7 @@ def _bridge(bm, t_full, before: int, cuts: int, rad: float = 0.0, seat: bool = T
         if mids:
             _seat_on_fold(mids, rim_b, rim_p, t_full)
         if shell is None:
-            ng = [f for f in grown if f.is_valid and len(f.verts) > 4]
+            ng = _in_order(bm, [f for f in grown if f.is_valid and len(f.verts) > 4])
             if ng:
                 res = bmesh.ops.triangulate(bm, faces=ng, quad_method="BEAUTY", ngon_method="BEAUTY")
                 joint += [f for f in res.get("faces", []) if f.is_valid]
@@ -1551,7 +1619,8 @@ def _bridge(bm, t_full, before: int, cuts: int, rad: float = 0.0, seat: bool = T
                         if g not in shell:
                             shell.add(g)
                             stack.append(g)
-        bmesh.ops.recalc_face_normals(bm, faces=list(shell))
+            shell = _in_order(bm, shell)
+        bmesh.ops.recalc_face_normals(bm, faces=shell)
         why = _joint_faults(bm, band, t_full, before, rad)
         if why not in ("thin faces", "off the surface"):
             break

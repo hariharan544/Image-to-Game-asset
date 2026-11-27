@@ -590,7 +590,10 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
         marks = marks[:room]
         if not marks:
             break
-        new_verts = set()
+        # (lists, not sets: a set of bmesh elements runs in memory-address order, which
+        # changes from run to run - the faces would be split, and the folds put back, in
+        # another order each time)
+        new_verts = []
         flat_at = {}
         for _gap, e, t, hit in marks:
             if not e.is_valid:
@@ -598,13 +601,14 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
             _ne, nv = bmesh.utils.edge_split(e, e.verts[0], t)
             flat_at[nv] = nv.co.copy()                   # where it sat on the bridging edge
             nv.co = hit
-            new_verts.add(nv)
+            new_verts.append(nv)
             splits += 1
+        is_new = set(new_verts)
         # join the crossing points face by face: the groove becomes an edge chain
-        for f in list({f for v in new_verts for f in v.link_faces}):
+        for f in list(dict.fromkeys(f for v in new_verts for f in v.link_faces)):
             if not f.is_valid:
                 continue
-            nvs = [v for v in f.verts if v in new_verts]
+            nvs = [v for v in f.verts if v in is_new]
             if len(nvs) < 2:
                 continue
             a, b = nvs[0], nvs[1]
