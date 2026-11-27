@@ -145,8 +145,10 @@ def test_reference_chains_are_rehung_and_the_real_parents_checked():
     assert hung["tail"] == {"ref_parent": "spine_01_ref.x", "was": "root_ref.x"}
     assert hung["ear_l"] == {"ref_parent": "head_ref.x", "was": "head_ref.x"}          # ARP's own kept
     # after match_to_rig: the real chain must hang from spine_01 (else: reported, not raised)
-    final = {"root.x": ((0, 0, .14), (0, 0, .22), None, True), "spine_01.x": ((0, 0, .22), (0, 0, .44), "root.x", True),
-             "c_head.x": ((0, 0, .67), (0, 0, 1), "spine_01.x", False), "head.x": ((0, 0, .67), (0, 0, 1), "c_head.x", True),
+    final = {"root.x": ((0, 0, .14), (0, 0, .22), None, True),
+             "spine_01.x": ((0, 0, .22), (0, 0, .44), "root.x", True),
+             "c_head.x": ((0, 0, .67), (0, 0, 1), "spine_01.x", False),
+             "head.x": ((0, 0, .67), (0, 0, 1), "c_head.x", True),
              "c_skull_02.x": ((0, 0, .8), (0, 0, .9), "head.x", False),
              "c_tail_00.x": ((0, .24, .3), (0, .33, .2), "spine_01.x", True),
              "c_tail_01.x": ((0, .33, .2), (0, .4, .1), "c_tail_00.x", True),
