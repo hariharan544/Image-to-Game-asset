@@ -139,7 +139,16 @@ def test_fake_probe_presets_and_options(probed):
     assert "kilt_amount" in lo["missing_expected"] and lo["expected_present"]["finger_pinky"]
     assert rep["scale_fix"]["exists"] and rep["scale_fix"]["default"] is False
     assert rep["scene_props"]["props"]["arp_bind_engine"]["items"] == ["HEAT_MAP", "PSEUDO_VOXELS", "VHDS"]
-    assert rep["operators"]["ops"]["arp.add_limb"]["exists"] and not rep["operators"]["ops"]["arp.disable_limb"]["exists"]
+    assert rep["operators"]["ops"]["arp.add_limb"]["exists"] and not rep["operators"]["ops"]["arp.dupli_limb"]["exists"]
+
+
+def test_fake_probe_removes_one_ear_and_records_what_stayed(probed):
+    """The stray-ear clean-up is only safe if disable_limb on one ear leaves the other one."""
+    d = probed["rep"]["disable_limb"]
+    assert d["status"] == "ok" and d["selected"] == "ear_01_ref.r"
+    assert d["removed_ref_bones"] == ["ear_01_ref.r"]
+    assert d["other_side_kept"] is True and "ear_01_ref.l" in d["ears_left"]
+    assert "ear_01_ref_dupli_001.r" in d["ears_left"] and d["others_kept"] is True
 
 
 def test_fake_probe_limb_settings_and_protocol(probed):

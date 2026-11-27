@@ -239,6 +239,27 @@ class FAKE_OT_add_limb(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class FAKE_OT_disable_limb(bpy.types.Operator):
+    """Removes the limb of the selected reference bone: same stem, same dupli tag, same side."""
+    bl_idname = "arp.disable_limb"
+    bl_label = "disable limb"
+
+    def execute(self, context):
+        rig = context.active_object
+        bpy.ops.object.mode_set(mode="EDIT")
+        eb = rig.data.edit_bones
+        act = eb.active
+        if act is None or "_ref" not in act.name:
+            self.report({"ERROR"}, "select a reference bone")
+            return {"CANCELLED"}
+        stem = act.name.split("_ref")[0].rsplit("_", 1)[0]
+        rest = act.name.split("_ref", 1)[1]
+        for b in [b for b in eb if b.name.startswith(stem + "_") and "_ref" in b.name
+                  and b.name.split("_ref", 1)[1] == rest]:
+            eb.remove(b)
+        return {"FINISHED"}
+
+
 class FAKE_OT_match_to_rig(bpy.types.Operator):
     bl_idname = "arp.match_to_rig"
     bl_label = "match"
@@ -336,7 +357,7 @@ class FAKE_OT_set_mped_rig(bpy.types.Operator):
         return {"FINISHED"}
 
 
-CLASSES = (FAKE_OT_append_arp, FAKE_OT_show_limb_params, FAKE_OT_add_limb, FAKE_OT_match_to_rig,
+CLASSES = (FAKE_OT_append_arp, FAKE_OT_show_limb_params, FAKE_OT_add_limb, FAKE_OT_disable_limb, FAKE_OT_match_to_rig,
            FAKE_OT_bind_to_rig, FAKE_OT_export_fbx_panel, FAKE_OT_set_humanoid_rig, FAKE_OT_set_mped_rig)
 ENUMS = {"arp_bind_engine": ("HEAT_MAP", "PSEUDO_VOXELS", "VHDS"),
          "arp_engine_type": ("UNITY", "UNREAL", "GODOT"),

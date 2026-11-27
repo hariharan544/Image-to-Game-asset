@@ -1227,6 +1227,36 @@ def _tail_dupli(st: dict, side: str) -> dict:
     return out
 
 
+def _disable_ear(st: dict) -> dict:
+    """What arp.disable_limb removes when one side's ear is selected: Forge would use it to drop the
+    ear Auto-Rig Pro adds on a body with one ear, but only if it leaves the other ear in place."""
+    rig = _rig(st)
+    before = _ref_parents(rig)
+    all_before = {b.name for b in rig.data.bones}
+    ears = sorted(n for n in before if n.startswith("ear") and n.endswith(".r"))
+    if not ears:
+        raise RuntimeError("no right ear reference bones to remove")
+    target = next((n for n in ears if "dupli" not in n), ears[0])
+    if not _select_ref(rig, target):
+        _to_object_mode()
+        raise RuntimeError(f"could not select {target}")
+    buf = io.StringIO()
+    with _captured(buf), bpy.context.temp_override(**view3d_override()):
+        res = bpy.ops.arp.disable_limb()
+    _to_object_mode()
+    rig = _rig(st)
+    after = _ref_parents(rig)
+    stem, rest = target.split("_ref")[0].rsplit("_", 1)[0] + "_", target.split("_ref", 1)[1]
+    own = [n for n in ears if n.startswith(stem) and n.split("_ref", 1)[1] == rest]   # that ear's own chain
+    gone_all = sorted(all_before - {b.name for b in rig.data.bones})
+    ears_left = sorted(n for n in after if n.startswith("ear"))
+    return {"selected": target, "call": list(res), "removed_ref_bones": sorted(set(before) - set(after)),
+            "removed_bone_count": len(gone_all), "removed_bones": gone_all[:150], "ears_left": ears_left,
+            "other_side_kept": any(n.endswith(".l") for n in ears_left),
+            "others_kept": sorted(set(before) - set(after)) == own,
+            "log_tail": _tail(buf.getvalue(), 12)}
+
+
 def _probe_load_settings(st: dict) -> dict:
     rig = _rig(st)
     mod = _arp_module("load_limb_settings")
@@ -1744,6 +1774,8 @@ def _part_limbs(rec: _Rec, args: dict):
     yield 0.1
     _item(rec, "add_limb.cases.ears_second", _add_case, st, "ears")
     _item(rec, "humanoid_check.results.refs_with_second_ears", lambda: _humanoid(_rig(st)))
+    yield 0.1
+    _item(rec, "disable_limb", _disable_ear, st)       # the right ear only: does the left one stay?
     yield 0.1
     _item(rec, "add_limb.after_match", _after_match, st)
     _item(rec, "humanoid_check.results.limbs_rig_after_match", lambda: _humanoid(_rig(st)))

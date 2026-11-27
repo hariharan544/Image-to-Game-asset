@@ -62,6 +62,7 @@ SECTIONS = {
     "ref_bone_keys": ("limbs", ("bones", "keys_seen")),
     "limb_protocol": ("limbs", ("cases",)),
     "add_limb": ("limbs", ("presets_items", "cases")),
+    "disable_limb": ("limbs", ("selected", "removed_ref_bones", "other_side_kept")),
     "deform_names": ("build", ("deform_bones", "owner_bones")),
     "ik_poles": ("build", ("pole_bones", "expected", "ik_constraints")),
     "chin": ("build", ("keys_read", "weights_changed", "arp_bind_chin")),
