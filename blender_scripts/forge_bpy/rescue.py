@@ -327,6 +327,34 @@ def clean_seam(me, piece_obj) -> None:
     me.update()
 
 
+def tidy(me, max_hole: int = 64) -> None:
+    """Small mesh faults a remesh or a join can leave: near-duplicate vertices on a seam,
+    stray points and wire edges, small holes. Bigger openings are left for the report."""
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    if bm.verts:
+        size = max((max(v.co[i] for v in bm.verts) - min(v.co[i] for v in bm.verts)) for i in range(3))
+        bad = {v for e in bm.edges if e.is_boundary or len(e.link_faces) > 2 for v in e.verts}
+        if bad:
+            bmesh.ops.remove_doubles(bm, verts=list(bad), dist=size * 2e-5)
+        wire = [e for e in bm.edges if not e.link_faces]
+        if wire:
+            bmesh.ops.delete(bm, geom=wire, context="EDGES")
+        loose = [v for v in bm.verts if not v.link_faces]
+        if loose:
+            bmesh.ops.delete(bm, geom=loose, context="VERTS")
+        open_e = [e for e in bm.edges if e.is_boundary]
+        if open_e:
+            res = bmesh.ops.holes_fill(bm, edges=open_e, sides=max_hole)
+            ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+            if ng:
+                bmesh.ops.triangulate(bm, faces=ng)
+        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+        bm.to_mesh(me)
+        me.update()
+    bm.free()
+
+
 def mesh_defects(me) -> tuple:
     """(open edges, edges shared by more than two faces, loose vertices + wire edges), counted
     from arrays (fast on millions of faces)."""

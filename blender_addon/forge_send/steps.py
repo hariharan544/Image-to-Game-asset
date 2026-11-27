@@ -105,12 +105,21 @@ def clear_rig() -> None:
 
 # ----------------------------------------------------------------------------- step 4: retopology
 
-def prepare_retopo() -> list:
-    """Approved parts become the hidden 'high' sources; fresh copies become the 'low' meshes."""
+def prepare_retopo(only=None) -> list:
+    """Approved parts become the hidden 'high' sources; fresh copies become the 'low' meshes.
+    only: part names to redo; every other part keeps the new mesh it already has."""
     c = C()
     clear_rig()
     _clear("lod")
-    _clear("low")
+    if only:
+        for o in list(lows()):
+            if o.get(c.PART_PROP) in only:
+                me = o.data
+                bpy.data.objects.remove(o)
+                if me.users == 0:
+                    bpy.data.meshes.remove(me)
+    else:
+        _clear("low")
     try:
         _mod("retopo").cleanup_jobs()             # first: retires the jobs of removed results
     except Exception:                             # noqa: BLE001
@@ -134,6 +143,8 @@ def prepare_retopo() -> list:
     bpy.context.view_layer.update()            # matrix_world must see that before bounds are read
     for p in ps:
         part = c.safe_name(p.name)
+        if only and part not in only:
+            continue
         p[G.ROLE] = G.kind(p) or "prop"        # keep body/prop before forge_role becomes "high"
         p[c.PART_PROP] = part
         p[c.ROLE_PROP] = "high"
@@ -222,7 +233,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
             if a.get("thin") and not twin and a["kind"] not in ("ear", "horn") and not a.get("cut_ok", True):
                 # one-sided and thin, but no clean cut (it rests against a leg...): mirroring
                 # would copy or delete it, so this body must not be mirrored
-                blocked.append(a["name"])
+                blocked.append((a["name"], m))
                 out[a["name"]] = "with the body (no clean cut): body NOT mirrored"
             elif a.get("thin") and not twin and a["kind"] not in ("ear", "horn"):
                 k += 1
@@ -246,12 +257,22 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
                     out[f"{where} side differs"] = why
                 elif kind == "kept":
                     # the director must know BEFORE the run: mirroring would copy/delete it
-                    blocked.append(f"one-sided part on the {where}")
+                    blocked.append((f"one-sided part on the {where}", None))
                     out[f"one-sided part on the {where}"] = f"not cut ({why}): body NOT mirrored"
             me["forge_onesided_planned"] = True
         elif "forge_onesided_planned" in me:
             del me["forge_onesided_planned"]
         me["forge_plan_mirror"] = mirror
+        # a part the bone-based finder could not cut, but the one-sided cut took after all,
+        # blocks nothing: it is cut (found twice - by the skeleton and by the mirror test)
+        still = []
+        for name, m in blocked:
+            if m is not None and (ids[m] > 0).mean() > 0.6:
+                if str(out.get(name, "")).startswith("with the body"):
+                    out[name] = "separate: one-sided, kept as it is when mirroring"
+                continue
+            still.append(name)
+        blocked = still
         if mirror and blocked:
             me["forge_mirror_blocked"] = ", ".join(blocked)[:120]
         elif "forge_mirror_blocked" in me:
@@ -374,12 +395,33 @@ def plan_rows() -> list:
     return [f"{', '.join(sorted(v))}: {k}" for k, v in sorted(groups.items())]
 
 
-def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: str = "auto"):
+def part_names(objs) -> list:
+    """Forge part names of the given objects (new meshes or originals)."""
+    c = C()
+    out = []
+    names = {c.safe_name(p.name): p for p in parts()}
+    for o in objs:
+        part = o.get(c.PART_PROP)
+        if not part and o in names.values():
+            part = c.safe_name(o.name)
+        if part in names and part not in out:
+            out.append(part)
+    return out
+
+
+def missing_lows() -> list:
+    """Parts that have no new mesh yet (e.g. after redoing only some parts)."""
+    c = C()
+    have = {o.get(c.PART_PROP) for o in lows()}
+    return [c.safe_name(p.name) for p in parts() if c.safe_name(p.name) not in have]
+
+
+def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: str = "auto", only=None):
     if use_qr:
         prepare_maps(detail, side=symmetry)
     for p in parts():                                  # a side preview must not reach the remesher
         show_side(p, "")
-    prepare_retopo()
+    prepare_retopo(only)
     if not (use_qr and detail > 0):              # no map: QR spreads quads by curvature only
         dens = _mod("density")
         for o in lows():
@@ -387,7 +429,7 @@ def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: 
             if a is not None:
                 o.data.color_attributes.remove(a)
     args = {"method": "quadremesher" if use_qr else "quadriflow", "target_tris": int(budget),
-            "symmetry": symmetry,
+            "symmetry": symmetry, "only": list(only or []),
             "min_tris_per_part": 300, "qr_timeout": 900, "shape_retries": 1}
     return _mod("retopo").run(args)
 

@@ -269,3 +269,40 @@ def test_mirror_image_uv_islands_are_turned_round():
     assert min(u for u, _v in after) == pytest.approx(min(u for u, _v in before))
     assert max(u for u, _v in after) == pytest.approx(max(u for u, _v in before))
     assert U.unflip_islands(o) == 0                 # now the right way round
+
+
+def test_redo_only_the_selected_parts_keeps_the_others():
+    """'Run for selected parts only': the prop is remeshed again, the body's new mesh is not
+    touched, and the prop gets the same budget share as in a full run."""
+    import bmesh
+    S = importlib.import_module("forge_send.steps")
+    G = importlib.import_module("forge_send.geometry")
+    bpy.ops.wm.read_homefile(use_empty=True)
+    col = bpy.data.collections.new("Forge Parts")
+    bpy.context.scene.collection.children.link(col)
+
+    def part(name, kind, r, loc):
+        bm = bmesh.new()
+        bmesh.ops.create_icosphere(bm, subdivisions=5, radius=r)
+        me = bpy.data.meshes.new(name)
+        bm.to_mesh(me)
+        bm.free()
+        o = bpy.data.objects.new(name, me)
+        o.location = loc
+        col.objects.link(o)
+        o[G.ROLE] = kind
+        return o
+    part("Body", "body", 1.0, (0, 0, 1))
+    part("Bell", "prop", 0.3, (2, 0, 1))
+    bpy.context.view_layer.update()
+    rep = S.run_retopo(4000, use_qr=False, detail=0.0)
+    full = {k: v["budget"] for k, v in rep["parts"].items()}
+    body_low = next(o for o in S.lows() if o.get("forge_part") == "Body")
+    body_mesh, body_faces = body_low.data.name, len(body_low.data.polygons)
+    rep2 = S.run_retopo(4000, use_qr=False, detail=0.0, only=["Bell"])
+    assert set(rep2["parts"]) == {"Bell"}
+    assert rep2["parts"]["Bell"]["budget"] == full["Bell"]           # same share as a full run
+    body_low = next(o for o in S.lows() if o.get("forge_part") == "Body")
+    assert body_low.data.name == body_mesh and len(body_low.data.polygons) == body_faces
+    assert len(S.lows()) == 2 and not S.missing_lows()
+    assert S.part_names([body_low]) == ["Body"]

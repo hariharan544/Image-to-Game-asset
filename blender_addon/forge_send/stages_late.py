@@ -166,6 +166,9 @@ ACTIONS = {
     "retopo_run": "Rebuild every part as a clean quad mesh inside the triangle budget (Quad Remesher). "
                   "The originals are kept hidden for the detail bake",
     "retopo_undo": "Remove the new meshes and show the originals again",
+    "retopo_run_selected": "Redo only the parts you selected in the viewport (a prop): every other new mesh "
+                           "stays as it is; each part gets the same share of the budget as in a full run",
+    "retopo_show_defects": "Select and frame the open or broken edges of the new meshes",
     "retopo_side_left": "Preview: the whole model built from its LEFT side (+X), mirrored. Uses it",
     "retopo_side_right": "Preview: the whole model built from its RIGHT side (-X), mirrored. Uses it",
     "retopo_side_off": "Back to the original model (no preview)",
@@ -266,6 +269,63 @@ class FORGE_OT_step(bpy.types.Operator):
         run(st, "retopology (Quad Remesher)" if qr else "retopology",
             lambda: S.run_retopo(st.budget, qr, st.detail, st.symmetry), done)
 
+    def do_retopo_run_selected(self, context, st):
+        """Redo only the selected parts (a prop), keep every other new mesh as it is. Each part
+        gets the same share of the budget as in a full run."""
+        only = S.part_names(context.selected_objects)
+        if not only:
+            self.report({"ERROR"}, "Select the parts to redo first (click them in the viewport)")
+            return
+        if st.get("detail_view"):
+            st["detail_view"] = False
+            S.show_detail_map(False)
+        old = st.retopo_rep or "{}"
+        st.retopo = "todo"
+        qr = S.has_addon_op("qremesher.remesh")
+
+        def done(st, rep):
+            S._mod("retopo").STATUS["text"] = ""
+            merged = json.loads(old)
+            parts = merged.get("parts", {})
+            for o in S.lows():
+                r = rep.get("parts", {}).get(o.get("forge_part"))
+                if r is not None:
+                    r["symmetry"] = bool(o.get("forge_symmetry_x"))
+                    r["asymmetry_pct"] = round(100 * float(o.get("forge_asymmetry", 1.0)), 1)
+            parts.update(rep.get("parts", {}))
+            have = {o.get("forge_part") for o in S.lows()}
+            merged["parts"] = {k: v for k, v in parts.items() if k in have}
+            merged["total_tris"] = sum(int(v.get("tris_after", 0)) for v in merged["parts"].values())
+            merged["missing"] = S.missing_lows()
+            S.clay_lows()
+            _clean_view(bpy.context)
+            _save_rep(st, "retopo_rep", merged)
+            st.retopo = "review"
+        run(st, f"retopology of {len(only)} part(s)", lambda: S.run_retopo(st.budget, qr, st.detail,
+                                                                          st.symmetry, only=only), done)
+
+    def do_retopo_show_defects(self, context, st):
+        """Select and frame the open / broken edges of the new meshes that are not clean."""
+        rep = json.loads(st.retopo_rep or "{}").get("parts", {})
+        bad = [o for o in S.lows() if any(rep.get(o.get("forge_part"), {}).get(k) for k in
+                                          ("open_edges", "bad_edges", "loose"))]
+        if not bad:
+            self.report({"INFO"}, "No open or broken edges")
+            return
+        S.C().select_only(*bad)
+        bpy.ops.object.mode_set(mode="EDIT")
+        bpy.ops.mesh.select_mode(type="EDGE")
+        bpy.ops.mesh.select_all(action="DESELECT")
+        bpy.ops.mesh.select_non_manifold(extend=False, use_wire=True, use_boundary=True, use_multi_face=True,
+                                         use_non_contiguous=False, use_verts=True)
+        for area in context.screen.areas:
+            if area.type == "VIEW_3D":
+                region = next((r for r in area.regions if r.type == "WINDOW"), None)
+                with context.temp_override(area=area, region=region):
+                    bpy.ops.view3d.view_selected()
+                break
+        self.report({"INFO"}, "The selected edges are the problem: Tab back to Object mode when done")
+
     def do_retopo_side_left(self, context, st):
         self._side(context, st, "left")
 
@@ -345,6 +405,11 @@ class FORGE_OT_step(bpy.types.Operator):
             o.location.x = off
 
     def do_retopo_approve(self, context, st):
+        missing = S.missing_lows()
+        if missing:
+            self.report({"ERROR"}, f"No new mesh yet for {', '.join(missing)}: select it and "
+                                   "Run for selected parts")
+            return
         for o in S.parts():
             o.location.x = 0.0
             o.hide_set(True)
@@ -558,8 +623,9 @@ def _retopo_rows(rep):
         for why in r.get("split_kept", []):
             out.append((WARN, f"    {why}"))
         if r.get("open_edges") or r.get("bad_edges") or r.get("loose"):
-            out.append((BAD, f"    mesh not clean: {r.get('open_edges', 0)} open, {r.get('bad_edges', 0)} broken, "
-                             f"{r.get('loose', 0)} loose - Undo and run again"))
+            out.append((BAD, f"    not clean: {r.get('open_edges', 0)} open, {r.get('bad_edges', 0)} broken, "
+                             f"{r.get('loose', 0)} loose edges"))
+            out.append(("BLANK1", "    Show the problem edges (button below)"))
         if sh:
             if sh.get("lost_pct", 0) > 0.5 and sh.get("detail_only"):
                 out.append(("BLANK1", f"    fine detail flattened: {sh['lost_pct']}% (curls, twists)"))
@@ -577,6 +643,8 @@ def _retopo_rows(rep):
                 if sh.get("rescued"):
                     fixed += f", {sh['rescued']} thin part(s) rebuilt"
                 out.append(("BLANK1", f"    shape kept{fixed}"))
+    for name in rep.get("missing", []):
+        out.append((WARN, f"{name}: no new mesh yet - select it, Run for selected parts"))
     if rep.get("total_tris"):
         out.append(("INFO", f"total {rep['total_tris']:,} triangles"))
     reg = rep.get("regions") or {}
@@ -722,8 +790,14 @@ def _draw_retopo(col, st):
             c.label(text="   (made for another symmetry choice: Show or Run updates it)", icon="INFO")
     _btn(col, "retopo_run", "Run retopology", "MOD_REMESH", 1.3)
     rep = json.loads(st.retopo_rep or "{}")
+    if S.lows():
+        col.operator("forge.step", text="Run for selected parts only", icon="RESTRICT_SELECT_OFF").action = \
+            "retopo_run_selected"
     if st.retopo == "review" and rep:
         _rows(col.column(align=True), _retopo_rows(rep))
+        if any(r.get("open_edges") or r.get("bad_edges") or r.get("loose") for r in rep.get("parts", {}).values()):
+            col.operator("forge.step", text="Show the problem edges", icon="ZOOM_SELECTED").action = \
+                "retopo_show_defects"
         row = col.row(align=True)
         row.operator("forge.step", text="Compare with original", icon="MOD_MIRROR").action = "retopo_compare"
         col.label(text="Press Z > Wireframe to see the quads.", icon="INFO")

@@ -513,3 +513,26 @@ def test_ragged_cut_borders_are_closed_on_the_first_attempt():
             assert rescue.mesh_defects(m2)[:2] == (0, 0), seed
     finally:
         rescue._rim_cut = real
+
+
+def test_a_part_the_one_sided_cut_takes_does_not_block_the_mirror(monkeypatch):
+    """On the director's bull the skeleton-based finder could not cut the tail ('extra_l')
+    while the one-sided cut took it: the first verdict blocked the mirror anyway."""
+    import numpy as np
+
+    import bodies
+    from forge_bpy import appendages
+    body, P = bodies.curled_tail(1.0)
+    S = _as_forge_body(body)
+    co = bodies.coords(body.data)
+    al = np.array([bodies.arc(P, c) for c in co])
+    tail = np.nonzero((al[:, 0] < 0.06) & (al[:, 1] > 0.2))[0]
+    fake = [{"name": "extra_l", "kind": "extra", "thin": True, "cut_ok": False, "vert_idx": tail,
+             "width": 0.04, "thickness": 0.04, "chain": [(0, 0, 0)] * 6, "verts": len(tail)}]
+    monkeypatch.setattr(appendages, "from_object", lambda *a, **k: fake)
+    try:
+        plan = S.plan_parts(recompute=True, side="left")
+        assert "forge_mirror_blocked" not in body.data, body.data.get("forge_mirror_blocked")
+        assert plan["extra_l"].startswith("separate"), plan
+    finally:
+        bpy.ops.wm.read_homefile(use_empty=True)

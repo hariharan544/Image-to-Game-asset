@@ -107,6 +107,26 @@ def _retopo_part(obj, target_tris: int, method: str, opts: dict) -> str:
     return step
 
 
+def _targets(args: dict):
+    """The new meshes to make now, and each one's triangle budget. Redoing only some parts
+    gives each the SAME share of the whole budget it gets in a full run (shares from the
+    original parts' areas), so redoing the props never takes triangles from the body."""
+    lows = C.meshes_with_role("low")
+    total = int(args["target_tris"])
+    scale = float(args.get("budget_scale", 1.0))
+    min_part = int(args.get("min_tris_per_part", 150))
+    only = set(args.get("only") or [])
+    if not only:
+        return lows, _part_budgets(lows, total, scale, min_part)
+    from .rescue import area
+    highs = {o.get(C.PART_PROP): o for o in C.meshes_with_role("high")}
+    areas = {k: area(h.data) for k, h in highs.items()}
+    tot = sum(areas.values()) or 1.0
+    todo = [o for o in lows if o.get(C.PART_PROP) in only]
+    budgets = {o.name: max(int(total * scale * areas.get(o.get(C.PART_PROP), 0.0) / tot), min_part) for o in todo}
+    return todo, budgets
+
+
 def _part_budgets(lows, total_budget: int, budget_scale: float, min_part: int) -> dict:
     areas = {o.name: _surface_area(o) for o in lows}
     total_area = sum(areas.values()) or 1.0
@@ -255,9 +275,7 @@ def _same_place(src_me, new_me, tol: float = 0.2) -> bool:
 
 def _run_builtin(args: dict) -> dict:
     method = args.get("method", "quadriflow")
-    lows = C.meshes_with_role("low")
-    budgets = _part_budgets(lows, int(args["target_tris"]), float(args.get("budget_scale", 1.0)),
-                            int(args.get("min_tris_per_part", 150)))
+    lows, budgets = _targets(args)
     report: dict = {}
     for obj in lows:
         before = C.tri_count(obj)
@@ -504,9 +522,7 @@ def _qr_part(obj, quads: int, args: dict, timeout: float):
 
 
 def _run_qr(args: dict):
-    lows = C.meshes_with_role("low")
-    budgets = _part_budgets(lows, int(args["target_tris"]), float(args.get("budget_scale", 1.0)),
-                            int(args.get("min_tris_per_part", 150)))
+    lows, budgets = _targets(args)
     timeout = float(args.get("qr_timeout", 300))
     report: dict = {}
     for obj in lows:
@@ -774,8 +790,12 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
             obj.data.update()
         _finish_part(obj, budget, used, before, report, True)
         r = report[obj.get(C.PART_PROP)]
-        # final gate: a game mesh must be closed (an opening here is a bug upstream, shown)
+        # final gate: a game mesh must be closed. Small leftovers (doubles on a seam, a stray
+        # point, a little hole) are tidied; anything bigger is reported and can be shown
         d = _rescue.mesh_defects(obj.data)
+        if any(d):
+            _rescue.tidy(obj.data)
+            d = _rescue.mesh_defects(obj.data)
         r["open_edges"], r["bad_edges"], r["loose"] = int(d[0]), int(d[1]), int(d[2])
         r["separate_parts"] = len(split_pieces)
         if piece_fallbacks:
