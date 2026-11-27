@@ -971,7 +971,7 @@ def attach(target, piece_obj) -> None:
 
 OPEN_LAYER = "forge_open"
 JOINT_ROOM = 1                 # rings of faces each side gives up so the bridge has room
-JOINT_RELAX = 4                # relax + lay-on-the-original rounds for the joint band
+JOINT_RELAX = (4, 8, 16)       # relax + lay-on-the-original rounds for the joint band (checked after each)
 MIN_JOINT_ANGLE = 5.0          # degrees: a smaller corner is a needle that shades and skins badly
 
 
@@ -1106,6 +1106,23 @@ def _one_loop(edges) -> bool:
     return len(seen) == len(edges)
 
 
+def _even_loops(bm, lay) -> set:
+    """Give the shorter cut loop as many edges as the longer one (its longest edges split in
+    half), so the bridge is one ring of quads instead of fans of needle triangles. Returns
+    the faces that got an extra corner (triangulated once the joint is relaxed)."""
+    loops = {m: [e for e in bm.edges if e[lay] == m] for m in (1, 2)}
+    short = 1 if len(loops[1]) < len(loops[2]) else 2
+    edges = loops[short]
+    grown: set = set()
+    for _ in range(abs(len(loops[1]) - len(loops[2]))):
+        e = max(edges, key=lambda x: x.calc_length())
+        grown.update(e.link_faces)
+        ne, _nv = bmesh.utils.edge_split(e, e.verts[0], 0.5)
+        ne[lay] = short
+        edges.append(ne)
+    return grown
+
+
 def _joint_faults(bm, band: set, t_full, before: int):
     """Why the welded joint is not acceptable, or None: it added open or broken edges, a
     joint face has a needle corner, faces the other way than the original surface, or
@@ -1198,6 +1215,8 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
         rim = [e for e in bb.edges if e[lay]]        # ONLY the two cut loops (never an old hole)
         if sorted((sum(1 for e in rim if e[lay] == 2), sum(1 for e in rim if e[lay] == 1))) != sorted(loops):
             return "openings", loops
+        grown = _even_loops(bb, lay)               # as many edges on both: a ring of quads
+        rim = [e for e in bb.edges if e[lay]]
         try:
             res = bmesh.ops.bridge_loops(bb, edges=rim)
         except (RuntimeError, ValueError, TypeError):
@@ -1208,25 +1227,36 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
         band = {v for f in joint for v in f.verts}
         for _ in range(2):
             band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
-        # relax the band and lay it on the ORIGINAL surface, which has the real fillet
+        # relax the band and lay it on the ORIGINAL surface, which has the real fillet; relax
+        # further only while the one fault left is needle corners
         t_full = _tree_of(full_me)
-        for _ in range(JOINT_RELAX):
-            bmesh.ops.smooth_vert(bb, verts=list(band), factor=0.5, use_axis_x=True, use_axis_y=True,
-                                  use_axis_z=True)
-            for v in band:
-                hit = t_full.find_nearest(v.co)
-                if hit[0] is not None:
-                    v.co = hit[0]
-        shell, stack = set(joint), list(joint)
-        while stack:
-            f = stack.pop()
-            for e in f.edges:
-                for g in e.link_faces:
-                    if g not in shell:
-                        shell.add(g)
-                        stack.append(g)
-        bmesh.ops.recalc_face_normals(bb, faces=list(shell))
-        why = _joint_faults(bb, band, t_full, before)
+        done, shell, why = 0, None, None
+        for total in JOINT_RELAX:
+            for _ in range(total - done):
+                bmesh.ops.smooth_vert(bb, verts=list(band), factor=0.5, use_axis_x=True, use_axis_y=True,
+                                      use_axis_z=True)
+                for v in band:
+                    hit = t_full.find_nearest(v.co)
+                    if hit[0] is not None:
+                        v.co = hit[0]
+            done = total
+            if shell is None:
+                ng = [f for f in grown if f.is_valid and len(f.verts) > 4]
+                if ng:
+                    res = bmesh.ops.triangulate(bb, faces=ng, quad_method="BEAUTY", ngon_method="BEAUTY")
+                    joint += [f for f in res.get("faces", []) if f.is_valid]
+                shell, stack = set(joint), list(joint)
+                while stack:
+                    f = stack.pop()
+                    for e in f.edges:
+                        for g in e.link_faces:
+                            if g not in shell:
+                                shell.add(g)
+                                stack.append(g)
+            bmesh.ops.recalc_face_normals(bb, faces=list(shell))
+            why = _joint_faults(bb, band, t_full, before)
+            if why != "thin faces":
+                break
         if why:
             return why, loops
         bb.edges.layers.int.remove(lay)
@@ -1241,12 +1271,13 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
 def weld(target, piece_obj, src_me, cap_me, full_me, info: dict | None = None) -> str:
     """Join a remeshed cut-off part to the body as ONE continuous skin: open the body where
     the part's solid covers it (src_me: the cut piece with its plug), open the part where it
-    is plug (inside cap_me, the capped body), bridge the two openings - only those two loops -
-    and lay the joint band on the uncut original (full_me), which has the real fillet. All
-    on copies: the body is changed only when the joint adds no open or broken edge, no face
-    crosses another or faces inward, and no joint corner is a needle; otherwise the part is
-    attached as its own shell (its plug hidden in the body). Returns 'welded' or
-    'attached: <reason>'; `info` gets that and the two loop sizes."""
+    is plug (inside cap_me, the capped body), give the shorter opening as many edges as the
+    longer, bridge the two openings - only those two loops - and lay the joint band on the
+    uncut original (full_me), which has the real fillet. All on copies: the body is changed
+    only when the joint adds no open or broken edge, no face crosses another or faces
+    inward, and no joint corner is a needle; otherwise the part is attached as its own shell
+    (its plug hidden in the body). Returns 'welded' or 'attached: <reason>'; `info` gets
+    that and the two loop sizes."""
     if info is None:
         info = {}
     seal(piece_obj.data)
