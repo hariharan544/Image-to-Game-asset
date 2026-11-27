@@ -622,7 +622,7 @@ def _rows(col, items):
 
 JOINT_WHY = {        # why a cut-off part was not joined as one skin, in plain words
     "no plug": "its root ring was not recorded",
-    "no overlap": "it did not reach into the body",
+    "no overlap": "it does not reach into the body",
     "hole": "the body has an opening next to its root",
     "island": "joining would cut away more than the root",
     "inside": "it lies inside the body",
@@ -632,25 +632,46 @@ JOINT_WHY = {        # why a cut-off part was not joined as one skin, in plain w
     "thin faces": "joining would have made needle-thin faces",
     "flipped faces": "joining would have turned faces inside out",
     "crossing faces": "the joint faces would have crossed each other",
+    "off the surface": "at this triangle count the joint would cut across the fold at its root",
     "error": "Blender refused the join",
+}
+# what to do, by reason: the hidden plug is inside the body for every reason but these
+JOINT_TODO = {
+    "no overlap": "it sits on the body as its own piece: check its root in the viewport",
+    "no plug": "it sits on the body as its own piece: check its root in the viewport",
+    "inside": "check in the viewport that it still shows",
+    "off the surface": "its root is hidden inside the body: nothing to do (more triangles let it join as one skin)",
 }
 
 
+def _part_name(j: dict, only: bool) -> str:
+    """A cut-off part by its name in the parts plan (the tail, the left antenna...)."""
+    name = str(j.get("name") or "")
+    if name and not name.startswith("part_"):
+        base, side = (name[:-2], {"_l": "left ", "_r": "right "}[name[-2:]]) if name[-2:] in ("_l", "_r") \
+            else (name, "")
+        return f"the {side}{base.rstrip('0123456789').replace('_', ' ')}"
+    return "the cut-off part" if only else f"cut-off part {j.get('part', '')}".strip()
+
+
 def _joint_rows(r):
-    """How each cut-off part was joined back: one skin, or its own piece (and why)."""
+    """How each cut-off part was joined back: one skin, or its own piece (why, what to do)."""
     joints = r.get("joints") or ([{"joint": r["joint"]}] if r.get("joint") else [])
     out = []
-    for i, j in enumerate(joints):
-        name = "the cut-off part (tail...)" if len(joints) == 1 else f"cut-off part {i + 1}"
+    for j in joints:
+        name = _part_name(j, len(joints) == 1)
         res = str(j.get("joint", ""))
         if res == "welded":
-            out.append(("BLANK1", f"    {name} joined into the body as one skin"))
-        else:
-            why = res.split(":", 1)[1].strip() if ":" in res else ""
-            out.append(("BLANK1", f"    {name} kept as its own piece"))
-            if why:
-                out.append(("BLANK1", f"    ({JOINT_WHY.get(why, why)})"))
-            out.append(("BLANK1", "    its root is hidden inside the body: nothing to do"))
+            out.append(("BLANK1", f"    {name}: joined into the body as one skin"))
+            if j.get("folds_near"):
+                out.append((WARN, f"    {name}: {j['folds_near']} folded faces near its root (the part's own "
+                                  "remesh): look at it, paint it denser and run again if it shows"))
+            continue
+        why = res.split(":", 1)[1].strip() if ":" in res else ""
+        out.append(("BLANK1", f"    {name}: kept as its own piece"))
+        if why:
+            out.append(("BLANK1", f"    ({JOINT_WHY.get(why, why)})"))
+        out.append(("BLANK1", f"    {JOINT_TODO.get(why, 'its root is hidden inside the body: nothing to do')}"))
     return out
 
 

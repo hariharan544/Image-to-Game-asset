@@ -650,16 +650,30 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         if side == "none" or (side in ("left", "right") and not mirror):
             obj["forge_symmetry_x"] = False
         piece_quads: list = []
+        whole = target                              # quads for the body AND its cut-off parts
         if split_pieces:
             # a cut-off part gets the SAME quad size as the body (one quad size across the
             # joint), never too coarse to stay round. Its share comes out of the body's
-            # budget: reserved now from the body's average quad size, settled after the
-            # body is done from the quad size the body really has where the part sits
+            # budget: reserved now from the body's average quad size, settled once the body
+            # is remeshed from the quad size the body really has where the part sits (what a
+            # part does not use goes back to the body). Parts never take more than half: then
+            # each gives up the same share of its reserve, so body + parts stay in the budget
             import math
             e_avg = math.sqrt(max(_rescue.area(full_backup), 1e-12) / max(target, 1.0))
             piece_quads = [int(1.1 * _quads_for(_rescue.area(pm), _piece_edge(e_avg, p)))
                            for _k, pm, p in split_pieces]
-            target = max(target - sum(piece_quads), target * 0.5)
+            if sum(piece_quads) > 0.5 * whole:
+                piece_quads = [max(MIN_PIECE_QUADS, int(q * 0.5 * whole / sum(piece_quads))) for q in piece_quads]
+            target = max(whole - sum(piece_quads), whole * 0.5)
+
+        def settle() -> list:
+            """Each part's quads from the body's quad size where it sits (at most its reserve)."""
+            asks = []
+            for (_k, pm, plug), reserved in zip(split_pieces, piece_quads):
+                edge = _local_edge(obj.data, plug)       # the body's quad size where it sits
+                asks.append(min(reserved, _quads_for(_rescue.area(pm), _piece_edge(edge, plug)))
+                            if edge else reserved)
+            return asks
         # the body's own share of the triangles: the whole budget minus what the cut-off parts
         # reserved (each part's share is enforced where it is set)
         share = 2 * target / headroom
@@ -679,7 +693,13 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         ok = yield from _qr_part(obj, target, args, timeout)
         used = "quadremesher"
         got = C.tri_count(obj) if ok else 0
-        if ok and (got > share * 1.05 or got < share * 0.7):
+        low = 0.7
+        if ok and split_pieces:
+            # the parts' real need is known now: what they reserved and will not use is the
+            # body's (aim at it again when that leaves the body well short of its share)
+            share = 2 * (whole - sum(settle())) / headroom
+            low = 0.85
+        if ok and (got > share * 1.05 or got < share * low):
             # QR's count is a target, not a cap (and a density map can make it undershoot):
             # one corrected re-run before any decimation - towards the body's OWN share
             target = target * (share / max(got, 1)) * (0.95 if got > share else 1.0)
@@ -814,10 +834,9 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
             used += "+decimate"
         if ok and split_pieces:
             from .density import conform
-            for (k, pme, plug), reserved in zip(split_pieces, piece_quads):
-                edge = _local_edge(obj.data, plug)       # the body's quad size where it sits
-                quads = (min(reserved, _quads_for(_rescue.area(pme), _piece_edge(edge, plug)))
-                         if edge else reserved)
+            part_names = dict((full_backup or backup).get("forge_split_names") or {})
+            trees: dict = {}                          # (the capped body's tree, once for all parts)
+            for (k, pme, plug), quads in zip(split_pieces, settle()):
                 src = pme.copy()
                 piece = bpy.data.objects.new(f"{obj.name}_part{k}", pme)
                 piece.matrix_world = obj.matrix_world.copy()
@@ -844,8 +863,11 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                 STATUS["text"] = f"{_short(obj.name)}: joining thin part {k} to the body"
                 yield 0.05
                 info: dict = {}
-                _rescue.weld(obj, piece, src, backup, full_backup or backup, info)
-                joints.append({"part": k, "joint": info.get("joint", "attached"), "loops": info.get("loops", [])})
+                _rescue.weld(obj, piece, src, backup, full_backup or backup, info, trees)
+                joints.append({"part": k, "joint": info.get("joint", "attached"), "loops": info.get("loops", []),
+                               "name": str(part_names.get(str(k), ""))})
+                if info.get("folds_near"):
+                    joints[-1]["folds_near"] = int(info["folds_near"])
                 names = {piece.data.name, src.name}
                 bpy.data.objects.remove(piece)
                 for n in names:

@@ -42,7 +42,7 @@ def regions(src_me, mask: np.ndarray, min_verts: int = 40) -> list:
 
 
 def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_rescue",
-            faces: np.ndarray | None = None):
+            faces: np.ndarray | None = None, shape: tuple = (1.0, 1.0, None)):
     """A closed mesh of the region whose root continues as a tapered plug INTO the body.
 
     grow_rings == 0 is the planned cut (split_off): `faces` are exactly the faces the body
@@ -50,17 +50,32 @@ def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_
     the part straight into the solid along the ring's own normal, every ring vertex keeping
     its own place. grow_rings > 0 is the rescue of a lost part (fuse): the cut is kept tight
     (a couple of rings past the lost area) and the open root is extruded inward, so the
-    boolean union meets the body along a clean crossing line."""
+    boolean union meets the body along a clean crossing line. `shape` (depth, width, level)
+    sets the planned plug (see _plug; tried in turn by _hide_plugs)."""
     from mathutils import Vector
     grown = _dilate(region, src_me, grow_rings) if grow_rings else region
     bm = bmesh.new()
-    sub = _submesh(src_me, grown, faces)          # only the region: no full pass of the body
+    sub, on_body = _submesh(src_me, grown, faces, on_rest=True)   # only the region: no full pass
     bm.from_mesh(sub)
     bpy.data.meshes.remove(sub)
     open_edges = [e for e in bm.edges if e.is_boundary]
     plug = None
+    first = len(bm.verts)
     if open_edges and bm.verts and grow_rings == 0:
-        plug = _plug(bm, open_edges)
+        # the cut is where the piece meets the body; any other opening is an old hole of the
+        # part (a tip the generator left open): closed first, it never becomes a plug
+        cut = [e for e in open_edges if on_body[e.verts[0].index] and on_body[e.verts[1].index]]
+        old = [e for e in open_edges if not (on_body[e.verts[0].index] and on_body[e.verts[1].index])]
+        if cut and old:
+            res = bmesh.ops.holes_fill(bm, edges=old, sides=100000)
+            ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+            if ng:
+                bmesh.ops.triangulate(bm, faces=ng)
+            left = [e for e in old if e.is_valid and e.is_boundary]
+            if left:
+                _fan_fill(bm, left)
+        first = len(bm.verts)
+        plug = _plug(bm, cut or open_edges, *shape)
     elif open_edges and bm.verts:
         ring = {v for e in open_edges for v in e.verts}
         root = sum((v.co for v in ring), Vector()) / len(ring)
@@ -104,6 +119,7 @@ def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_
     bm.free()
     if plug:
         me["forge_plug"] = [*plug[0], *plug[1], plug[2]]
+        me["forge_plug_first"] = int(first)          # vertices from here on are the plug's
     return me
 
 
@@ -111,7 +127,9 @@ DIRS = ((0.37, 0.53, 0.76), (-0.61, 0.29, -0.73), (0.12, -0.95, 0.28))
 
 
 def _parity_inside(tree, p, eps: float = 1e-6) -> bool:
-    """Is p inside the closed surface in `tree`? Ray parity in three directions, majority."""
+    """Is p inside the closed surface in `tree`? Ray parity in three directions, majority.
+    A hit right where the last one was (the same face met again at a grazing angle, or the
+    other face of the edge the ray went through) is the same crossing: counted once."""
     from mathutils import Vector
     votes = 0
     for d in DIRS:
@@ -121,7 +139,8 @@ def _parity_inside(tree, p, eps: float = 1e-6) -> bool:
             hit = tree.ray_cast(o, d)
             if hit[0] is None:
                 break
-            n += 1
+            if k == 0 or hit[3] > 2 * eps:
+                n += 1
             o = hit[0] + d * eps
             k += 1
         votes += n % 2
@@ -129,12 +148,13 @@ def _parity_inside(tree, p, eps: float = 1e-6) -> bool:
 
 
 def _ring_axis(bm, open_edges, root):
-    """(axis, radius) of a cut ring: the axis is the vector area of the open surface (half
-    the sum of (a - root) x (b - root) along its boundary, in the faces' own order) - the
+    """(axis, radius, wound outward) of a cut ring: the axis is the vector area of the open
+    surface (half the sum of (a - root) x (b - root) along its boundary, in the faces' own order) - the
     normal of any closed loop, flat or not, and blind to where the part's tip went. It points
     from the cut into the part; a surface wound inward would point it the other way, so the
     side is checked on the part closed with a lid: a step along the axis must go into the part.
-    Radius: median distance of the ring vertices from the axis."""
+    Radius: median distance of the ring vertices from the axis. Wound outward: whether the
+    faces' own normals point out of the solid (the vector area agrees with the axis)."""
     from mathutils import Vector
     from mathutils.bvhtree import BVHTree
     ring = {v for e in open_edges for v in e.verts}
@@ -160,46 +180,148 @@ def _ring_axis(bm, open_edges, root):
             out = -out
     finally:
         tmp.free()
-    return out, radius
+    return out, radius, va.dot(out) >= 0.0        # (and: faces wound outward, normals point out)
 
 
-def _plug(bm, open_edges):
-    """The plug of a planned cut: the part continued into the solid. Each ring vertex keeps
-    its own place on the ring (its own height along the axis: a ring that is not flat stays
-    unfolded) and is moved 0.6 radius deeper per ring while tapering towards the axis (0.85,
-    then 0.6 of that), so the plug stays inside a body that is not much wider than the part.
-    The far end is closed with a fan. Returns (root, axis from the body into the part, radius)."""
+PLUG_STEP = 0.6           # radii each plug ring goes deeper (at least)
+PLUG_TAPER = (0.85, 0.6)  # each plug ring's width, against the one before
+PLUG_INTO = 0.3           # a plug wall leaves the ring at least this steeply into the solid (sine)
+
+
+def _loops_of(edges) -> list:
+    """The vertex loops (in order) of edges that form simple closed loops; [] for any part
+    that is not one (a vertex on more than two of the edges)."""
+    adj: dict = {}
+    for e in edges:
+        for v in e.verts:
+            adj.setdefault(v, []).append(e)
+    if any(len(es) != 2 for es in adj.values()):
+        return []
+    loops, seen = [], set()
+    for start in adj:
+        if start in seen:
+            continue
+        loop, v, e = [start], start, adj[start][0]
+        seen.add(start)
+        while True:
+            w = e.other_vert(v)
+            if w is start:
+                break
+            loop.append(w)
+            seen.add(w)
+            e = adj[w][1] if adj[w][0] is e else adj[w][0]
+            v = w
+        loops.append(loop)
+    return loops
+
+
+def _star_radial(loop, out, radial: dict, rounds: int = 400) -> dict | None:
+    """The loop's offsets from the axis, smoothed along the loop until the loop goes round the
+    axis once, always the same way (star-shaped: a fan from the axis then never folds).
+    None when it never does (the loop does not go round the axis)."""
+    import math
+    if len(loop) < 3:
+        return None
+    e1 = out.orthogonal().normalized()
+    e2 = out.cross(e1)
+    r = np.array([[radial[v].dot(e1), radial[v].dot(e2)] for v in loop])
+
+    def star(a) -> bool:
+        th = np.arctan2(a[:, 1], a[:, 0])
+        d = np.diff(np.append(th, th[0]))
+        d = (d + math.pi) % (2 * math.pi) - math.pi
+        return bool((np.all(d > 0) or np.all(d < 0)) and abs(abs(d.sum()) - 2 * math.pi) < 1e-3
+                    and np.all(np.linalg.norm(a, axis=1) > 1e-12))
+    for _ in range(rounds):
+        if star(r):
+            break
+        r = 0.5 * r + 0.25 * (np.roll(r, 1, axis=0) + np.roll(r, -1, axis=0))
+    else:
+        return None
+    return {v: e1 * float(x) + e2 * float(y) for v, (x, y) in zip(loop, r)}
+
+
+def _plug(bm, open_edges, depth: float = 1.0, width: float = 1.0, level: float | None = None):
+    """The plug of a planned cut: the part continued into the solid, `depth` x PLUG_STEP
+    radius per ring, `width` x PLUG_TAPER as wide as the ring. Ring 1: each ring vertex keeps
+    its own height along the axis (a ring that is not flat stays unfolded; with `level`, a
+    vertex standing more than `level` radii above the ring's middle steps down to it first)
+    and goes one step deeper, tapering towards the axis - and never leaves the ring less
+    steeply into the solid than PLUG_INTO (a ring tilted against the part would otherwise
+    step out through the stump below it). Ring 2: one level, a step under the deepest of
+    ring 1, closed with a flat fan around the axis. Both outlines are smoothed along the ring
+    until they go round the axis without turning back (a ragged cut zigzags in and out):
+    every wall goes down, the lid cannot fold. A ring that never goes round the axis keeps
+    its own outline and heights. Returns (root, axis from the body into the part, radius)."""
     from mathutils import Vector
     ring = {v for e in open_edges for v in e.verts}
     root = sum((v.co for v in ring), Vector()) / len(ring)
-    out, radius = _ring_axis(bm, open_edges, root)
-    edges = open_edges
-    for shrink in (0.85, 0.6):
+    out, radius, wound_out = _ring_axis(bm, open_edges, root)
+    step = PLUG_STEP * depth * radius
+    mid = float(np.median([(v.co - root).dot(out) for v in ring]))
+
+    def extrude(edges):
         res = bmesh.ops.extrude_edge_only(bm, edges=edges)
-        new_v = [g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)]
-        for v in new_v:
-            rel = v.co - root
-            along = rel.dot(out)
-            v.co = root + out * (along - 0.6 * radius) + (rel - out * along) * shrink
-        edges = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge)
-                 and all(x in new_v for x in g.verts)]
+        vs = {g for g in res["geom"] if isinstance(g, bmesh.types.BMVert)}
+        es = [g for g in res["geom"] if isinstance(g, bmesh.types.BMEdge) and all(x in vs for x in g.verts)]
+        return vs, es
+
+    def outline(vs, es, taper) -> tuple:
+        """Each vertex's new offset from the axis, and the vertices whose loop goes round it."""
+        radial = {v: (v.co - root) - out * (v.co - root).dot(out) for v in vs}
+        round_ = set()
+        for loop in _loops_of(es):
+            star = _star_radial(loop, out, radial)
+            if star is None:
+                continue
+            have = max(float(np.median([star[v].length for v in loop])), 1e-12)
+            want = float(np.median([radial[v].length for v in loop]))
+            for v in loop:
+                radial[v] = star[v] * (want / have)
+            round_.update(loop)
+        return {v: r * taper for v, r in radial.items()}, round_
+
+    # each ring vertex's outward normal (on the part's own surface): a wall must leave the
+    # ring INTO the solid
+    bm.normal_update()
+    sign = 1.0 if wound_out else -1.0
+    normal = {v: v.normal * sign for v in ring}
+    ring1, edges = extrude(open_edges)
+    radial, _r = outline(ring1, edges, PLUG_TAPER[0] * width)
+    for v in ring1:
+        parent = next((e.other_vert(v) for e in v.link_edges if e.other_vert(v) in ring), None)
+        along = (v.co - root).dot(out)
+        top = along if level is None else min(along, mid + level * radius)
+        to = root + out * (top - step) + radial[v]
+        n = normal.get(parent)
+        d = to - v.co
+        if n is not None and n.length > 0.5 and d.length > 0 and d.dot(n) > -PLUG_INTO * d.length:
+            d2 = d - n * (d.dot(n) + PLUG_INTO * d.length)
+            to = v.co + d2 * (d.length / max(d2.length, 1e-12))
+        v.co = to
+    floor = min((v.co - root).dot(out) for v in ring1) - step
+    ring2, edges = extrude(edges)
+    radial, round_ = outline(ring2, edges, PLUG_TAPER[1])
+    for v in ring2:
+        along = (v.co - root).dot(out)
+        v.co = root + out * (floor if v in round_ else along - step) + radial[v]
+    before = set(bm.verts)
     _fan_fill(bm, edges)
+    for c in set(bm.verts) - before:               # a level lid: its centre on the axis
+        if all(e.other_vert(c) in round_ for e in c.link_edges):
+            c.co = root + out * floor
     still = [e for e in bm.edges if e.is_boundary]
     if still:                                      # (a pinched ring: one loop per fan first)
         _unpinch(bm, still)
         _fan_fill(bm, [e for e in bm.edges if e.is_boundary])
-    still = [e for e in bm.edges if e.is_boundary]
-    if still:                                      # other openings of the part (old holes)
-        res = bmesh.ops.holes_fill(bm, edges=still, sides=100000)
-        ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
-        if ng:
-            bmesh.ops.triangulate(bm, faces=ng)
     return (root, out, radius)
 
 
-def _submesh(me, keep: np.ndarray, faces: np.ndarray | None = None):
+def _submesh(me, keep: np.ndarray, faces: np.ndarray | None = None, on_rest: bool = False):
     """A new mesh of the faces whose vertices are all in `keep`, or of exactly the faces
-    marked in `faces` when given (no loose vertices, no wire edges: only what faces use)."""
+    marked in `faces` when given (no loose vertices, no wire edges: only what faces use).
+    on_rest: also return, per vertex of the new mesh, whether a face left out uses it too
+    (the vertices on the cut)."""
     nl = len(me.loops)
     ls = np.empty(len(me.polygons), np.int32)
     me.polygons.foreach_get("loop_start", ls)
@@ -231,6 +353,10 @@ def _submesh(me, keep: np.ndarray, faces: np.ndarray | None = None):
     out.polygons.foreach_set("loop_start", starts)
     out.update(calc_edges=True)
     out.validate(clean_customdata=False)
+    if on_rest:
+        rest = np.zeros(len(me.vertices), bool)
+        rest[lv[~np.repeat(allin, lt)]] = True
+        return out, rest[used]
     return out
 
 
@@ -761,7 +887,8 @@ def _cut_openings(bm, tag) -> list:
                 if e2.is_boundary and e2 not in out:
                     out.add(e2)
                     stack.append(e2)
-    return list(out)
+    bm.edges.index_update()
+    return sorted(out, key=lambda e: e.index)        # (in mesh order: the same cut gives the same mesh)
 
 
 def _fan_fill(bm, edges, tag=None) -> int:
@@ -865,6 +992,92 @@ def _drop_cut_scraps(bm, tag, _unused=None, max_share: float = 0.05) -> int:
     return dropped
 
 
+PLUG_SHOWS = 0.03          # share of a plug's area that may lie outside the body (along the cut ring itself)
+PLUG_FOLDS_IN = 0.1        # a plug with more of its area inside the part it continues is folded back into it
+# (depth, width, level) of the plugs tried in turn while one shows or folds (see _plug)
+PLUG_SHAPES = ((1.0, 1.0, None), (1.0, 1.0, 0.25), (0.6, 0.75, None), (0.35, 0.55, None))
+
+
+def _plug_faults(pme, tree, eps: float) -> tuple:
+    """(folded, share of the plug's area outside the closed surface in `tree`) of a cut
+    piece; the plug is every face using a vertex the plug added. Folded: a plug face crosses
+    another face, or more than PLUG_FOLDS_IN of the plug lies inside the part's own solid (the
+    part closed with a lid over the cut): walls hanging inside the part they continue pinch
+    the piece, and the remesher makes a crumpled root of it."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    first = int(pme.get("forge_plug_first", len(pme.vertices)))
+    plugf = [p.index for p in pme.polygons if max(p.vertices) >= first]
+    if not plugf:
+        return False, 0.0
+    # (a plug face can only cross the faces around the root: the rest of a long part is left out)
+    pl = list(pme["forge_plug"])
+    root, reach = Vector(pl[0:3]), 6.0 * float(pl[6])
+    inplug = set(plugf)
+    near = [p for p in pme.polygons if p.index in inplug or (p.center - root).length < reach]
+    polys = [set(p.vertices) for p in near]
+    t = BVHTree.FromPolygons([v.co.copy() for v in pme.vertices], [tuple(p.vertices) for p in near])
+    pset = {k for k, p in enumerate(near) if max(p.vertices) >= first}
+    if any((i in pset or j in pset) and not polys[i] & polys[j] for i, j in t.overlap(t) if i < j):
+        return True, 1.0
+    own = bmesh.new()
+    try:
+        own.from_mesh(pme)
+        own.verts.ensure_lookup_table()
+        bmesh.ops.delete(own, geom=[v for v in own.verts if v.index >= first], context="VERTS")
+        _fan_fill(own, [e for e in own.edges if e.is_boundary])
+        t_own = BVHTree.FromBMesh(own)
+    finally:
+        own.free()
+    area = outside = inner = 0.0
+    for i in plugf:
+        p = pme.polygons[i]
+        area += p.area
+        if not _parity_inside(tree, p.center, eps):
+            outside += p.area
+        if _parity_inside(t_own, p.center, eps):
+            inner += p.area
+    return inner > PLUG_FOLDS_IN * area, (outside / area if area > 0 else 0.0)
+
+
+def _hide_plugs(me, bm, pieces: dict, regions: dict) -> list:
+    """A plug must stay hidden in the body and never fold. A part leaving the body at a slant
+    (or a ragged cut tilting the ring) can take a full-size plug out through the body's surface
+    next to the root: such a piece is cut again with a shorter, narrower plug, and the one that
+    does not fold and shows least is kept. Returns the parts whose every plug folds (a root
+    running along the body: no plug fits under it).
+    `bm` is the body with its cut capped; `me` still the uncut original."""
+    from mathutils.bvhtree import BVHTree
+    tree = None
+    folded = []
+    for k in list(pieces):
+        piece, plug, mine = pieces[k]
+        if plug is None:
+            continue
+        if tree is None:
+            tree = BVHTree.FromBMesh(bm)
+        eps = 1e-6 * max(float(plug[6]), 1e-3)
+        best = (_plug_faults(piece, tree, eps), piece, plug)
+        for shape in PLUG_SHAPES[1:]:
+            if not best[0][0] and best[0][1] <= PLUG_SHOWS:
+                break
+            alt = extract(me, regions[k], grow_rings=0, name=f"forge_part_{k}", faces=mine, shape=shape)
+            d = mesh_defects(alt)
+            if d[0] or d[1] or d[2] or "forge_plug" not in alt:
+                bpy.data.meshes.remove(alt)
+                continue
+            faults = _plug_faults(alt, tree, eps)
+            if faults < best[0]:
+                bpy.data.meshes.remove(best[1])
+                best = (faults, alt, list(alt["forge_plug"]))
+            else:
+                bpy.data.meshes.remove(alt)
+        pieces[k] = (best[1], best[2], mine)
+        if best[0][0]:
+            folded.append(k)
+    return folded
+
+
 def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
     """Planned split (before remeshing): every part marked k > 0 in `ids` is taken out of
     `me` (the hole is capped) and returned as its own closed piece with a plug that reaches
@@ -944,6 +1157,12 @@ def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
             owner[regions[k]] = k
         bm, bad = _rim_cut(me, remove, owner)
         failed = [k for k in pieces if bad.get(k)]
+        folded = [] if failed else _hide_plugs(me, bm, pieces, regions)
+        if folded:
+            bm.free()
+            for k in folded:
+                refuse(k, "its root runs along the body, a cut there would fold: kept with the body")
+            continue
         if not failed and all(k in pieces for k in regions):
             bm.to_mesh(me)
             bm.free()
@@ -972,13 +1191,63 @@ def attach(target, piece_obj) -> None:
 OPEN_LAYER = "forge_open"
 JOINT_ROOM = 1                 # rings of faces each side gives up so the bridge has room
 JOINT_CUTS = 1                 # rings put back across the bridge (tried first; then none)
+# the joints tried in turn: (rings put back, the middle ring seated on the fold)
+JOINT_TRIES = ((JOINT_CUTS, True), (JOINT_CUTS, False), (0, False))
 JOINT_RELAX = (4, 8, 16)       # relax + lay-on-the-original rounds for the joint band (checked after each)
 MIN_JOINT_ANGLE = 5.0          # degrees: a smaller corner is a needle that shades and skins badly
+JOINT_FIT = 0.1                # joint faces may stand off the original by this much of the part's radius
+JOINT_FIT_SLACK = 1.5          # ... or by half as much again as the remeshed faces around the joint do
 
 
-def _tree_of(me):
+def _tree_of(me, near=None, reach: float = 0.0):
+    """A BVH tree of a mesh (through a bmesh: no Python list per vertex and face, which
+    costs seconds and a gigabyte on a multi-million-face original), or of only its faces with
+    a corner within `reach` of `near` (for nearest-point questions near a joint; ray parity
+    needs the whole closed surface)."""
     from mathutils.bvhtree import BVHTree
-    return BVHTree.FromPolygons([v.co.copy() for v in me.vertices], [tuple(p.vertices) for p in me.polygons])
+    if near is None:
+        bm = bmesh.new()
+        try:
+            bm.from_mesh(me)
+            return BVHTree.FromBMesh(bm)
+        finally:
+            bm.free()
+    nv = len(me.vertices)
+    co = np.empty(nv * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    ls = np.empty(len(me.polygons), np.int64)
+    me.polygons.foreach_get("loop_start", ls)
+    lt = np.empty(len(me.polygons), np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    lv = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    close = np.linalg.norm(co - np.array(near[:], np.float32), axis=1) < reach
+    fsel = np.flatnonzero(np.maximum.reduceat(close[lv].astype(np.int8), ls) > 0) if len(ls) else ls
+    used = np.unique(np.concatenate([lv[ls[f]:ls[f] + lt[f]] for f in fsel])) if len(fsel) else np.zeros(0, np.int64)
+    remap = np.full(nv, -1, np.int64)
+    remap[used] = np.arange(len(used))
+    polys = [tuple(remap[lv[ls[f]:ls[f] + lt[f]]].tolist()) for f in fsel]
+    return BVHTree.FromPolygons([tuple(c) for c in co[used].tolist()], polys)
+
+
+def _folds_near(me, root, reach: float) -> int:
+    """Faces within `reach` of the root that cross another face (faces sharing a corner
+    aside): folds a 'welded' joint may still have around it (from the part's own remesh)."""
+    from mathutils.bvhtree import BVHTree
+    nv = len(me.vertices)
+    co = np.empty(nv * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    cen = np.empty(len(me.polygons) * 3, np.float32)
+    me.polygons.foreach_get("center", cen)
+    near = np.flatnonzero(np.linalg.norm(cen.reshape(-1, 3) - np.array(root[:], np.float32), axis=1) < reach)
+    if len(near) < 2:
+        return 0
+    polys = [tuple(me.polygons[int(i)].vertices) for i in near]
+    t = BVHTree.FromPolygons([tuple(c) for c in co.tolist()], polys)
+    sets = [set(p) for p in polys]
+    return len({i for a, b in t.overlap(t) if a != b and not sets[a] & sets[b] for i in (a, b)})
 
 
 def _bad_edges(bm) -> int:
@@ -1124,10 +1393,52 @@ def _even_loops(bm, lay) -> set:
     return grown
 
 
-def _joint_faults(bm, band: set, t_full, before: int):
+def _seat_on_fold(mids, rim_b, rim_p, t_full) -> int:
+    """Put the ring across the middle of the joint ON the fold of the original between the
+    body and the part: for each middle vertex, the point of the original that lies deepest
+    under the straight line from its body-side neighbour to its part-side neighbour (on a
+    sharp crease the crease itself, on a round fillet its middle). A modeller's support loop:
+    the quads then lie on one side of the fold each instead of cutting across it as chords
+    (measured on a coarse bull: face centres 0.3 radius off the crease). Returns how many
+    vertices moved."""
+    moved = 0
+    for m in mids:
+        if not m.is_valid:
+            continue
+        nb = [e.other_vert(m) for e in m.link_edges]
+        a = next((w for w in nb if w in rim_b), None)
+        b = next((w for w in nb if w in rim_p), None)
+        if a is None or b is None:
+            continue
+        ab = b.co - a.co
+        length = ab.length
+        if length < 1e-12:
+            continue
+        u = ab / length
+        mid = (a.co + b.co) * 0.5
+        hit = t_full.find_nearest(mid)
+        if hit[0] is None:
+            continue
+        d = hit[0] - mid
+        d -= u * d.dot(u)
+        if d.length < 0.02 * length:            # the original runs along the line: no fold
+            continue
+        d.normalize()
+        best, depth = None, 0.0
+        for t in np.linspace(0.15, 0.85, 15):
+            h = t_full.ray_cast(a.co + ab * float(t), d, length)
+            if h[0] is not None and h[3] > depth:
+                best, depth = h[0], h[3]
+        if best is not None:
+            m.co = best
+            moved += 1
+    return moved
+
+
+def _joint_faults(bm, band: set, t_full, before: int, rad: float = 0.0):
     """Why the welded joint is not acceptable, or None: it added open or broken edges, a
-    joint face has a needle corner, faces the other way than the original surface, or
-    crosses another face."""
+    joint face has a needle corner, faces the other way than the original surface, crosses
+    another face, or stands off the original farther than the faces around it do."""
     import math
     from mathutils.bvhtree import BVHTree
     bm.normal_update()
@@ -1160,18 +1471,33 @@ def _joint_faults(bm, band: set, t_full, before: int):
         if f is g or set(f.verts) & set(g.verts):
             continue
         return "crossing faces"
+    if rad > 0.0 and ring:
+        # it follows the original as closely as the remeshed faces around the joint do (their
+        # own chord error, half as much again; at least JOINT_FIT of the part's radius): nearly
+        # every joint face (19 in 20) within that, and none farther than twice that
+        def off(f) -> float:
+            hit = t_full.find_nearest(f.calc_center_median())
+            return hit[3] if hit[0] is not None else 0.0
+        around = [off(f) for f in ring]
+        joint = [off(f) for f in bfaces]
+        typical = max(JOINT_FIT * rad, JOINT_FIT_SLACK * float(np.percentile(around, 95)))
+        worst = max(2 * JOINT_FIT * rad, JOINT_FIT_SLACK * max(around))
+        if float(np.percentile(joint, 95)) > typical or max(joint) > max(worst, 2 * typical):
+            return "off the surface"
     return None
 
 
-def _bridge(bm, t_full, before: int, cuts: int):
+def _bridge(bm, t_full, before: int, cuts: int, rad: float = 0.0, seat: bool = True):
     """Bridge the two marked cut loops of `bm` (as many edges on both: a ring of quads), put
     `cuts` rings back across the bridge (the room given up for it: the joint keeps about the
     body's quad size and follows the fillet), relax the band and lay it on the ORIGINAL
-    surface, which has the real fillet - relaxing further only while the one fault left is a
-    needle corner. Returns why the joint is not acceptable, or None."""
+    surface, which has the real fillet, the middle ring seated on the fold - relaxing further
+    only while the one fault left is a needle corner or a face off the original. Returns why
+    the joint is not acceptable, or None."""
     lay = bm.edges.layers.int.get(OPEN_LAYER)
     grown = _even_loops(bm, lay)
     rim = [e for e in bm.edges if e[lay]]
+    mids: list = []
     try:
         res = bmesh.ops.bridge_loops(bm, edges=rim)
     except (RuntimeError, ValueError, TypeError):
@@ -1184,6 +1510,11 @@ def _bridge(bm, t_full, before: int, cuts: int):
     if cross and cuts:
         inner = set(bmesh.ops.subdivide_edges(bm, edges=cross, cuts=cuts, use_grid_fill=True)["geom_inner"])
         joint = [f for f in bm.faces if f in js or any(v in inner for v in f.verts)]
+        if cuts == 1 and seat:
+            mids = [g for g in inner if isinstance(g, bmesh.types.BMVert)]
+    # (read after the subdivision: it invalidates vertex references, not the edge layer)
+    rim_b = {v for e in bm.edges if e[lay] == 2 for v in e.verts}
+    rim_p = {v for e in bm.edges if e[lay] == 1 for v in e.verts}
     band = {v for f in joint for v in f.verts}
     for _ in range(2):
         band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
@@ -1197,6 +1528,8 @@ def _bridge(bm, t_full, before: int, cuts: int):
                 if hit[0] is not None:
                     v.co = hit[0]
         done = total
+        if mids:
+            _seat_on_fold(mids, rim_b, rim_p, t_full)
         if shell is None:
             ng = [f for f in grown if f.is_valid and len(f.verts) > 4]
             if ng:
@@ -1211,15 +1544,16 @@ def _bridge(bm, t_full, before: int, cuts: int):
                             shell.add(g)
                             stack.append(g)
         bmesh.ops.recalc_face_normals(bm, faces=list(shell))
-        why = _joint_faults(bm, band, t_full, before)
-        if why != "thin faces":
+        why = _joint_faults(bm, band, t_full, before, rad)
+        if why not in ("thin faces", "off the surface"):
             break
     return why
 
 
-def _weld(target, piece_obj, src_me, cap_me, full_me):
+def _weld(target, piece_obj, src_me, cap_me, full_me, trees: dict | None = None):
     """The weld itself, on bmesh copies: (reason or None, [body loop, part loop]). The target
-    mesh is written only when the joint passed every check."""
+    mesh is written only when the joint passed every check. `trees` keeps the capped body's
+    tree for the next part (built once per body)."""
     from mathutils import Vector
     pl = list(src_me["forge_plug"]) if "forge_plug" in src_me else []
     if len(pl) < 7:
@@ -1241,8 +1575,11 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
         before = _bad_edges(bb) + _bad_edges(bp)
         # the body opens where the part's solid covers it, the part where it is plug (inside
         # the body), each flood-filled from the joint
+        trees = {} if trees is None else trees
+        if trees.get("cap_of") != cap_me.name:
+            trees.update(cap=_tree_of(cap_me), cap_of=cap_me.name)
         kill_b = _inside_from(bb, _tree_of(src_me), root, root, reach, eps)
-        kill_p = _inside_from(bp, _tree_of(cap_me), root - out * 1.2 * rad, root, reach, eps)
+        kill_p = _inside_from(bp, trees["cap"], root - out * 1.2 * rad, root, reach, eps)
         if not kill_b or not kill_p:
             return "no overlap", [0, 0]
         for _ in range(JOINT_ROOM):     # room for the bridge: one more ring of faces on each side
@@ -1270,12 +1607,12 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
         rim = [e for e in bb.edges if e[lay]]        # ONLY the two cut loops (never an old hole)
         if sorted((sum(1 for e in rim if e[lay] == 2), sum(1 for e in rim if e[lay] == 1))) != sorted(loops):
             return "openings", loops
-        t_full = _tree_of(full_me)
+        t_full = _tree_of(full_me, root, 4.0 * reach)      # (the original near the joint)
         why = None
-        for cuts in sorted({JOINT_CUTS, 0}, reverse=True):     # the finer joint first
+        for cuts, seat in JOINT_TRIES:                  # the finer joint first
             work = bb.copy()
             try:
-                why = _bridge(work, t_full, before, cuts)
+                why = _bridge(work, t_full, before, cuts, rad, seat)
                 if why is None:
                     work.edges.layers.int.remove(work.edges.layers.int.get(OPEN_LAYER))
                     work.to_mesh(target.data)
@@ -1289,7 +1626,7 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
         bp.free()
 
 
-def weld(target, piece_obj, src_me, cap_me, full_me, info: dict | None = None) -> str:
+def weld(target, piece_obj, src_me, cap_me, full_me, info: dict | None = None, trees: dict | None = None) -> str:
     """Join a remeshed cut-off part to the body as ONE continuous skin: open the body where
     the part's solid covers it (src_me: the cut piece with its plug), open the part where it
     is plug (inside cap_me, the capped body), give the shorter opening as many edges as the
@@ -1298,19 +1635,26 @@ def weld(target, piece_obj, src_me, cap_me, full_me, info: dict | None = None) -
     only when the joint adds no open or broken edge, no face crosses another or faces
     inward, and no joint corner is a needle; otherwise the part is attached as its own shell
     (its plug hidden in the body). Returns 'welded' or 'attached: <reason>'; `info` gets
-    that and the two loop sizes."""
+    that and the two loop sizes, and for a weld the faces still folded near the root (the
+    part's own remesh can fold there: 'welded' alone would not say the root is clean).
+    `trees`: a dict kept across the parts of one body (its trees are built once)."""
     if info is None:
         info = {}
     seal(piece_obj.data)
     tidy(piece_obj.data)                 # a clean piece: nothing stacked, nothing open
     try:
-        why, loops = _weld(target, piece_obj, src_me, cap_me, full_me)
+        why, loops = _weld(target, piece_obj, src_me, cap_me, full_me, trees)
     except (RuntimeError, ValueError) as ex:            # (bmesh refused something: never half a weld)
         why, loops = "error", []
         info["error"] = str(ex)[:120]
     info["loops"] = loops
     if why is None:
         info["joint"] = "welded"
+        pl = list(src_me["forge_plug"])
+        from mathutils import Vector
+        folds = _folds_near(target.data, Vector(pl[0:3]), 2.5 * float(pl[6]))
+        if folds:
+            info["folds_near"] = folds
         return "welded"
     attach(target, piece_obj)
     info["joint"] = f"attached: {why}"

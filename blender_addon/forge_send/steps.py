@@ -220,6 +220,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
         arr = parts_mod.MeshArrays(me)
         arr.to_world(np.array(p.matrix_world))   # the same space the parts were measured in
         ids = np.zeros(len(me.vertices), np.int32)
+        names: dict = {}                         # part id -> its name (the panel names it so)
         k = 0
         regions = []
         blocked: list = []
@@ -238,6 +239,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
             elif a.get("thin") and not twin and a["kind"] not in ("ear", "horn"):
                 k += 1
                 ids[m & (ids == 0)] = k
+                names[str(k)] = a["name"]
                 out[a["name"]] = "separate (cut at its root)"
             elif a["kind"] == "horn":
                 out[a["name"]] = "rigid, fewer quads"
@@ -251,6 +253,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
                 name = next((a["name"] for a, am in regions if (am & m).sum() > 0.3 * m.sum()), f"part_{kk}")
                 out[name] = "separate: one-sided, kept as it is when mirroring"
                 ids[m & (ids == 0)] = kk
+                names[str(kk)] = name
             for kind, c, why in rep:
                 where = "left" if c[0] > 0 else "right"
                 if kind == "pair":
@@ -278,6 +281,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
         elif "forge_mirror_blocked" in me:
             del me["forge_mirror_blocked"]
         dens.write_split(me, ids)
+        me["forge_split_names"] = names
         # rigid horns: half the quads (they never deform, only their shape matters)
         horn = np.zeros(len(me.vertices), bool)
         app_all = np.zeros(len(me.vertices), bool)

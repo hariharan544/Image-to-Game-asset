@@ -428,3 +428,18 @@ def test_step4_report_says_how_each_cut_off_part_was_joined():
     assert any("needle-thin faces" in t for t in kept) and any("hidden inside the body" in t for t in kept)
     assert any("450 tris over the budget" in t for t in kept), kept
     assert not any("attached:" in t or "thin faces)" == t.strip() for t in kept)       # no codes shown
+    # a part that does not reach into the body is not "hidden inside" it; parts are named as
+    # in the parts plan; a weld with folds left near the root says so
+    two = [t for _i, t in L._retopo_rows({"parts": {"Body": {
+        **base, "separate_parts": 2, "joint": "attached: no overlap",
+        "joints": [{"part": 1, "joint": "attached: no overlap", "name": "tail"},
+                   {"part": 2, "joint": "welded", "name": "antenna_l", "folds_near": 12}]}}})]
+    assert any(t.strip().startswith("the tail: kept as its own piece") for t in two), two
+    assert any("does not reach into the body" in t for t in two) and not any("hidden inside" in t for t in two)
+    assert any("check its root" in t for t in two), two
+    assert any(t.strip().startswith("the left antenna: joined into the body as one skin") for t in two), two
+    assert any("12 folded faces near its root" in t for t in two), two
+    assert not any("part_" in t or "cut-off part 1" in t for t in two), two
+    coarse = [t for _i, t in L._retopo_rows({"parts": {"Body": {**base, "joint": "attached: off the surface",
+                                                                 "joints": [{"part": 1, "joint": "attached: off the surface"}]}}})]
+    assert any("cut across the fold" in t for t in coarse) and any("more triangles" in t for t in coarse), coarse
