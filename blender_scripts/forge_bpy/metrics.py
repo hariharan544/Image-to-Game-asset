@@ -125,6 +125,53 @@ def uv_metrics(obj, texture_size: int, raster_res: int = 512) -> dict:
     }
 
 
+def uv_layout(obj, eps: float = 1e-5) -> dict:
+    """How the active UV map is cut: islands (separate pieces), seam length, surface area.
+    An edge is a seam where the two faces beside it disagree on the UV of either end.
+    seam_ratio = seam length / sqrt(surface area): the same cut on a model twice the size gives
+    the same number, so engines (or models) compare on the shape of the cut, not the scale."""
+    from .appendages import _components
+    me = obj.data
+    nl, nf = len(me.loops), len(me.polygons)
+    if me.uv_layers.active is None or not nl or not nf:
+        return {}
+    uv = np.empty(nl * 2, np.float64)
+    me.uv_layers.active.data.foreach_get("uv", uv)
+    uv = uv.reshape(-1, 2)
+    lv = np.empty(nl, np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    le = np.empty(nl, np.int64)
+    me.loops.foreach_get("edge_index", le)
+    ls = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_start", ls)
+    lt = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    face = np.repeat(np.arange(nf), lt)
+    nxt = np.arange(1, nl + 1)
+    nxt[ls + lt - 1] = ls                                 # the corner after the last is the first
+    co = np.empty(len(me.vertices) * 3, np.float64)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    area_f = np.empty(nf, np.float64)
+    me.polygons.foreach_get("area", area_f)
+    area = float(area_f.sum())
+    order = np.argsort(le, kind="stable")
+    counts = np.bincount(le, minlength=len(me.edges))
+    first = np.concatenate(([0], np.cumsum(counts)[:-1]))
+    two = np.nonzero(counts == 2)[0]                      # edges between exactly two faces
+    a, b = order[first[two]], order[first[two] + 1]
+    same = lv[b] == lv[a]                                 # (faces wound the same way or not)
+    b_start = np.where(same, b, nxt[b])                   # b's corner at a's start vertex
+    b_end = np.where(same, nxt[b], b)
+    seam = (np.abs(uv[a] - uv[b_start]).max(axis=1) > eps) | (np.abs(uv[nxt[a]] - uv[b_end]).max(axis=1) > eps)
+    length = np.linalg.norm(co[lv[a]] - co[lv[nxt[a]]], axis=1)
+    seam_len = float(length[seam].sum())
+    joined = ~seam
+    labels = _components(nf, face[a][joined], face[b][joined])
+    return {"islands": int(len(np.unique(labels))), "seam_length_m": round(seam_len, 4),
+            "seam_ratio": round(seam_len / max(area, 1e-12) ** 0.5, 3), "area_m2": round(area, 6)}
+
+
 def weight_metrics(obj, max_influences: int) -> dict:
     if not obj.vertex_groups:
         return {"weighted": False}

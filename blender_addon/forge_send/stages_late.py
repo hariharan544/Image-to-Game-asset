@@ -180,6 +180,7 @@ ACTIONS = {
     "retopo_compare": "Show / hide the original high-detail parts next to the new meshes",
     "uv_run": "Cut seams and unwrap every part, pack the pieces tightly (UVPackmaster)",
     "uv_checker": "Show a checker pattern: squares should look square and evenly sized everywhere",
+    "uv_compare_clear": "Forget the comparison: Auto goes back to OptCuts",
     "bake_run": "Bake normal + AO detail from the originals and copy their colour onto the new UVs. "
                 "Blender may not respond for a few minutes",
     "colour_show": "Show the textured model (Material Preview)",
@@ -427,7 +428,11 @@ class FORGE_OT_step(bpy.types.Operator):
         def done(st, rep):
             _save_rep(st, "uv_rep", rep)
             st.uv = "review"
-        run(st, "UV unwrap + pack", lambda: S.run_uv(int(st.tex_size), uvpm), done)
+        run(st, "UV unwrap + pack", lambda: S.run_uv(int(st.tex_size), uvpm, engine=st.uv_engine,
+                                                     split=st.partuv_split, winner=uv_winner(st)), done)
+
+    def do_uv_compare_clear(self, context, st):
+        st.uv_compare_rep = "{}"
 
     def do_uv_checker(self, context, st):
         on = S.toggle_checker()
@@ -695,10 +700,44 @@ def _retopo_rows(rep):
     return out
 
 
+def _wrapped(icon, text, first="", rest="    ", width=44):
+    """A long plain sentence as panel rows that fit: the icon on the first row only."""
+    import textwrap
+    lines = textwrap.wrap(text, width - len(first)) or [""]
+    return [(icon if i == 0 else "BLANK1", (first if i == 0 else rest) + line) for i, line in enumerate(lines)]
+
+
+GUARD_ROWS = {"island": "face kept in one piece: no seam across it",
+              "seam_cost": "seams kept off the face"}
+
+
+def _uv_run_rows(rep):
+    """Which UVgami engine cut the seams, and how (one block for the whole model)."""
+    out = []
+    run = rep.get("uvgami_run") or {}
+    by_uvgami = any(r.get("seams") == "uvgami" for r in rep.get("parts", {}).values())
+    if run.get("engine") and by_uvgami:
+        out.append((GOOD, f"Seams cut by UVgami ({run.get('label') or run['engine']})"))
+    if run.get("note"):
+        out += _wrapped(WARN, run["note"])
+    if not by_uvgami:
+        return out
+    guard = run.get("face_guard", "")
+    if guard in GUARD_ROWS:
+        out.append(("BLANK1", "    " + GUARD_ROWS[guard]))
+    elif guard == "ignored":
+        out += _wrapped(WARN, f"{run.get('label') or run.get('engine')} ignores the face guard: "
+                              "seams may cross the face", first="    ", rest="     ")
+    if run.get("material_seams"):
+        out.append(("BLANK1", "    seams follow the material borders"))
+    return out
+
+
 def _uv_rows(rep):
     out = []
     if rep.get("uvgami"):
         out.append((WARN, rep["uvgami"][:60]))
+    out += _uv_run_rows(rep)
     for part, r in rep.get("parts", {}).items():
         if not r.get("has_uv"):
             out.append((BAD, f"{part}: no UVs"))
@@ -715,13 +754,7 @@ def _uv_rows(rep):
             note = str(r.get("seams_note") or "")
             out.append((WARN if note else "BLANK1", "    seams by Blender"))
             if note.startswith("UVgami: "):              # its own reason, on lines that fit
-                words, line = note[len("UVgami: "):].split(), "    UVgami:"
-                for w in words:
-                    if len(line) + len(w) > 44:
-                        out.append(("BLANK1", line))
-                        line = "     "
-                    line += " " + w
-                out.append(("BLANK1", line))
+                out += _wrapped("BLANK1", note, first="    ", rest="     ")
             elif note:
                 out.append(("BLANK1", f"    ({note})"))
         cl = r.get("cleaned") or {}
@@ -918,9 +951,111 @@ def _draw_retopo(col, st):
         _btn(col, "retopo_undo", "Undo retopology", "CANCEL", alert=True)
 
 
+COMPARE_HEAD = ("Engine", "Stretch", "Seams", "Islands", "Used", "Time")
+COMPARE_LEGEND = ("Stretch: lower = the texture stays even (counts most)",
+                  "Seams: total seam length, 1.0x = the shortest",
+                  "Islands: separate pieces. Used: texture filled")
+
+
+def _short_time(seconds) -> str:
+    s = int(round(float(seconds or 0)))
+    return f"{s} s" if s < 60 else f"{s // 60}:{s % 60:02d}"
+
+
+def _compare_rows(rep):
+    """Compare engines as a table: (header, [(icon, cells)], [(icon, note)])."""
+    rows, notes = [], []
+    winner = rep.get("winner", "")
+    done = [r for r in rep.get("rows", []) if r.get("seams") is not None]
+    shortest = min((float(r["seams"]) for r in done), default=0.0)
+    for r in rep.get("rows", []):
+        label = r.get("label") or r.get("engine", "")
+        if r.get("engine") == "PARTUV" and r.get("split"):
+            label += {"AI": " AI", "TREE": " tree", "GEOMETRIC": " geo"}.get(r["split"], "")
+        if r.get("engine") == "XATLAS":
+            label += " (fast)"
+        if r.get("seams") is None:
+            cells = (label, "-", "-", "-", "-", _short_time(r.get("seconds")))
+        else:
+            rel = float(r["seams"]) / shortest if shortest > 0 else 1.0
+            cells = (label, f"{float(r.get('stretch', 0)):.2f}", f"{rel:.1f}x", str(r.get("islands", 0)),
+                     f"{float(r.get('used', 0)):.0%}", _short_time(r.get("seconds")))
+        icon = GOOD if r.get("engine") == winner else (WARN if not r.get("ok") else "BLANK1")
+        rows.append((icon, cells))
+        if not r.get("ok") and r.get("why"):
+            name = r.get("label") or r.get("engine", "")
+            notes += _wrapped(WARN, r["why"] if r["why"].startswith(name) else f"{name}: {r['why']}")
+    if winner:
+        lab = next((r.get("label") for r in rep.get("rows", []) if r.get("engine") == winner), winner)
+        notes.insert(0, (GOOD, f"{lab} wins: {rep.get('why') or 'best result'}"))
+        notes += _wrapped("INFO", f"Its UVs are on the model now. Auto uses {lab} for this model.")
+    elif rep.get("rows"):
+        notes += _wrapped(BAD, f"No winner: {rep.get('why') or 'no engine delivered every part'}. "
+                               "The model is as it was.")
+    elif rep.get("why"):
+        notes += _wrapped(WARN, f"Not compared: {rep['why']}")
+    return COMPARE_HEAD, rows, notes
+
+
+def _draw_compare(col, rep, stale=False):
+    head, rows, notes = _compare_rows(rep)
+    box = col.box()
+    if rows:
+        grid = box.grid_flow(row_major=True, columns=len(head), even_columns=False, even_rows=False, align=True)
+        for cell in head:
+            grid.label(text=cell)
+        for icon, cells in rows:
+            for i, cell in enumerate(cells):
+                grid.label(text=cell, icon=icon if i == 0 else "NONE")
+    c = box.column(align=True)
+    _rows(c, notes)
+    if rows:
+        for line in COMPARE_LEGEND:
+            c.label(text=line)
+    if stale:
+        c.label(text="(made before the meshes changed: compare again)", icon="INFO")
+
+
+def _uv_engine_rows(st):
+    """Which engine Unwrap + pack will use, in plain words."""
+    out = []
+    status = S.uvgami_status()
+    if status:                                            # no UVgami (or no engine): Blender cuts
+        return _wrapped(WARN, f"{status}: Blender's own unwrap cuts the seams"), {}
+    winner = uv_winner(st)
+    plan = S.uv_engine_plan(st.uv_engine, winner, st.partuv_split)
+    if st.uv_engine == "AUTO" and plan.get("engine"):
+        why = "won Compare engines" if winner and plan["engine"] == winner else "no comparison yet"
+        out.append(("INFO", f"Auto uses {plan['label'].split(',')[0]} ({why})"))
+    if plan.get("note"):
+        out += _wrapped(WARN, plan["note"])
+    return out, plan
+
+
 def _draw_uv(col, st):
     col.prop(st, "tex_size")
+    col.prop(st, "uv_engine")
+    rows, plan = _uv_engine_rows(st)
+    if plan.get("engine") == "PARTUV" or st.uv_engine == "PARTUV":
+        col.prop(st, "partuv_split")
+    if rows:
+        _rows(col.column(align=True), rows)
     _btn(col, "uv_run", "Unwrap + pack UVs", "UV", 1.3)
+    have = [e for e in S.uv_engines() if e["installed"]]
+    c = col.column(align=True)
+    if len(have) >= 2:
+        row = c.row(align=True)
+        row.operator("forge.uv_compare", text="Compare engines", icon="SORTBYEXT")
+        last = _last_unwrap_seconds(st)
+        c.label(text=f"Unwraps {len(have)} times" + (f"; the last unwrap took {S._duration(last)}"
+                                                       if last else ""), icon="INFO")
+    elif have:
+        c.label(text="Download PartUV in UVgami to compare engines", icon="INFO")
+    cmp = json.loads(st.uv_compare_rep or "{}")
+    if cmp.get("rows") or cmp.get("why"):
+        _draw_compare(col, cmp, stale=bool(cmp.get("meshes")) and cmp.get("meshes") != S.uv_fingerprint())
+        if cmp.get("winner"):
+            _btn(col, "uv_compare_clear", "Forget the comparison", "X")
     rep = json.loads(st.uv_rep or "{}")
     if st.uv == "review" and rep:
         _rows(col.column(align=True), _uv_rows(rep))
@@ -1027,6 +1162,65 @@ def unregister_handlers():
         bpy.app.handlers.load_post.remove(_on_load)
 
 
+def uv_winner(st) -> str:
+    """The engine that won Compare engines for this model ('' before any comparison)."""
+    try:
+        return str(json.loads(st.uv_compare_rep or "{}").get("winner") or "")
+    except ValueError:
+        return ""
+
+
+def _last_unwrap_seconds(st) -> float:
+    try:
+        return float(json.loads(st.uv_rep or "{}").get("seconds") or 0.0)
+    except (ValueError, TypeError):
+        return 0.0
+
+
+class FORGE_OT_uv_compare(bpy.types.Operator):
+    bl_idname = "forge.uv_compare"
+    bl_label = "Compare engines"
+    bl_options = {"REGISTER"}
+    bl_description = ("Unwrap the model once with every UVgami engine you have downloaded, pack each "
+                      "result the same way and show them side by side. The best one (least stretch, "
+                      "then shortest seams, then fewest islands, then fastest) stays on the model and "
+                      "becomes the Auto engine for it")
+
+    @classmethod
+    def poll(cls, context):
+        return not job_running() and len([e for e in S.uv_engines() if e["installed"]]) >= 2
+
+    def invoke(self, context, event):
+        n, text = S.compare_warning(_last_unwrap_seconds(st_of(context)))
+        return context.window_manager.invoke_confirm(self, event, title="Compare engines", message=text,
+                                                     confirm_text=f"Unwrap {n} times", icon="QUESTION")
+
+    def execute(self, context):
+        st = st_of(context)
+        if job_running():
+            self.report({"WARNING"}, f"Still working: {job_label()}")
+            return {"CANCELLED"}
+        try:
+            if context.mode != "OBJECT":
+                bpy.ops.object.mode_set(mode="OBJECT")
+        except RuntimeError as exc:
+            st.error = f"RuntimeError: {exc}"
+            return {"CANCELLED"}
+        uvpm = S.has_addon_op("uvpackmaster4.pack")
+
+        def done(st, res):
+            res = dict(res or {})
+            rep = res.pop("report", None) or {}
+            _save_rep(st, "uv_compare_rep", res)
+            if res.get("winner") and rep:          # the winner's UVs are on the model now
+                _start_step(st, "uv")
+                st.uv_engine = "AUTO"              # Auto = the winner, for this model
+                _save_rep(st, "uv_rep", rep)
+                st.uv = "review"
+        run(st, "comparing UV engines", lambda: S.run_uv_compare(int(st.tex_size), uvpm, st.partuv_split), done)
+        return {"FINISHED"}
+
+
 class FORGE_OT_stop_job(bpy.types.Operator):
     bl_idname = "forge.stop_job"
     bl_label = "Stop"
@@ -1052,4 +1246,4 @@ class FORGE_OT_stop_job(bpy.types.Operator):
         return {"FINISHED"}
 
 
-CLASSES = (FORGE_OT_step, FORGE_OT_import_retexture, FORGE_OT_stop_job)
+CLASSES = (FORGE_OT_step, FORGE_OT_import_retexture, FORGE_OT_uv_compare, FORGE_OT_stop_job)

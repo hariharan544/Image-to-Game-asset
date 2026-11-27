@@ -550,10 +550,19 @@ def undo_retopo() -> None:
 
 # ----------------------------------------------------------------------------- step 5: UVs
 
-def run_uv(texture_size: int, use_uvpm: bool = True, use_uvgami: bool = True):
-    args = {"packer": "uvpackmaster" if use_uvpm else "blender", "method": "angle_seams",
+def _uv_args(texture_size: int, use_uvpm: bool, use_uvgami: bool, engine: str = "AUTO",
+             split: str = "AUTO", winner: str = "") -> dict:
+    return {"packer": "uvpackmaster" if use_uvpm else "blender", "method": "angle_seams",
             "unwrapper": "uvgami" if use_uvgami else "blender",
-            "texture_size": int(texture_size), "margin_px": 8, "uvpm_search_time": 3}
+            "texture_size": int(texture_size), "margin_px": 8, "uvpm_search_time": 3,
+            "uvgami_engine": engine or "AUTO", "partuv_split": split or "AUTO", "uvgami_auto": winner or ""}
+
+
+def run_uv(texture_size: int, use_uvpm: bool = True, use_uvgami: bool = True, engine: str = "AUTO",
+           split: str = "AUTO", winner: str = ""):
+    """engine: Step 5's Unwrap engine ('AUTO' or a UVgami engine id); winner: the engine that won
+    Compare engines for this model (what Auto uses; OptCuts when there is none)."""
+    args = _uv_args(texture_size, use_uvpm, use_uvgami, engine, split, winner)
     rep = _mod("uv").run(args)
     if not hasattr(rep, "__next__"):
         rep["uvgami"] = uvgami_status()
@@ -566,11 +575,62 @@ def run_uv(texture_size: int, use_uvpm: bool = True, use_uvgami: bool = True):
     return gen()
 
 
+def run_uv_compare(texture_size: int, use_uvpm: bool = True, split: str = "AUTO"):
+    """Compare engines: a generator; returns {'rows', 'winner', 'why', 'report', 'meshes'}."""
+    args = _uv_args(texture_size, use_uvpm, True, "AUTO", split, "")
+    out = yield from _mod("uv").compare(args)
+    if out.get("report"):
+        out["report"]["uvgami"] = uvgami_status()
+    return out
+
+
 def uvgami_status() -> str:
     try:
         return _mod("uv").uvgami_status()
     except Exception as exc:                          # noqa: BLE001
         return str(exc)
+
+
+def uv_engines() -> list:
+    """UVgami's engines for the panel: [{'id', 'label', 'installed'}] ([] without UVgami)."""
+    try:
+        return _mod("uv").uvgami_engines()
+    except Exception:                                 # noqa: BLE001
+        return []
+
+
+def uv_engine_plan(choice: str, winner: str = "", split: str = "AUTO") -> dict:
+    """What Unwrap + pack will use: {'engine', 'label', 'note'} (engine '' = no UVgami engine)."""
+    try:
+        uv = _mod("uv")
+        eid, note = uv.resolve_engine(choice, winner)
+        sp, sp_note = uv.resolve_split(split) if eid == "PARTUV" else ("", "")
+        return {"engine": eid, "label": uv.engine_label(eid, sp) if eid else "",
+                "note": " ".join(n for n in (note, sp_note) if n)}
+    except Exception as exc:                          # noqa: BLE001
+        return {"engine": "", "label": "", "note": str(exc)}
+
+
+def uv_fingerprint() -> dict:
+    """{part: faces} of the new meshes: a comparison made on other meshes is marked as older."""
+    return {str(o.get(C().PART_PROP)): len(o.data.polygons) for o in lows()}
+
+
+def _duration(seconds: float) -> str:
+    s = int(round(seconds))
+    return f"{s} s" if s < 60 else f"{s // 60} min {s % 60:02d} s"
+
+
+def compare_warning(last_seconds: float = 0.0) -> tuple:
+    """(how many unwraps, plain warning) before Compare engines runs."""
+    names = [e["label"] for e in uv_engines() if e["installed"]]
+    n = len(names)
+    text = f"Unwraps the model {n} times ({', '.join(names)}) and packs each."
+    if last_seconds:
+        text += f" The last unwrap took {_duration(last_seconds)}: expect about {_duration(n * last_seconds)}."
+    else:
+        text += " Each takes about as long as Unwrap + pack."
+    return n, text + " The best result stays on the model."
 
 
 CHECKER = "FORGE_UV_CHECKER"

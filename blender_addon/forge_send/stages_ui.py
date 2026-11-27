@@ -35,6 +35,39 @@ SIDES = [("auto", "Auto", "Mirror when the model is symmetric enough, from the b
          ("none", "No mirror", "Keep both sides as they are (asymmetric design)")]
 
 
+# Step 5's unwrap engines (UVgami's ids); the numbers are what the .blend stores: never reuse one
+UV_ENGINES = [("AUTO", "Auto", "The engine that won Compare engines for this model; OptCuts until you "
+                               "compare", 0),
+              ("OPTCUTS", "OptCuts", "Least stretch for the seam length. Can be slow on dense meshes", 1),
+              ("PARTUV", "PartUV", "Splits the model into parts first: fewer islands, can be faster", 2),
+              ("XATLAS", "xatlas", "Fast, made for lightmaps: many small islands", 3)]
+_UV_ENGINE_ITEMS: dict = {}        # Blender needs the strings of a dynamic enum kept alive: every
+                                   # variant is kept (a handful: downloaded or not)
+
+
+def _uv_engine_items(self, context):
+    """The engines, each marked when UVgami has not downloaded it."""
+    try:
+        from . import steps as S
+        have = {e["id"]: e["installed"] for e in S.uv_engines()}
+    except Exception:                                     # noqa: BLE001
+        have = {}
+    items = [UV_ENGINES[0]]
+    for eid, label, desc, n in UV_ENGINES[1:]:
+        if eid not in have:
+            label = f"{label} (not in this UVgami)" if have else label
+        elif not have[eid]:
+            label = f"{label} (not downloaded)"
+        items.append((eid, label, desc, n))
+    return _UV_ENGINE_ITEMS.setdefault(tuple(items), items)
+
+
+PARTUV_SPLITS = [("AUTO", "Auto", "AI when PartUV's AI part is downloaded, else Tree"),
+                 ("TREE", "Tree", "Splits the model into parts by shape. Nothing extra to download"),
+                 ("GEOMETRIC", "Geometric", "Groups faces by direction. Faster, more seams"),
+                 ("AI", "AI", "AI finds the parts. Needs PartUV's AI download (5 GB) and an NVIDIA card")]
+
+
 class ForgeStageState(bpy.types.PropertyGroup):
     brief: EnumProperty(items=STATUS, default="todo")
     concept: StringProperty(name="Concept image", subtype="FILE_PATH",
@@ -66,6 +99,11 @@ class ForgeStageState(bpy.types.PropertyGroup):
                                       "(eyes, mouth, nostrils, nails, hoof tips). 0 = even quads")
     tex_size: EnumProperty(name="Texture size", default="2048",
                            items=[("1024", "1K", ""), ("2048", "2K", ""), ("4096", "4K", "")])
+    uv_engine: EnumProperty(name="Unwrap engine", items=_uv_engine_items,
+                            description="The UVgami engine that cuts the seams in Step 5")
+    partuv_split: EnumProperty(name="PartUV split", items=PARTUV_SPLITS, default="AUTO",
+                               description="How PartUV splits the model into parts before it unwraps")
+    uv_compare_rep: StringProperty(default="{}")  # Compare engines: the table and the winner (Auto's engine)
     rig_phase: StringProperty(default="")         # "" | "joints" | "built"
     anim_clip: EnumProperty(name="Sample animation", default="rom",
                             items=[("rom", "Range of motion", "Every joint to its limit: look for tearing"),
