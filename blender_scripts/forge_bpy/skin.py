@@ -80,10 +80,21 @@ def limit_influences(W, k: int, continuous: bool = True) -> np.ndarray:
 
 
 def engine_limit(W, k: int, min_weight: float = 0.01, continuous: bool = True) -> np.ndarray:
-    """What an engine build does to weights (points x bones): weights under min_weight are
-    dropped, then limit_influences(k). export_engine and the bind use exactly this."""
+    """What an engine build does to weights (points x bones): tiny weights go, then
+    limit_influences(k). export_engine and the bind use exactly this.
+
+    continuous (the default): weights under min_weight go, and those up to twice it fade in
+    (2 x (w - min_weight)); stronger ones are kept as they are. A hard cut keeps a 1.3 % bone on
+    one point and drops a 0.9 % one on its neighbour: when that far bone moves (a thigh in a
+    leg pose), the first point follows it a few millimetres and the skin between tears. Faded,
+    they keep 0.6 % and 0. A row with nothing left keeps its weights (renormalised)."""
     W = np.asarray(W, np.float64)
-    return limit_influences(np.where(W >= min_weight, W, 0.0), k, continuous)
+    if not continuous:
+        return limit_influences(np.where(W >= min_weight, W, 0.0), k, False)
+    soft = np.where(W >= 2.0 * min_weight, W, np.maximum(2.0 * (W - min_weight), 0.0))
+    gone = (soft.sum(axis=1) <= 1e-12) & (W.sum(axis=1) > 0)
+    soft[gone] = W[gone]
+    return limit_influences(soft, k, True)
 
 
 def _cleanup_weights(low, max_influences: int, min_weight: float, deform_bones: set,
@@ -93,9 +104,9 @@ def _cleanup_weights(low, max_influences: int, min_weight: float, deform_bones: 
     weight (fixed by nearest neighbour)."""
     groups = {vg.index: vg for vg in low.vertex_groups}
     rows: list[list[tuple[int, float]]] = []
-    for v in low.data.vertices:
+    for v in low.data.vertices:                  # (continuous: engine_limit fades the tiny ones)
         rows.append([(g.group, g.weight) for g in v.groups
-                     if g.weight >= min_weight and groups[g.group].name in deform_bones])
+                     if g.weight >= (1e-6 if continuous else min_weight) and groups[g.group].name in deform_bones])
     width = max((len(r) for r in rows), default=0)
     gi = np.full((len(rows), max(width, 1)), -1, np.int64)
     wt = np.zeros((len(rows), max(width, 1)))

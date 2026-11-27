@@ -107,11 +107,13 @@ def test_unweighted_points_and_too_many_bones_are_counted():
 ARP_ARM = ("shoulder", "c_arm_twist_offset", "arm_stretch", "forearm_stretch", "forearm_twist", "hand")
 
 
-def _arp_arms(radius=0.4, length=1.0, blend=0.15, cuts=59):
+def _arp_arms(radius=0.4, length=1.0, blend=0.15, cuts=59, taper=1.0):
     """Two arms in a T (one tube along X) with Auto-Rig Pro's deform bones and names: shoulder,
     upper arm = c_arm_twist_offset + arm_stretch, forearm = forearm_stretch + forearm_twist, hand;
     left on +X, mirrored on -X. Each bone hangs from the one before; the weights blend linearly
-    over +-blend*length round every bone boundary. Returns (rig, tube, ends of the bones)."""
+    over +-blend*length round every bone boundary. taper < 1: from the elbow on the arm is that
+    much thinner (it narrows over +-0.1 length round the elbow), like a real forearm.
+    Returns (rig, tube, ends of the bones)."""
     import math
 
     import bmesh
@@ -138,6 +140,12 @@ def _arp_arms(radius=0.4, length=1.0, blend=0.15, cuts=59):
                           matrix=Matrix.Rotation(math.pi / 2, 4, "Y"))
     side = [e for e in bm.edges if abs(e.verts[0].co.x - e.verts[1].co.x) > ends[-1]]
     bmesh.ops.subdivide_edges(bm, edges=side, cuts=cuts, use_grid_fill=True)
+    if taper != 1.0:
+        for v in bm.verts:
+            u = min(max((abs(v.co.x) - (ends[3] - 0.1 * L)) / (0.2 * L), 0.0), 1.0)
+            k = 1.0 + (taper - 1.0) * u
+            v.co.y *= k
+            v.co.z *= k
     me = bpy.data.meshes.new("Arms")
     bm.to_mesh(me)
     bm.free()
@@ -209,11 +217,17 @@ def test_a_fat_elbow_names_the_elbow_and_tells_contact_from_thinning():
     cross = rep["checks"]["crossing"]["regions"]
     assert {x["where"] for x in cross} == {"left elbow", "right elbow"}, cross
     assert all(x["kind"] == "contact" and x["grade"] == "info" for x in cross), cross
-    assert rep["checks"]["crossing"]["grade"] == "pass" and rep["checks"]["crossing"]["value"] > 0
+    x = rep["checks"]["crossing"]                        # (its value and frame: the worst fault)
+    assert x["grade"] == "pass" and x["value"] == 0 and x["frame"] is None, x
+    assert x["all_faces"] > 0 and x["contact"] > 0 and x["all_frame"] == 12, x
     skin = {e["where"]: e for e in rep["checks"]["skin"]["regions"]}
     for side in ("left", "right"):                       # folds in the crease are not graded
         assert skin.get(f"{side} elbow", {}).get("folds", 0) == 0, skin.get(f"{side} elbow")
-    assert rep["checks"]["joints"]["grade"] == "warn"
+        # a blend of +-0.15 on a limb this fat stretches the outer skin 3x: that is the weights'
+        assert skin[f"{side} elbow"]["stretch_grade"] == "fail" and skin[f"{side} elbow"]["stretch"] > 2.5
+        assert skin[f"{side} elbow"]["squash_grade"] == "pass"
+    assert rep["checks"]["joints"]["grade"] == "warn" and rep["checks"]["skin"]["grade"] == "fail"
+    assert rep["grade"] == "fail"
     import json
     json.dumps(rep)                     # (stored in the scene as JSON: plain numbers only, no numpy)
     # the panel: one sentence per finding, contact as information, nothing longer than 60
@@ -226,9 +240,69 @@ def test_a_fat_elbow_names_the_elbow_and_tells_contact_from_thinning():
     assert "left elbow, pose 'elbows' (bent 120°, frame 12): outer side kept" in text, text
     assert "normal for game skinning at this bend" in text and "contact, expected" in text, text
     assert "touches" not in text and "fold" not in text, text
+    assert "skin stretched 3.0x" in text and "smooth the weights there over a wider band" in text, text
     assert max(len(t) for _i, t in rows) <= 60
     warn_rows = [t for i, t in rows if i == L.WARN]
     assert any("left elbow" in t for t in warn_rows), rows
+    # and that advice works: the same elbow blended over +-0.5 no longer fails
+    arm, tube = _elbows(120.0, blend=0.5)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    assert rep["checks"]["skin"]["grade"] == "warn" and rep["checks"]["skin"]["stretch"] < 2.0, rep["checks"]["skin"]
+
+
+def test_a_tapered_elbow_presses_its_crease_further_out():
+    """A forearm thinner than the upper arm (as real arms are): bent 120 degrees, the thick side
+    meets the thin side further out than the thin side's own radius says. The crease is contact,
+    never 'forearm touches upper arm', and no fold is graded there."""
+    arm, tube, _ends = _arp_arms(radius=0.16, taper=0.62)
+    _key_rest(arm, ["forearm_stretch.l", "forearm_stretch.r"], 1)
+    _turn(arm, "forearm_stretch.l", (0, 0, 1), -120.0, 12)
+    _turn(arm, "forearm_stretch.r", (0, 0, 1), 120.0, 12)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    cross = rep["checks"]["crossing"]
+    assert cross["grade"] == "pass" and cross["contact"] > 0, cross["regions"]
+    assert {x["kind"] for x in cross["regions"]} == {"contact"}, cross["regions"]
+    skin = {e["where"]: e for e in rep["checks"]["skin"]["regions"]}
+    assert all(e["folds"] == 0 for e in skin.values()), skin
+    joints = {e["where"]: e for e in rep["checks"]["joints"]["regions"]}
+    for side in ("left", "right"):
+        e = joints[f"{side} elbow"]
+        assert e["part"] == "outer side" and e["normal"] and e["contact"]["faces"] > 0, e
+
+
+def test_a_coarse_mesh_keeps_its_contact_zone_where_the_limbs_meet():
+    """Rings as far apart as the limb is thick (a game low): the contact zone is a distance along
+    the limb, not a count of face rings, so a point weighted to the wrong bone two rings past
+    where the limbs meet still turns its faces inside out - a fold, graded - while the crease
+    itself stays contact."""
+    from mathutils import Vector
+    from forge_bpy import motion_check as M
+    r = 0.15
+    arm, tube, ends = _arp_arms(radius=r, cuts=35)                   # rings about r apart
+    _key_rest(arm, ["forearm_stretch.l", "forearm_stretch.r"], 1)
+    _turn(arm, "forearm_stretch.l", (0, 0, 1), -90.0, 12)
+    _turn(arm, "forearm_stretch.r", (0, 0, 1), 90.0, 12)
+    st = M.rest_layout(arm, [tube])
+    lay = st["L"]
+    J = next(j for j in lay.joints if j.name == "left elbow")
+    bpy.context.scene.frame_set(12)
+    co = M._posed(tube, bpy.context.evaluated_depsgraph_get(), len(tube.data.vertices))
+    _m, R, H, T = M.pose_state(arm, lay)
+    res = lay.measure(J, co, R, H, T, _m)
+    bpy.context.scene.frame_set(1)
+    reach = r * 1.0                                       # r tan(90/2): where rigid limbs meet
+    along = abs((lay.tri_c[res["tzone"]] - J.pivot) @ J.axis)
+    assert along.max() < 1.5 * reach, along.max()          # (two face rings reached 2.3x as far)
+    # a point on the inner side, the second ring past where the limbs meet, left on the upper arm
+    piv = ends[3]
+    bad = min(tube.data.vertices, key=lambda p: (p.co - Vector((piv + 2 * r, -r, 0.0))).length)
+    assert 1.6 * r < bad.co.x - piv < 2.4 * r, bad.co.x - piv
+    for g in tube.vertex_groups:
+        g.remove([bad.index])
+    tube.vertex_groups["arm_stretch.l"].add([bad.index], 1.0, "REPLACE")
+    rep = _run(arm, [tube], list(range(1, 13)))
+    sk = rep["checks"]["skin"]
+    assert sk["folds"] >= 1 and sk["grade"] == "fail", sk
 
 
 def _fake_poses(node, name):
@@ -257,6 +331,10 @@ def test_b_a_twisted_upper_arm_fails_as_a_twist():
     assert e["value"] < 0.3 and e["normal"], e                      # what linear blending does at 160
     assert rep["checks"]["joints"]["where"] == "left upper arm twist"
     assert "left elbow" not in joints and "right upper arm twist" not in joints, joints   # nothing else turns
+    # the skin the twist bones share is that same place: one place, one name
+    skin = {x["where"]: x for x in rep["checks"]["skin"]["regions"]}
+    assert "left upper arm twist" in skin and skin["left upper arm twist"]["stretch"] > 1.0, list(skin)
+    assert [r["where"] for r in rep["regions"]].count("left upper arm twist") == 1
 
 
 def test_d_the_bend_direction_is_taken_each_frame():
@@ -421,6 +499,7 @@ def test_g_unity_four_bone_limit_is_measured_not_counted():
     L = importlib.import_module("forge_send.stages_late")
     text = " ".join(t.strip() for _i, t in L._anim_rows(out[0.12]))
     assert "Unity" in text and "4-bone limit moves the skin" in text and "points use more than 4 bones" in text, text
+    assert "times the typical edge length" in text and "stretch up to" not in text, text
     text = " ".join(t.strip() for _i, t in L._anim_rows(out[0.05]))
     assert "4-bone limit moves the skin" not in text and "fine" in text, text
 
@@ -449,3 +528,151 @@ def test_a_prop_pinned_to_a_bone_is_a_part_of_its_own():
     assert any(x["where"] == "Box touches left upperarm" for x in box_x), box_x
     assert not [x for x in cross if x["kind"] == "fold"], cross
     assert rep["checks"]["weights"]["points"] == len(tube.data.vertices) + len(me.vertices)
+
+
+# ----------------------------------------------------------------------------- review fixes
+
+def _late():
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    return importlib.import_module("forge_send.stages_late")
+
+
+def test_a_collapsing_joint_is_never_hidden_behind_stretched_skin():
+    """Findings of different checks rank by how far past their limit they are: a twist kept at
+    33 % (limit 50 %: 1.5x past it) comes before skin stretched 2.3x (limit 2x: 1.15x). And the
+    panel always shows each check's worst place, even behind many worse ones."""
+    from forge_bpy import motion_check as M
+    joint = {"where": "left upper arm twist", "grade": "fail", "value": 0.334, "part": "all round", "frame": 97,
+             "bend_deg": 0, "twist_deg": 150, "kind": "twist", "lbs": 0.26, "normal": True,
+             "over": M._over(0.334, *M.LIMITS["volume"], below=True)}
+    skins = [{"where": f"place {k}", "grade": "fail", "stretch": 2.3 - 0.01 * k, "frame": 83, "stretch_grade": "fail",
+              "folds": 0, "folds_grade": "pass", "squash": 0.8, "squash_grade": "pass",
+              "over": M._over(2.3 - 0.01 * k, *M.LIMITS["stretch"], below=False)} for k in range(9)]
+    checks = {"joints": {"grade": "fail", "regions": [joint]}, "skin": {"grade": "fail", "regions": skins},
+              "crossing": {"grade": "pass", "regions": []}}
+    regions = M.by_region(checks)
+    assert regions[0]["where"] == "left upper arm twist", [r["where"] for r in regions]
+    # a joint that only warns still gets its row behind more than six failing places
+    joint.update(grade="warn", value=0.62, over=M._over(0.62, *M.LIMITS["volume"], below=True), normal=False)
+    rep = {"frames": 12, "grade": "fail", "checks": checks, "regions": M.by_region(checks)}
+    assert rep["regions"][-1]["where"] == "left upper arm twist"
+    text = " ".join(t.strip() for _i, t in _late()._anim_rows(rep))
+    assert "left upper arm twist" in text and "all round kept 62%" in text, text
+    assert "and 3 more places" in text, text
+
+
+def test_inner_side_caving_in_is_told_to_blend_tighter_not_wider():
+    """A slim elbow blended over +-0.5 and bent 120 degrees: the inner side caves in outside the
+    crease - the blend reaches too far along the limb. The advice is a tighter blend on the inside
+    of the bend (or a helper bone), never 'smooth the weights', and no 'contact, expected' note
+    sits under that finding."""
+    arm, tube = _elbows(120.0, radius=0.15, blend=0.5)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    e = {x["where"]: x for x in rep["checks"]["joints"]["regions"]}["left elbow"]
+    assert e["part"] == "inner side" and e["grade"] == "fail" and not e["normal"], e
+    _fake_poses(rep, "elbows")
+    rows = _late()._anim_rows(rep)
+    text = " ".join(t.strip() for _i, t in rows)
+    assert "inner side kept" in text and "the inside of the bend caves in" in text, text
+    assert "Blend over a shorter one on the inside of the bend" in text, text
+    assert "smooth the weights across that joint" not in text, text
+    k = next(i for i, (_ic, t) in enumerate(rows) if "left elbow," in t)
+    assert "inner side" in " ".join(t.strip() for _i, t in rows[k:k + 2]), rows[k:k + 2]
+    assert "contact, expected" not in " ".join(t for _i, t in rows[k:k + 4]), rows[k:k + 4]
+
+
+def test_skin_squashed_where_nothing_bends_is_graded():
+    """A forearm bone shrunk to 45 % along its length (a squash control): nothing bends, the
+    skin bunches up. The squash is graded (a warning) and said in plain words."""
+    arm, tube = _arm(0.0)
+    pb = arm.pose.bones["forearm.l"]
+    pb.scale = (1, 1, 1)
+    pb.keyframe_insert("scale", frame=1)
+    pb.scale = (1.0, 0.45, 1.0)                                # bone Y: along the forearm
+    pb.keyframe_insert("scale", frame=12)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    sk = rep["checks"]["skin"]
+    assert sk["grade"] == "warn" and sk["squash"] < 0.3 and sk["squash_where"], sk
+    assert rep["grade"] != "pass"
+    _fake_poses(rep, "rest")
+    text = " ".join(t.strip() for _i, t in _late()._anim_rows(rep))
+    assert "skin squashed to" in text and "Squashed skin where nothing bends" in text, text
+    # bending the elbow 120 degrees squeezes the crease: that is the bend's, not graded as squash
+    arm, tube = _elbows(120.0, radius=0.15)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    assert all(e["squash_grade"] == "pass" for e in rep["checks"]["skin"]["regions"]), rep["checks"]["skin"]
+
+
+def _web(spread_deg):
+    """A flat web of skin between two parallel bones 0.2 apart (fingers webbed together), each
+    side weighted to its bone, blended across the middle; bone b swings away from a."""
+    import math
+
+    import bmesh
+    from mathutils import Matrix
+    bpy.ops.wm.read_homefile(use_empty=True)
+    ad = bpy.data.armatures.new("A")
+    arm = bpy.data.objects.new("Rig", ad)
+    bpy.context.scene.collection.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    for n, y in (("a", -0.1), ("b", 0.1)):
+        e = ad.edit_bones.new(n)
+        e.head, e.tail = (0, y, 0), (1, y, 0)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0, matrix=Matrix.Translation((0.5, 0, 0)) @ Matrix.Diagonal((1.0, 0.3, 0.04, 1)))
+    bmesh.ops.subdivide_edges(bm, edges=list(bm.edges), cuts=12, use_grid_fill=True)
+    me = bpy.data.meshes.new("Web")
+    bm.to_mesh(me)
+    bm.free()
+    web = bpy.data.objects.new("Web_low", me)
+    bpy.context.scene.collection.objects.link(web)
+    ga, gb = web.vertex_groups.new(name="a"), web.vertex_groups.new(name="b")
+    for v in me.vertices:
+        w = min(max((v.co.y + 0.03) / 0.06, 0.0), 1.0)
+        if w < 1:
+            ga.add([v.index], 1 - w, "REPLACE")
+        if w > 0:
+            gb.add([v.index], w, "REPLACE")
+    web.modifiers.new("Armature", "ARMATURE").object = arm
+    arm.animation_data_create()
+    arm.animation_data.action = bpy.data.actions.new("FORGE_pose_test")
+    _key_rest(arm, ["b"], 1)
+    _turn(arm, "b", (0, 0, 1), spread_deg, 12)
+    return arm, web
+
+
+def test_stretch_the_pose_itself_asks_for_is_told_as_the_pose():
+    """Spreading webbed fingers 60 degrees: the skin between the two bones must stretch whatever
+    the weights (skin next to each bone follows it). The check proves the pose asks for more
+    than the limit and says so - turn it less - instead of 'smooth the weights'. A fat elbow's
+    stretch is the weights' (test a): no such floor there."""
+    arm, web = _web(60.0)
+    rep = _run(arm, [web], list(range(1, 13)))
+    worst = max(rep["checks"]["skin"]["regions"], key=lambda e: e["stretch"])
+    assert worst["stretch_grade"] == "fail" and worst["pose_floor"] > 2.0, worst
+    assert worst["pose_floor"] <= worst["stretch"] + 1e-6 and worst["pose_mover"] == "b", worst
+    _fake_poses(rep, "spread")
+    text = " ".join(t.strip() for _i, t in _late()._anim_rows(rep))
+    assert "the pose itself asks for at least" in text and "turn the b less" in text, text
+    assert "The pose asks for that stretch" in text and "smooth the weights there over a wider band" not in text, text
+    arm, tube = _elbows(120.0)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    assert not any("pose_floor" in e for e in rep["checks"]["skin"]["regions"]), rep["checks"]["skin"]["regions"]
+
+
+def test_a_modifier_that_adds_points_is_measured_without_it():
+    """A Subdivision modifier after the armature changes the point count: the check measures the
+    skinned cage (the same report as without it), says so, and switches the modifier back on.
+    Measured frozen, it read 262 faces turned inside out that never moved."""
+    arm, tube = _arm(120)
+    a = _run(arm, [tube], list(range(1, 13)))
+    tube.modifiers.new("Smooth", "SUBSURF").levels = 1
+    b = _run(arm, [tube], list(range(1, 13)))
+    assert a["checks"] == b["checks"], (a["checks"]["skin"], b["checks"]["skin"])
+    assert b["measured_as"]["without_modifiers"] == {"Tube_low": ["Smooth"]} and not b.get("skipped")
+    assert tube.modifiers["Smooth"].show_viewport
+    text = " ".join(t.strip() for _i, t in _late()._anim_rows(b))
+    assert "Tube_low: measured without its Smooth" in text, text

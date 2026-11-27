@@ -7,14 +7,20 @@ where it is worst (the caller adds the test pose shown at that frame):
             the skin keeps its distance from the bones. Each frame the child segment's turn
             against its parent is split into a bend and a twist, and each point is put on the
             inner side of the bend, on a side, or on the outer side. A limb of radius r bent by
-            an angle presses into itself on the inner side up to r*tan(angle/2) from the joint:
-            that is contact, expected, and shown as information. Thinning anywhere else is the
-            skinning's: the sides, the outer side (linear blending's elbow loss) and a twist
-            (the candy wrapper). Twist bones along one segment are judged as '<segment> twist'.
+            an angle presses into itself on the inner side up to r*tan(angle/2) from the joint
+            (further where the other side is thicker: _Layout._reach): that is contact, expected,
+            and shown as information. Thinning anywhere else is the skinning's: the sides, the
+            outer side (linear blending's elbow loss), the inner side past the contact (a blend
+            reaching too far along the limb) and a twist (the candy wrapper). Twist bones along
+            one segment are judged as '<segment> twist', and the skin they share is named so.
             A frame where the two bones no longer meet at the joint (the lower back turning
             about the body's middle, against the thigh) is skin sliding: the skin check's.
-  skin      each triangle's largest principal stretch against rest (the texture smears), and
-            triangles turned inside out outside a contact zone (folds): the worst per region
+  skin      each triangle's largest principal stretch against rest (the texture smears), its
+            smallest where no joint bends it (squash: the texture bunches), and triangles turned
+            inside out outside a contact zone (folds): the worst per region. Slivers are not
+            read. Where the stretch is high, the part the pose itself asks for, whatever the
+            weights, is proved and named (_pose_floors), so the panel never advises weights
+            that cannot help
   crossing  faces newly passing through faces. Inside one joint's contact zone: contact. Inside
             one segment: a fold (a fault). Between parts: '<A> touches <B>' (a forearm into an
             ear). Parts that already overlap at rest - a tail root plugged into the body - are
@@ -24,8 +30,10 @@ where it is worst (the caller adds the test pose shown at that frame):
             reduced): how far it moves the skin and the stretch it adds
 
 What is measured is what the engines play: linear blending (Preserve Volume is switched off
-while measuring), Unreal with the weights as bound (8 bones at most), Unity cut to 4. Every
-finding names its region; the worst finding per region is listed (by_region).
+while measuring), Unreal with the weights as bound (8 bones at most), Unity cut to 4. A mesh
+whose modifiers add points after the bones move it is measured without them. Every finding
+names its region and how far past its limit it is ("over"); the worst finding per region is
+listed (by_region), worst first on that one scale whatever the check.
 """
 
 from __future__ import annotations
@@ -40,6 +48,7 @@ import bpy
 LIMITS = {
     "volume": (0.7, 0.5),          # (warn below, fail below) joint thickness kept, posed / rest
     "stretch": (1.5, 2.0),         # (warn above, fail above) a triangle's largest stretch: smear
+    "squash": (0.3, 0.0),          # (warn below, never fails) a triangle's smallest stretch: bunching
     "folds": (0.0, 0.01),          # (warn above, fail above) share of triangles turned inside out
     "crossing": (0.0, 0.01),       # (warn above, fail above) share of faces folding through others
 }
@@ -51,6 +60,10 @@ BLEND = 0.1                        # a point is in a joint when its 2nd segment 
 MIN_TURN = 10.0                    # degrees: a joint bending and twisting less is not judged
 INNER = 0.5                        # cos to the bend direction: inner side above, outer below -INNER
 MIN_AREA = 0.01                    # triangles under this share of the median rest area: not measured
+SLIVER = 0.05                      # nor triangles lower than this share of their longest edge: a
+                                   # sliver's stretch is a tiny move over its tiny height
+ZONE_TOL = 0.25                    # a face is in a contact zone up to this share further out than
+                                   # rigid limbs would meet (linear blending bulges the crease a little)
 UNITY_SHIFT = 0.5                  # Unity's limit moving skin more than this many median edges: warn
 LBS_MARGIN = 0.05                  # thinning within this of linear blending's own loss is the method's
 SEPARATE = 0.25                    # the two bones of a joint this far apart at it (x its radius): shear
@@ -67,7 +80,8 @@ ARP_SEGMENTS = (
     (r"leg_stretch|c_leg_twist(_\d+)?|leg_twist(_\d+)?", "calf", "twist"),
     (r"c_ear_\d+", "ear", "chain"),
     (r"c_tail_\d+", "tail", "chain"),
-    (r"shoulder", "shoulder", ""),
+    (r"shoulder", "shoulder blade", ""),          # (Auto-Rig Pro's shoulder bone: its joints are
+                                                  # the collarbone and the shoulder)
     (r"hand", "hand", ""),
     (r"foot", "foot", ""),
     (r"toes_\d+", "toes", "chain"),
@@ -83,10 +97,15 @@ CORE = ("hips", "spine", "neck", "head")
 RANK = {"hips": 0.0, "spine": 1.0, "neck": 3.0, "head": 4.0, "jaw": 5.0, "ear": 6.0, "tail": 6.0,
         "shoulder": 10.0, "upper arm": 11.0, "forearm": 12.0, "hand": 13.0, "finger": 14.0,
         "thigh": 11.0, "calf": 12.0, "foot": 13.0, "toes": 14.0}
+# joints and segments never share a name (a place is named once): the spine's lowest segment is
+# "small of the back", the joint below it "lower back"; the neck segment is "neck", the joints
+# at its ends "base of the neck" and "top of the neck"
 JOINT_WORDS = {("upper arm", "forearm"): "elbow", ("forearm", "hand"): "wrist", ("thigh", "calf"): "knee",
-               ("calf", "foot"): "ankle", ("foot", "toes"): "toes", ("neck", "head"): "neck",
+               ("calf", "foot"): "ankle", ("foot", "toes"): "ball of the foot", ("neck", "head"): "top of the neck",
                ("head", "jaw"): "jaw", ("hips", "spine"): "lower back", ("spine", "spine"): "back",
                ("spine", "head"): "neck", ("spine", "neck"): "base of the neck"}
+
+ALT_WORDS = {"neck": "base of the head"}      # (the chest against the head, when there is a neck too)
 
 
 # ----------------------------------------------------------------------------- mesh data
@@ -316,11 +335,12 @@ def build_segments(bones: list) -> tuple:
         if word == "spine":
             k = spines.index(b)
             n = len(spines)
-            sw = "back" if n == 1 else ("lower back" if k == 0 else "chest" if k == n - 1
+            sw = "back" if n == 1 else ("small of the back" if k == 0 else "chest" if k == n - 1
                                         else "middle of the back" + (f" {k}" if n > 3 else ""))
             key, seg = b, _Seg(b, "spine", sw, "", "", True, RANK["spine"] + 0.1 * k)
         elif word is not None:
-            role = "finger" if word.endswith("finger") or word == "thumb" else word
+            role = "finger" if word.endswith("finger") or word == "thumb" else \
+                "shoulder" if word == "shoulder blade" else word
             key, seg = (word, side), _Seg((word, side), role, word, side, kind, True, RANK.get(role))
         else:
             key, seg = b, _Seg(b, None, _word(base) or b, side)
@@ -340,6 +360,8 @@ def _joint_word(P: _Seg, C: _Seg):
         return "tail root"
     if C.role == "ear" or P.role == "ear":
         return "ear root"
+    if P.role == "spine" and C.role == "spine" and C.word != "chest":
+        return f"back under the {C.word}"            # (three or more spine bones)
     w = JOINT_WORDS.get((P.role, C.role))
     if w:
         return w
@@ -392,6 +414,7 @@ class _Layout:
         self.H = np.array([(mw @ np.append(np.array(ab[b].head_local), 1.0))[:3] for b in bones]).reshape(-1, 3)
         self.T = np.array([(mw @ np.append(np.array(ab[b].tail_local), 1.0))[:3] for b in bones]).reshape(-1, 3)
         self.anc = {b: {a.name for a in ab[b].parent_recursive} for b in bones}
+        self.tri_c = rest[tris].mean(axis=1) if len(tris) else np.zeros((0, 3))
         # each point's two strongest segments
         top = np.argsort(-SW, axis=1, kind="stable")[:, :2] if len(segs) > 1 else np.zeros((n, 2), np.int64)
         rows = np.arange(n)
@@ -400,7 +423,7 @@ class _Layout:
         self._names: dict = {}
         self.joints: list = []
         self._find_joints()
-        self.pt_reg, self.reg_names = self._regions(self.s1, self.s2)
+        self.pt_reg, self.reg_names = self._regions(self.s1, self.s2, None, self._in_twist(Wn, self.s1, self.s2))
         ts = SW[tris].mean(axis=1) if len(tris) else np.zeros((0, len(segs)))
         if len(tris) and len(segs) > 1:
             tt = np.argsort(-ts, axis=1, kind="stable")[:, :2]
@@ -409,7 +432,8 @@ class _Layout:
         else:
             t1, t2 = np.zeros(len(tris), np.int64), np.full(len(tris), -1)
         self.tri_seg = t1
-        self.tri_reg, _ = self._regions(t1, t2, self.reg_names)
+        tw_n = Wn[tris].mean(axis=1) if len(tris) else np.zeros((0, len(bones)))
+        self.tri_reg, _ = self._regions(t1, t2, self.reg_names, self._in_twist(tw_n, t1, t2))
         # each triangle's strongest bone (its rest normal turns with it)
         tw = W[tris].sum(axis=1) if len(tris) else np.zeros((0, len(bones)))
         self.tri_bone = np.argmax(tw, axis=1) if len(bones) else np.zeros(len(tris), np.int64)
@@ -417,7 +441,10 @@ class _Layout:
         r0 = rest[tris[:, 0]] if len(tris) else np.zeros((0, 3))
         self.rest_n = np.cross(rest[tris[:, 1]] - r0, rest[tris[:, 2]] - r0) if len(tris) else np.zeros((0, 3))
         area = np.linalg.norm(self.rest_n, axis=1)
-        self.tri_ok = area >= MIN_AREA * (np.median(area) if len(area) else 0.0)
+        longest = np.linalg.norm(rest[tris] - rest[np.roll(tris, 1, axis=1)], axis=2).max(axis=1) \
+            if len(tris) else np.zeros(0)
+        height = area / np.maximum(longest, 1e-30)             # (area here is twice the triangle's)
+        self.tri_ok = (area >= MIN_AREA * (np.median(area) if len(area) else 0.0)) & (height >= SLIVER * longest)
 
     # ---- parent / child and names
     def _order(self, A: list, B: list, rank_a=None, rank_b=None) -> tuple:
@@ -443,38 +470,69 @@ class _Layout:
         return ((A, B), a, b) if child_b else ((B, A), b, a)
 
     def pair_name(self, i: int, j: int) -> str:
-        """The name of the region where segments i and j share skin ('left elbow')."""
+        """The name of the region where segments i and j share skin ('left elbow'). A joint
+        never takes a segment's name (or a twist's): that one gets a number. Two segment pairs
+        with the same anatomical word are one place (the collarbone against either chest bone)."""
         key = (min(i, j), max(i, j))
         if key not in self._names:
-            P, C = self.segs[i], self.segs[j]
-            if not P.bones or not C.bones:
-                name = f"{P.name} and {C.name}"
-            else:
-                (pb, cb), _p, _c = self._order(P.bones, C.bones, P.rank, C.rank)
-                if pb is C.bones:
-                    P, C = C, P
-                w = _joint_word(P, C)
-                side = C.side or P.side
-                if w is not None:
-                    name = f"{side} {w}".strip()
-                elif P.arp and C.arp:
-                    name = f"{C.name} and {P.name}"
-                else:
-                    child = self.bones[cb[0]] if len(cb) == 1 else C.name
-                    name = f"{_nice(child)} joint"
-            self._names[key] = name
+            self._names[key] = self._unique(self._pair_word(i, j))
         return self._names[key]
 
-    def _regions(self, s1, s2, names=None) -> tuple:
+    def _unique(self, name: str) -> str:
+        taken = {s.name for s in self.segs} | {f"{s.name} twist" for s in self.segs if s.kind == "twist"}
+        if name not in taken:
+            return name
+        if name in ALT_WORDS and ALT_WORDS[name] not in taken:
+            return ALT_WORDS[name]
+        k = 2
+        while f"{name} {k}" in taken:
+            k += 1
+        return f"{name} {k}"
+
+    def _pair_word(self, i: int, j: int) -> str:
+        P, C = self.segs[i], self.segs[j]
+        if not P.bones or not C.bones:
+            return f"{P.name} and {C.name}"
+        (pb, cb), _p, _c = self._order(P.bones, C.bones, P.rank, C.rank)
+        if pb is C.bones:
+            P, C = C, P
+        w = _joint_word(P, C)
+        side = C.side or P.side
+        if w is not None:
+            return f"{side} {w}".strip()
+        if P.arp and C.arp:
+            return f"{C.name} and {P.name}"
+        child = self.bones[cb[0]] if len(cb) == 1 else C.name
+        return f"{_nice(child)} joint"
+
+    def _in_twist(self, Wb, s1, s2) -> np.ndarray:
+        """Items (points or faces, weights Wb over bones) inside one segment that its twist bones
+        share (the 2nd of them moves it BLEND or more): the '<segment> twist' place, where the
+        twist joint is judged - its skin is named the same, one place under one name."""
+        out = np.zeros(len(s1), bool)
+        for k, seg in enumerate(self.segs):
+            if seg.kind != "twist" or len(seg.bones) < 2:
+                continue
+            m = np.flatnonzero((s1 == k) & (s2 < 0))
+            if not len(m):
+                continue
+            sub = Wb[np.ix_(m, seg.bones)]
+            tot = np.maximum(sub.sum(axis=1), 1e-12)
+            second = np.sort(sub, axis=1)[:, -2]
+            out[m[second / tot >= BLEND]] = True
+        return out
+
+    def _regions(self, s1, s2, names=None, twist=None) -> tuple:
         names = [] if names is None else names
         at = {nm: k for k, nm in enumerate(names)}
         out = np.empty(len(s1), np.int64)
         cache: dict = {}
-        for k, (a, b) in enumerate(zip(s1.tolist(), s2.tolist())):
-            key = (a, b) if b < 0 else (min(a, b), max(a, b))
+        tw = np.zeros(len(s1), bool) if twist is None else twist
+        for k, (a, b, t) in enumerate(zip(s1.tolist(), s2.tolist(), tw.tolist())):
+            key = ((a, b, t) if b < 0 else (min(a, b), max(a, b), False))
             r = cache.get(key)
             if r is None:
-                nm = self.segs[a].name if b < 0 else self.pair_name(a, b)
+                nm = (f"{self.segs[a].name} twist" if t else self.segs[a].name) if b < 0 else self.pair_name(a, b)
                 if nm not in at:
                     at[nm] = len(names)
                     names.append(nm)
@@ -533,13 +591,46 @@ class _Layout:
         J.use = J.rest >= 0.25 * med                     # (a point lying on its bone: noise)
         J.r = float(np.median(J.rest[J.use])) if J.use.any() else med
         J.rdir, J.along, J.rd = self._radial(J, self.rest[idx])
-        # the contact zone can hold any point of the two sides near the joint, not just shared ones
+        # the contact zone can hold any point (and face) of the two sides near the joint
         side_w = np.where(self.own, 0.0, self.Wn[:, J.union].sum(axis=1))    # (a prop is a part of its own)
         cand = np.flatnonzero(side_w >= 0.5)
         rdir, along, rd = self._radial(J, self.rest[cand])
-        keep = rd < 2.0 * max(J.r, 1e-9)
+        # each side's radius near the joint, where it is widest (90th percentile, within two
+        # radii of it): a tapered limb's thick side meets the thin side further out
+        crest = _dist_union(self.rest[cand], self.H, self.T, J.union)
+        for nm, m in (("r_p", along < 0.0), ("r_c", along >= 0.0)):
+            m = m & (np.abs(along) < 2.0 * J.r) & (crest >= 0.25 * J.r) & (crest < 3.0 * J.r)
+            setattr(J, nm, float(np.percentile(crest[m], 90)) if m.sum() >= MIN_PART_POINTS else J.r)
+        keep = rd < 2.0 * max(J.r, J.r_p, J.r_c, 1e-9)
         J.cidx, J.c_rdir, J.c_along, J.c_rd = cand[keep], rdir[keep], along[keep], rd[keep]
+        tw = side_w[self.tris].mean(axis=1) if len(self.tris) else np.zeros(0)
+        tc = np.flatnonzero(tw >= 0.5)
+        rdir, along, rd = self._radial(J, self.tri_c[tc])
+        keep = rd < 2.0 * max(J.r, J.r_p, J.r_c, 1e-9)
+        J.tidx, J.t_rdir, J.t_along, J.t_rd = tc[keep], rdir[keep], along[keep], rd[keep]
+        # faces whose three corners the two sides share: the joint's blend, where linear blending
+        # folds the crease in a little further than rigid limbs would meet
+        shared = np.zeros(n, bool)
+        shared[idx] = True
+        J.t_band = shared[self.tris[J.tidx]].all(axis=1) if len(J.tidx) else np.zeros(0, bool)
         return J
+
+    @staticmethod
+    def _reach(J, rho, along, theta):
+        """How far from the joint, along the limb, the inner side of a bend presses into the
+        other side. A point at distance a along its limb and rho from the axis, turned by theta
+        against the other side (a limb of radius r ending at the joint), is inside it while
+        a <= (r - rho cos theta) / sin theta (and, under 90 degrees, a <= rho tan theta: still
+        behind the joint). Both as thick: r tan(theta/2). A thin limb turning against a thick
+        one (an arm against the shoulder) presses in further; a thick side's far skin never
+        meets a thin limb (0)."""
+        t = math.radians(min(theta, 179.0))
+        c, s = math.cos(t), math.sin(t)
+        other = np.where(along >= 0.0, J.r_p, J.r_c)
+        reach = (other - rho * c) / s
+        if theta < 90.0:
+            reach = np.minimum(reach, rho * math.tan(t))
+        return np.maximum(reach, 0.0)
 
     @staticmethod
     def _radial(J, P) -> tuple:
@@ -567,30 +658,40 @@ class _Layout:
         ratio = _dist_union(co[J.idx], H, T, J.union) / np.maximum(J.rest, 1e-12)
         use = J.use
         if theta >= MIN_TURN:
-            # the half of the limb the bend closes on presses into the other half: a surface at
-            # distance rho from the axis meets the opposite one rho*tan(bend/2) from the joint
+            # the half of the limb the bend closes on presses into the other half (see _reach):
+            # that is contact. Only the inner side is excused there; the sides and the outer
+            # side are graded all the way to the joint.
             s = J.rdir @ bdir
             inner, outer = s > INNER, s < -INNER
-            tn = math.tan(math.radians(min(theta, 179.0)) / 2.0)
-            zone = (s > 0.0) & (np.abs(J.along) < J.rd * tn)
+            zone = (s > 0.0) & (np.abs(J.along) < self._reach(J, J.rd, J.along, theta))
             cs = J.c_rdir @ bdir
-            czone = J.cidx[(cs > 0.0) & (np.abs(J.c_along) < J.c_rd * tn)]
-            parts = {"inner side": use & inner & ~zone, "sides": use & ~inner & ~outer & ~zone,
+            czone = J.cidx[(cs > 0.0) & (np.abs(J.c_along) < self._reach(J, J.c_rd, J.c_along, theta))]
+            # faces: near the joint by where they are (their centre), with a margin in proportion
+            # to the reach - the same on a coarse game mesh as on a fine one - or when the two
+            # sides share all their corners (the blend: linear blending folds the crease in
+            # there; a point weighted to the wrong bone is not shared, so its folds still count).
+            # Near the joint the inner side presses and the sides pinch under linear blending:
+            # faces crossing or turning there are the bend's (contact), and so is squash all round
+            ts = J.t_rdir @ bdir
+            near = (np.abs(J.t_along) < self._reach(J, J.t_rd, J.t_along, theta) * (1.0 + ZONE_TOL)) | J.t_band
+            tzone, tbend = J.tidx[(ts > -INNER) & near], J.tidx[near]
+            parts = {"inner side": use & inner & ~zone, "sides": use & ~inner & ~outer,
                      "outer side": use & outer}
+            cz = use & zone & inner
         else:
             zone = np.zeros(len(J.idx), bool)
-            czone = J.cidx[:0]
+            czone, tzone, tbend = J.cidx[:0], J.tidx[:0], J.tidx[:0]
             parts = {"all round": use}
+            cz = zone
         vals = {k: float(np.percentile(ratio[m], 5)) for k, m in parts.items() if m.sum() >= MIN_PART_POINTS}
         part = min(vals, key=vals.get) if vals else None
-        cz = use & zone
         # each point's place this frame: 2 contact zone, 1 inner side, 0 a side (or a twist), -1 outer
         side = np.where(zone, 2, 0) if theta < MIN_TURN else \
             np.where(zone, 2, np.where(inner, 1, np.where(outer, -1, 0)))
         return {"bend": theta, "twist": tw, "turn": total, "part": part,
                 "value": vals[part] if part else None, "parts": vals,
                 "contact": float(np.percentile(ratio[cz], 5)) if cz.sum() >= MIN_PART_POINTS else None,
-                "zone": czone, "side": side, "ratio": ratio}
+                "zone": czone, "tzone": tzone, "tbend": tbend, "side": side, "ratio": ratio}
 
 
 # ----------------------------------------------------------------------------- weights
@@ -640,18 +741,68 @@ def check(arm, objs, frames: list):
     mods = [(m, m.use_deform_preserve_volume) for o in objs for m in o.modifiers
             if m.type == "ARMATURE" and m.object is arm]
     keep_frame = sc.frame_current
+    hidden: list = []                         # (modifier, was shown) switched off while measuring
     try:
         for m, _was in mods:
             m.use_deform_preserve_volume = False
+        objs, without, skipped = _comparable(objs, hidden)
         rests, sizes = _rest_points(arm, objs)
         rep = yield from _run(arm, objs, frames, deform, rests, sizes)
     finally:
         sc.frame_set(keep_frame)
         for m, was in mods:
             m.use_deform_preserve_volume = was
+        for m, was in hidden:
+            m.show_viewport = was
+        if hidden:
+            bpy.context.view_layer.update()
     rep["measured_as"] = {"blend": "linear", "preserve_volume_was_on": any(w for _m, w in mods),
                           "unity": "full mesh, before Unity's copy is reduced"}
+    if without:
+        rep["measured_as"]["without_modifiers"] = without
+    if skipped:
+        rep["skipped"] = skipped
     return rep
+
+
+def _comparable(objs, hidden: list) -> tuple:
+    """(objects to measure, {object: modifiers left out}, {object: why not measured}). A modifier
+    that adds or removes points (Subdivision, Decimate...) makes the moved mesh no longer match
+    its rest points: measured as it was, the object would read frozen - skin turned inside out
+    that never moved. Such an object is measured without those modifiers (the skinned cage, what
+    the bones move); one that still does not match is left out and named."""
+    dg = bpy.context.evaluated_depsgraph_get()
+    keep, without, skipped = [], {}, {}
+    for o in objs:
+        if _count(o, dg) == len(o.data.vertices):
+            keep.append(o)
+            continue
+        off = [m for m in o.modifiers if m.type != "ARMATURE" and m.show_viewport]
+        for m in off:
+            hidden.append((m, True))
+            m.show_viewport = False
+        bpy.context.view_layer.update()
+        dg = bpy.context.evaluated_depsgraph_get()
+        if off and _count(o, dg) == len(o.data.vertices):
+            keep.append(o)
+            without[o.name] = [m.name for m in off]
+        else:
+            for m in off:
+                m.show_viewport = True
+                hidden.remove((m, True))
+            bpy.context.view_layer.update()
+            dg = bpy.context.evaluated_depsgraph_get()
+            skipped[o.name] = "its modifiers change its points, so its movement cannot be measured"
+    return keep, without, skipped
+
+
+def _count(obj, dg) -> int:
+    ev = obj.evaluated_get(dg)
+    me = ev.to_mesh()
+    try:
+        return len(me.vertices)
+    finally:
+        ev.to_mesh_clear()
 
 
 def _setup(arm, objs, deform, rests, sizes) -> dict:
@@ -738,6 +889,7 @@ def _run(arm, objs, frames, deform, rests, sizes):
     contact: dict = {}
     skin_s = np.ones(nreg)
     skin_f = np.full(nreg, -1)
+    skin_t = np.full(nreg, -1)
     sq_s = np.ones(nreg)
     sq_f = np.full(nreg, -1)
     folds = np.zeros(nreg, np.int64)
@@ -759,12 +911,17 @@ def _run(arm, objs, frames, deform, rests, sizes):
         mats, R, H, T = pose_state(arm, L)
         row = {"frame": f}
         # ---- joints
-        zone_of = np.full(len(rest), -1, np.int64)
+        tri_zone = np.full(len(tris), -1, np.int64)     # a joint whose contact zone holds each face
+        tri_bend = np.zeros(len(tris), bool)            # faces a bend squeezes (near a bending joint)
+        zones = []                                      # (joint, its contact faces) this frame
         for ji, J in enumerate(L.joints):
             res = L.measure(J, co, R, H, T, mats)
             if res is None:
                 continue
-            zone_of[res["zone"]] = ji
+            tri_zone[res["tzone"]] = ji
+            tri_bend[res["tbend"]] = True
+            if len(res["tzone"]):
+                zones.append((ji, res["tzone"]))
             if res["value"] is not None:
                 rec = joints.get(J.name)
                 if rec is None or res["value"] < rec["value"]:
@@ -778,13 +935,6 @@ def _run(arm, objs, frames, deform, rests, sizes):
                     contact[J.name] = {"value": res["contact"], "frame": f, "bend": res["bend"], "faces": 0,
                                        "folds": 0}
         # ---- skin
-        tri_zone = zone_of[tris].max(axis=1) if len(tris) else np.zeros(0, np.int64)
-        if (tri_zone >= 0).any():                    # a face touching the zone is in it (one ring)
-            ring = zone_of.copy()
-            hit = np.flatnonzero(tri_zone >= 0)
-            free = ring[tris[hit]] < 0
-            ring[tris[hit][free]] = np.repeat(tri_zone[hit], 3).reshape(-1, 3)[free]
-            tri_zone = ring[tris].max(axis=1)
         if len(tris):
             s1, s2, nrm = principal_stretch(rest, co, tris)
             ok = L.tri_ok
@@ -793,8 +943,13 @@ def _run(arm, objs, frames, deform, rests, sizes):
             np.maximum.at(m1, reg[ok], s1[ok])
             better = m1 > skin_s
             skin_s[better], skin_f[better] = m1[better], f
+            for k in np.flatnonzero(better).tolist():          # (its worst face: for the pose's floor)
+                at = np.flatnonzero(ok & (reg == k))
+                skin_t[k] = int(at[np.argmax(s1[at])])
+            # skin squashed together where no joint bends it (a bone scaled, points pulled together)
+            sq_ok = ok & ~tri_bend
             m2 = np.ones(nreg)
-            np.minimum.at(m2, reg[ok], s2[ok])
+            np.minimum.at(m2, reg[sq_ok], s2[sq_ok])
             better = m2 < sq_s
             sq_s[better], sq_f[better] = m2[better], f
             Rt = R[L.tri_bone] if len(used) else np.broadcast_to(np.eye(3), (len(tris), 3, 3))
@@ -816,13 +971,18 @@ def _run(arm, objs, frames, deform, rests, sizes):
         if row["crossing"] > total_cross[0]:
             total_cross = (row["crossing"], f)
         if len(pairs):
-            za, zb = tri_zone[pairs[:, 0]], tri_zone[pairs[:, 1]]
+            # contact: both faces in one joint's zone (a face can be near two joints)
+            pz = np.full(len(pairs), -1, np.int64)
+            inz = np.zeros(len(tris), bool)
+            for ji, tz in zones:
+                inz[:] = False
+                inz[tz] = True
+                pz[(pz < 0) & inz[pairs[:, 0]] & inz[pairs[:, 1]]] = ji
             sa, sb = L.tri_seg[pairs[:, 0]], L.tri_seg[pairs[:, 1]]
-            is_contact = (za >= 0) & (za == zb)
             groups: dict = {}
-            for (a, b), cz, x, y in zip(pairs.tolist(), is_contact.tolist(), sa.tolist(), sb.tolist()):
-                if cz:
-                    key = ("contact", L.joints[int(tri_zone[a])].name)
+            for (a, b), cz, x, y in zip(pairs.tolist(), pz.tolist(), sa.tolist(), sb.tolist()):
+                if cz >= 0:
+                    key = ("contact", L.joints[cz].name)
                 elif x == y:
                     key = ("fold", L.segs[x].name)
                 else:
@@ -859,8 +1019,111 @@ def _run(arm, objs, frames, deform, rests, sizes):
                     unity.update(added=float(add[k]), added_frame=f, added_where=L.reg_names[L.tri_reg[k]])
         per_frame.append(row)
         yield (i + 1) / max(len(frames), 1)
+    floors = _pose_floors(arm, L, rest, edges, med_edge, skin_s, skin_f, skin_t)
     return _report(L, frames, n_tris, med_edge, joints, contact, jzone_folds, skin_s, skin_f, sq_s, sq_f,
-                   folds, folds_f, crossing, total_cross, at_rest, unity, u_s, objs, arm, deform, per_frame)
+                   folds, folds_f, crossing, total_cross, at_rest, unity, u_s, objs, arm, deform, per_frame,
+                   floors)
+
+
+FIRM = 0.5                         # skin this close to its bone (x the distance to any bone moving
+                                   # otherwise) follows that bone whatever the weights
+FLOOR_REGIONS = 8                  # stretched regions whose pose floor is worked out (worst first)
+
+
+def _geodesic(n, edges, el, src, src_d, rmax, rounds=300):
+    """Distance over the surface (along edges) from the source points, up to rmax."""
+    d = np.full(n, np.inf)
+    d[src] = src_d
+    for _ in range(rounds):
+        old = d.copy()
+        np.minimum.at(d, edges[:, 1], d[edges[:, 0]] + el)
+        np.minimum.at(d, edges[:, 0], d[edges[:, 1]] + el)
+        d[d > rmax] = np.inf
+        if np.array_equal(old, d):
+            break
+    return d
+
+
+def _pose_floors(arm, L, rest, edges, med_edge, skin_s, skin_f, skin_t) -> dict:
+    """{region: {"floor", "mover"}}: the stretch the pose itself asks of the skin there, whatever
+    the weights - so the panel does not advise smoothing weights where no weights can help.
+
+    At the frame where a region stretches most, the bones fall into groups that move as one
+    (the head with its ears, the still body...). Skin at most FIRM times as far from its own
+    group's bones as from any other group's follows its group whatever the weights. From the
+    region's worst face, the nearest such skin of two groups, a and b, are g_a + g_b apart over
+    the surface; after the pose they are |a' - b'| apart (seen from b's group). Some skin on
+    that way must stretch at least |a' - b'| / (g_a + g_b): a lower bound, not an estimate.
+    "mover": the part that turns (the group's top bone), to name in the advice."""
+    out: dict = {}
+    if not len(L.bones) or not len(edges):
+        return out
+    todo = [k for k in np.argsort(-skin_s).tolist()
+            if skin_s[k] > LIMITS["stretch"][0] and skin_t[k] >= 0 and skin_f[k] >= 0][:FLOOR_REGIONS]
+    if not todo:
+        return out
+    sc = bpy.context.scene
+    n = len(rest)
+    el = np.linalg.norm(rest[edges[:, 0]] - rest[edges[:, 1]], axis=1)
+    span = float(np.linalg.norm(rest.max(axis=0) - rest.min(axis=0))) if n else 1.0
+    parent = {b: (arm.data.bones[b].parent.name if arm.data.bones[b].parent else None) for b in L.bones}
+    by_frame: dict = {}
+    for k in todo:
+        by_frame.setdefault(int(skin_f[k]), []).append(k)
+    for f, regs in sorted(by_frame.items()):
+        sc.frame_set(f)
+        mats = skin_matrices(arm, L.bones)
+        # bones moving as one: the same skinning matrix (to a tenth of a millimetre over the body)
+        group = np.full(len(L.bones), -1)
+        reps: list = []
+        for j in range(len(L.bones)):
+            for gi, r in enumerate(reps):
+                dm = np.abs(mats[j, :3, :3] - mats[r, :3, :3]).max() * span + np.abs(mats[j, :3, 3] - mats[r, :3, 3]).max()
+                if dm < 1e-4:
+                    group[j] = gi
+                    break
+            else:
+                group[j] = len(reps)
+                reps.append(j)
+        G = len(reps)
+        if G < 2:
+            continue
+        Dg = np.full((n, G), np.inf)
+        for j in range(len(L.bones)):
+            Dg[:, group[j]] = np.minimum(Dg[:, group[j]], _dist_to_bone(rest, L.H[j], L.T[j]))
+        own = np.argmin(Dg, axis=1)
+        srt = np.sort(Dg, axis=1)
+        firm = (srt[:, 0] <= FIRM * srt[:, 1]) & ~L.free
+        for k in regs:
+            t = int(skin_t[k])
+            vt = L.tris[t]
+            xt = L.tri_c[t]
+            g = _geodesic(n, edges, el, vt, np.linalg.norm(rest[vt] - xt, axis=1), 0.5 * span)
+            near = {}
+            for gi in range(G):
+                m = firm & (own == gi) & np.isfinite(g)
+                if m.any():
+                    near[gi] = int(np.flatnonzero(m)[np.argmin(g[m])])
+            best, pair = 1.0, None
+            gs = sorted(near)
+            for i in gs:
+                for j in gs:
+                    if j <= i:
+                        continue
+                    a, b = near[i], near[j]
+                    rel = np.linalg.inv(mats[reps[j]]) @ mats[reps[i]]
+                    pa = rel[:3, :3] @ rest[a] + rel[:3, 3]
+                    ratio = float(np.linalg.norm(pa - rest[b]) / max(g[a] + g[b], 1e-12))
+                    if ratio > best:
+                        best, pair = ratio, (i, j)
+            if pair is None:
+                continue
+            moves = {gi: float(np.linalg.norm(mats[reps[gi], :3, :3] @ xt + mats[reps[gi], :3, 3] - xt)) for gi in pair}
+            mg = max(moves, key=moves.get)
+            members = [L.bones[j] for j in range(len(L.bones)) if group[j] == mg]
+            top = next((b for b in members if parent.get(b) not in members), members[0])
+            out[L.reg_names[k]] = {"floor": best, "mover": L.segs[L.seg_of[L.bones.index(top)]].name}
+    return out
 
 
 def _lbs_floor(turn_deg: float) -> float:
@@ -868,8 +1131,21 @@ def _lbs_floor(turn_deg: float) -> float:
     return math.cos(math.radians(min(abs(turn_deg), 180.0)) / 2.0)
 
 
+def _over(value: float, warn: float, fail: float, below: bool) -> float:
+    """How far past its limit a value is, on one scale for every check: the limit of the grade
+    it reached against the value (1 at the limit, 1.5 = half as far again). Findings of
+    different checks (a thickness, a stretch, a share of faces) rank by it."""
+    if below:
+        lim = fail if value < fail else warn
+        return lim / max(value, 1e-6)
+    lim = fail if value > fail else warn
+    return value / lim if lim > 0 else 1.0 + value / max(fail, 1e-12)
+
+
 def _report(L, frames, n_tris, med_edge, joints, contact, jzone_folds, skin_s, skin_f, sq_s, sq_f, folds,
-            folds_f, crossing, total_cross, at_rest, unity, u_s, objs, arm, deform, per_frame) -> dict:
+            folds_f, crossing, total_cross, at_rest, unity, u_s, objs, arm, deform, per_frame,
+            floors=None) -> dict:
+    floors = floors or {}
     out = {"frames": len(frames), "checks": {}}
     # ---- joints: worst per joint, contact as information
     jr = []
@@ -880,7 +1156,8 @@ def _report(L, frames, n_tris, med_edge, joints, contact, jzone_folds, skin_s, s
         g = _grade(r["value"], *LIMITS["volume"], below=True)
         e = {"where": name, "grade": g, "value": round(r["value"], 3), "part": r["part"], "frame": r["frame"],
              "bend_deg": int(round(r["bend"])), "twist_deg": int(round(abs(r["twist"]))), "kind": r["kind"],
-             "lbs": round(floor, 2), "normal": bool(r["value"] >= floor - LBS_MARGIN)}
+             "lbs": round(floor, 2), "normal": bool(r["value"] >= floor - LBS_MARGIN),
+             "over": round(_over(r["value"], *LIMITS["volume"], below=True), 3)}
         if name in contact:
             c = contact[name]
             e["contact"] = {"value": round(c["value"], 3), "frame": c["frame"], "bend_deg": int(round(c["bend"])),
@@ -888,60 +1165,79 @@ def _report(L, frames, n_tris, med_edge, joints, contact, jzone_folds, skin_s, s
         jr.append(e)
     for name, c in contact.items():
         if name not in joints:
-            jr.append({"where": name, "grade": "pass", "value": None, "frame": None, "kind": "joint",
+            jr.append({"where": name, "grade": "pass", "value": None, "frame": None, "kind": "joint", "over": 0.0,
                        "contact": {"value": round(c["value"], 3), "frame": c["frame"],
                                    "bend_deg": int(round(c["bend"])), "faces": c["faces"],
                                    "folds": jzone_folds.get(name, 0)}})
-    jr.sort(key=lambda e: (-ORDER.index(e["grade"]), e["value"] if e["value"] is not None else 9.0))
+    jr.sort(key=lambda e: (-ORDER.index(e["grade"]), -e["over"]))
     worst = next((e for e in jr if e["value"] is not None), None)
     out["checks"]["joints"] = {
         "grade": worst["grade"] if worst else "pass", "value": worst["value"] if worst else 1.0,
         "frame": worst["frame"] if worst else None, "where": worst["where"] if worst else "",
         "part": worst["part"] if worst else None, "bend_deg": worst["bend_deg"] if worst else None,
         "regions": jr}
-    # ---- skin: worst stretch and folds per region
+    # ---- skin: worst stretch, folds and squash per region
     sr = []
     for k, name in enumerate(L.reg_names):
         st = float(skin_s[k])
         fd = int(folds[k])
-        if st <= 1.0 + 1e-9 and fd == 0:
+        sq = float(sq_s[k])
+        if st <= 1.0 + 1e-9 and fd == 0 and sq >= 1.0 - 1e-9:
             continue
         gs = _grade(st, *LIMITS["stretch"], below=False)
         gf = _grade(fd / n_tris, *LIMITS["folds"], below=False)
-        e = {"where": name, "grade": _worse(gs, gf), "stretch": round(st, 2),
+        gq = _grade(sq, *LIMITS["squash"], below=True)
+        g = _worse(_worse(gs, gf), gq)
+        overs = [(gs, _over(st, *LIMITS["stretch"], below=False)), (gf, _over(fd / n_tris, *LIMITS["folds"], below=False)),
+                 (gq, _over(sq, *LIMITS["squash"], below=True))]
+        e = {"where": name, "grade": g, "stretch": round(st, 2),
              "frame": int(skin_f[k]) if skin_f[k] >= 0 else None, "stretch_grade": gs, "folds": fd, "folds_grade": gf,
-             "squash": round(float(sq_s[k]), 2)}
+             "squash": round(sq, 2), "squash_grade": gq,
+             "over": round(max((o for gg, o in overs if gg == g), default=0.0), 3)}
+        if name in floors and gs != "pass" and floors[name]["floor"] >= LIMITS["stretch"][0]:
+            e["pose_floor"] = round(floors[name]["floor"], 2)  # what the pose itself asks there
+            e["pose_mover"] = floors[name]["mover"]
         if fd:
             e["folds_frame"] = int(folds_f[k])
         if sq_f[k] >= 0:
             e["squash_frame"] = int(sq_f[k])
         sr.append(e)
-    sr.sort(key=lambda e: (-ORDER.index(e["grade"]), -e["stretch"]))
+    sr.sort(key=lambda e: (-ORDER.index(e["grade"]), -e["over"]))
     ws = max(sr, key=lambda e: e["stretch"], default=None)
     wf = max(sr, key=lambda e: e["folds"], default=None)
+    wq = min(sr, key=lambda e: e["squash"], default=None)
     out["checks"]["skin"] = {
         "grade": max((e["grade"] for e in sr), key=ORDER.index, default="pass"),
         "stretch": ws["stretch"] if ws else 1.0, "frame": ws["frame"] if ws else None,
         "where": ws["where"] if ws else "", "folds": wf["folds"] if wf else 0,
-        "folds_where": wf["where"] if wf and wf["folds"] else "", "regions": sr}
+        "folds_where": wf["where"] if wf and wf["folds"] else "",
+        "squash": wq["squash"] if wq else 1.0, "squash_where": wq["where"] if wq and wq["squash"] < 1.0 else "",
+        "regions": sr}
     if wf and wf["folds"]:
         out["checks"]["skin"]["folds_frame"] = wf["folds_frame"]
+    if wq and wq.get("squash_frame") is not None:
+        out["checks"]["skin"]["squash_frame"] = wq["squash_frame"]
     # ---- crossings: contact (information), folds (faults), parts touching (warnings)
     cr = []
     for (kind, where), c in crossing.items():
+        share = c["faces"] / n_tris
         if kind == "contact":
-            g = "info"
+            g, ov = "info", 0.0
         elif kind == "fold":
-            g = _grade(c["faces"] / n_tris, *LIMITS["crossing"], below=False)
+            g, ov = _grade(share, *LIMITS["crossing"], below=False), _over(share, *LIMITS["crossing"], below=False)
         else:
-            g = "warn"
-        cr.append({"where": where, "kind": kind, "grade": g, "faces": c["faces"], "frame": c["frame"]})
+            g, ov = "warn", _over(min(share, LIMITS["crossing"][1]), *LIMITS["crossing"], below=False)
+        cr.append({"where": where, "kind": kind, "grade": g, "faces": c["faces"], "frame": c["frame"],
+                   "over": round(ov, 3)})
     rank = {"fail": 0, "warn": 1, "info": 2}
     cr.sort(key=lambda e: (rank[e["grade"]], -e["faces"]))
     faults = [e for e in cr if e["kind"] != "contact"]
     cg = max((e["grade"] for e in faults), key=ORDER.index, default="pass")
+    wx = faults[0] if faults else None                   # (its value and frame: the worst fault)
     out["checks"]["crossing"] = {
-        "grade": cg, "value": int(total_cross[0]), "frame": total_cross[1], "at_rest": int(at_rest.sum()),
+        "grade": cg, "value": wx["faces"] if wx else 0, "frame": wx["frame"] if wx else None,
+        "where": wx["where"] if wx else "",
+        "all_faces": int(total_cross[0]), "all_frame": total_cross[1], "at_rest": int(at_rest.sum()),
         "contact": sum(e["faces"] for e in cr if e["kind"] == "contact"),
         "folds": sum(e["faces"] for e in cr if e["kind"] == "fold"),
         "touches": sum(e["faces"] for e in cr if e["kind"] == "touch"), "regions": cr}
@@ -958,8 +1254,8 @@ def _report(L, frames, n_tris, med_edge, joints, contact, jzone_folds, skin_s, s
     w["unity"] = {"grade": ug, "shift_mm": round(unity["shift"] * 1000.0, 1), "shift_edges": round(shift_edges, 2),
                   "frame": unity["frame"], "where": unity["where"], "added_stretch": round(unity["added"], 2),
                   "added_frame": unity["added_frame"], "added_where": unity["added_where"],
-                  "stretch": round(float(u_s.max()) if len(u_s) else 1.0, 2), "limit_crossed": crossed[:5],
-                  "measured_on": "full mesh"}
+                  "limit_crossed": crossed[:5], "measured_on": "full mesh",
+                  "over": round(max(shift_edges / UNITY_SHIFT, 1.0 if crossed else 0.0), 3)}
     wg = "fail" if w["unweighted"] else ug
     out["checks"]["weights"] = {"grade": wg, **w}
     out["grade"] = max((x["grade"] for x in out["checks"].values()), key=ORDER.index)
@@ -980,7 +1276,9 @@ def by_region(checks: dict) -> list:
     """The findings per region (a joint, a segment, two parts touching), worst region first:
     [{"where", "grade", "worst": finding, "contact": finding or None, "findings": [worst first]}].
     A finding is a copy of a region entry of one check, with "check" naming it; contact is
-    "info" (expected at a bend, never a fault). Regions where everything passes are left out."""
+    "info" (expected at a bend, never a fault). Regions where everything passes are left out.
+    Within a grade, findings rank by how far past their limit they are ("over"): a joint kept
+    at 33 % (limit 50 %) comes before skin stretched 2.3x (limit 2x)."""
     found: dict = {}
 
     def add(f):
@@ -998,21 +1296,24 @@ def by_region(checks: dict) -> list:
             continue                                  # (counted with the joint's contact)
         add({**e, "check": "crossing"})
     sev = {"fail": 3, "warn": 2, "info": 1, "pass": 0}
+
+    def key(f):
+        return (-sev.get(f["grade"], 0), -float(f.get("over") or 0.0), _badness(f))
     out = []
     for where, fs in found.items():
-        fs.sort(key=lambda f: (-sev.get(f["grade"], 0), _badness(f)))
+        fs.sort(key=key)
         worst = fs[0]
         if sev.get(worst["grade"], 0) == 0:
             continue
         out.append({"where": where, "grade": worst["grade"], "worst": worst,
                     "contact": next((f for f in fs if f["check"] == "contact"), None),
                     "findings": [f for f in fs if f["grade"] != "pass"]})
-    out.sort(key=lambda r: (-sev.get(r["grade"], 0), _badness(r["worst"])))
+    out.sort(key=lambda r: key(r["worst"]))
     return out
 
 
 def _badness(f: dict) -> float:
-    """Lower = worse, to order findings of one grade."""
+    """Lower = worse: a tie-break within one check (and for reports from before "over")."""
     c = f.get("check")
     if c == "joints":
         return float(f.get("value") or 1.0) - 2.0

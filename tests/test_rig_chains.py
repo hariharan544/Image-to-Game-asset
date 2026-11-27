@@ -46,6 +46,14 @@ def test_bone_limit_is_continuous_where_the_weakest_bones_swap():
     # the engine limit drops tiny weights first, as the export does
     w = engine_limit(np.array([[0.6, 0.395, 0.005]]), 4)
     assert w[0, 2] == 0 and abs(w.sum() - 1) < 1e-12
+    # ... fading them, not cutting: a far bone at 1.3 % on one point and 0.9 % on the next
+    # (bone heat's tail) differs by a little after the limit, not by the whole 1.3 %
+    a, b = np.array([[0.687, 0.3, 0.013]]), np.array([[0.691, 0.3, 0.009]])
+    soft = abs(engine_limit(a, 4)[0, 2] - engine_limit(b, 4)[0, 2])
+    hard = abs(engine_limit(a, 4, continuous=False)[0, 2] - engine_limit(b, 4, continuous=False)[0, 2])
+    assert soft < 0.007 and hard > 0.012, (soft, hard)
+    assert np.allclose(engine_limit(np.array([[0.7, 0.3]]), 4), [[0.7, 0.3]])        # strong ones kept
+    assert np.allclose(engine_limit(np.array([[0.005, 0.004]]), 4), [[5 / 9, 4 / 9]])   # nothing left: kept
 
 
 def test_cleanup_uses_the_same_limit_as_the_engines():
@@ -183,6 +191,48 @@ def _weights(o, rows: dict):
         for i, w in enumerate(col):
             if w > 0:
                 g.add([i], float(w), "REPLACE")
+
+
+def test_the_weight_hand_off_fades_over_the_same_distance_on_any_mesh():
+    """The tail's leaked weight fades out over twice the root's radius measured along the skin,
+    not over a count of edge rings: a coarse game mesh and a mesh four times finer give the same
+    weights at the same places (rings made the fade four times wider on the coarse one, and
+    left a step where it ended)."""
+    import bmesh
+    from forge_bpy import arp_rig
+    from forge_bpy.skin import weight_matrix
+    out = {}
+    for segs in (20, 80):
+        bpy.ops.wm.read_homefile(use_empty=True)
+        bm = bmesh.new()
+        bmesh.ops.create_grid(bm, x_segments=segs, y_segments=segs, size=0.5)
+        me = bpy.data.meshes.new("g")
+        bm.to_mesh(me)
+        bm.free()
+        body = bpy.data.objects.new("Body_low", me)
+        bpy.context.scene.collection.objects.link(body)
+        co = np.array([v.co[:] for v in me.vertices])
+        reg = np.flatnonzero(np.linalg.norm(co[:, :2], axis=1) < 0.1 + 1e-6)       # the root: r 0.1
+        rig = _armature({"spine_01.x": ((0, -.5, 0), (0, .5, 0), None, True),
+                         "c_tail_00.x": ((0, 0, 0), (0, 0, .3), "spine_01.x", True)})
+        tail = np.full(len(co), 0.4)
+        tail[reg] = 1.0
+        _weights(body, {"c_tail_00.x": tail, "spine_01.x": 1.0 - tail})
+        arp_rig.store_regions(body, [{"name": "tail", "vert_idx": reg}], ["tail"])
+        rep = arp_rig.settle_appendages(body, rig)["tail"]
+        names, W = weight_matrix(body, {"c_tail_00.x", "spine_01.x"})
+        t = W[:, names.index("c_tail_00.x")]
+        row = np.flatnonzero((np.abs(co[:, 1]) < 1e-6) & (co[:, 0] > 0.1 + 1e-6))     # out along +x
+        out[segs] = ({round(float(x), 4): float(w) for x, w in zip(co[row, 0], t[row])}, rep)
+    (coarse, rc), (fine, rf) = out[20], out[80]
+    assert abs(rc["fade_mm"] - rf["fade_mm"]) < 0.15 * rf["fade_mm"] and 150 < rf["fade_mm"] < 250, (rc, rf)
+    for x, w in coarse.items():
+        assert abs(w - fine[x]) < 0.05, (x, w, fine[x])
+        want = 0.4 * max(0.0, 1.0 - (x - 0.1) / (rf["fade_mm"] / 1000.0))
+        assert abs(w - want) < 0.05, (x, w, want)
+    # no step: neighbouring points on the fine mesh differ by a small share of the leak
+    xs = sorted(fine)
+    assert max(abs(fine[a] - fine[b]) for a, b in zip(xs, xs[1:])) < 0.06
 
 
 @pytest.mark.parametrize("parent", ["spine_01.x", "root.x"])
@@ -437,16 +487,75 @@ def test_bull_animation_check_reads_each_place_once(bull_rigged):
         assert not [x for x in cross if set(x["where"].split(" touches ")) == crease], cross
     ear = next(x for x in cross if x["where"] == "left ear touches left upper arm")
     assert ear["kind"] == "touch" and ear["grade"] == "warn" and ear["pose"]["name"] == "arms up", ear
-    # no sliver blows the stretch up; the worst places are named, each once
-    assert rep["checks"]["skin"]["stretch"] < 3.0
+    # no sliver blows the stretch up: over the whole range of motion the worst skin is the elbow
+    # crease's outer side (2.35x; the plan's 2.31x before tiny weights were faded instead of cut,
+    # which also took the 2.26x 'left collarbone' tear in 'leg forward and back' away)
+    skin = rep["checks"]["skin"]
+    assert skin["stretch"] <= 2.4, skin
+    regs = {e["where"]: e for e in skin["regions"]}
+    assert regs.get("left collarbone", {"stretch": 1.0})["stretch"] < 2.0, regs.get("left collarbone")
+    # 'look round' on a neckless body: part of the ear-root stretch is the pose's own - the check
+    # proves at least about 1.6x (whatever the weights) and names the head as the part to turn less
+    ear = regs["left ear root"]
+    assert ear["pose"]["name"] == "look round" and ear["pose_mover"] == "head", ear
+    assert 1.4 < ear["pose_floor"] < ear["stretch"], ear
+    # places are named once: a joint never takes a segment's name, the twist's skin is the twist's
     names = [r["where"] for r in rep["regions"]]
     assert len(names) == len(set(names)) and {"left elbow", "right elbow", "left ear root"} <= set(names)
+    assert not [n for n in regs if n[-1].isdigit()], list(regs)
+    assert "small of the back" in regs and "lower back" in regs           # segment / joint below it
     u = rep["checks"]["weights"]["unity"]
     assert u["shift_mm"] > 0 and u["frame"] and u["pose"]["name"] and u["measured_on"] == "full mesh"
     rows = L._anim_rows(rep)
     assert max(len(t) for _i, t in rows) <= 60
     text = " ".join(t.strip() for _i, t in rows)
     assert "left elbow, pose 'elbows' (bent 120°" in text and "normal for game skinning" in text, text
+    assert "the pose itself asks for at least" in text and "turning the head less helps too" in text, text
+    assert "typical edge length" in text and "edges;" not in text, text                 # (Unity's line)
+    # bending forward no longer tears the tail root (2.72x before the tail hung from spine_01)
+    bend = [f for f in frames if S.clip_pose("rom", f)[1] == "bend forward"]
+    gen = M.check(arm, [body], bend)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rb = stop.value
+    tail = {e["where"]: e["stretch"] for e in rb["checks"]["skin"]["regions"] if "tail" in e["where"]}
+    assert tail and max(tail.values()) < 2.0, tail
+
+
+def test_biped_tapered_elbows_crease_as_contact_and_no_sliver_sets_the_stretch():
+    """A second body: the biped with a tail, on the same rig, over the range of motion. Its
+    forearms are thinner than its upper arms, so the crease reaches further out than the forearm's
+    own radius: before, that read 'left forearm touches left upper arm' (a warning). And its
+    voxel mesh has 1 mm slivers: one read 33.7x at the lower back. Now the crease is contact and
+    the stretch is read on triangles with a real shape."""
+    from forge_bpy import motion_check as M
+    import arp_like
+    import bodies
+    S = importlib.import_module("forge_send.steps")
+    body = bodies.biped(tail=True)
+    body["forge_role"], body["forge_part"], body["forge_kind"] = "low", "Body", "body"
+    bpy.context.view_layer.update()
+    arm, _J, _apps, _rep = arp_like.build(body)
+    S.sample_animation("rom")
+    n = S.CLIP_LENGTH["rom"]
+    frames = sorted(set(range(1, n + 1, max(1, n // 48))) | {f for f, _ in S.clip_peaks("rom")})
+    gen = M.check(arm, [body], frames)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    S.pose_test_stop()
+    cross = rep["checks"]["crossing"]["regions"]
+    for side in ("left", "right"):
+        assert any(x["where"] == f"{side} elbow" and x["kind"] == "contact" for x in cross), cross
+        crease = {f"{side} forearm", f"{side} upper arm"}
+        assert not [x for x in cross if set(x["where"].split(" touches ")) == crease], cross
+    assert rep["checks"]["skin"]["stretch"] < 10.0, rep["checks"]["skin"]
+    names = [e["where"] for e in rep["checks"]["skin"]["regions"]]
+    assert len(names) == len(set(names)) and not [x for x in names if x[-1].isdigit()], names
 
 
 # ----------------------------------------------------------------------------- Step 8, end to end

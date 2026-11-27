@@ -370,6 +370,8 @@ CHAIN_ROOTS = {"tail": "tail_00_ref.x", "ear_l": "ear_01_ref.l", "ear_r": "ear_0
 CHAIN_CONTROLS = {"tail": ("c_tail_", ".x"), "ear_l": ("c_ear_", ".l"), "ear_r": ("c_ear_", ".r")}
 APP_ATTR = "forge_app_"            # boolean point attribute on the body: the appendage's surface
 ROOT_RINGS = 3                     # edge rings round an appendage's root (weight hand-off, ownership)
+ROOT_FADE = 2.0                    # the hand-off fades over this x the root's radius (its
+                                   # thickness), along the skin
 ROOT_SHARE_WARN = 0.5              # the chain's parent should move at least this much of its root skin
 
 
@@ -507,15 +509,44 @@ def ring_distance(n: int, edges, region, rings: int):
     return dist
 
 
+def surface_distance(co, edges, region, rmax: float, rounds: int = 400):
+    """Distance over the surface (along edges) from a region: 0 inside it, inf past rmax."""
+    import numpy as np
+    el = np.linalg.norm(co[edges[:, 0]] - co[edges[:, 1]], axis=1)
+    d = np.where(np.asarray(region, bool), 0.0, np.inf)
+    for _ in range(rounds):
+        old = d.copy()
+        np.minimum.at(d, edges[:, 1], d[edges[:, 0]] + el)
+        np.minimum.at(d, edges[:, 0], d[edges[:, 1]] + el)
+        d[d > rmax] = np.inf
+        if np.array_equal(old, d):
+            break
+    return d
+
+
+def root_radius(co, edges, region) -> float:
+    """An appendage's root radius: its points next to the body, from their middle."""
+    import numpy as np
+    reg = np.asarray(region, bool)
+    a, b = edges[:, 0], edges[:, 1]
+    edge = np.unique(np.concatenate([a[reg[a] & ~reg[b]], b[reg[b] & ~reg[a]]]))
+    if len(edge) < 3:
+        return 0.0
+    p = co[edge]
+    return float(np.median(np.linalg.norm(p - p.mean(axis=0), axis=1)))
+
+
 def settle_appendages(obj, rig, rings: int = ROOT_RINGS) -> dict:
     """After the bind, for each rigged appendage stored on the body:
-    - root ownership: of the skin in a band of `rings` edge rings round its root (chain bones
-      left out), the share its parent bone moves. If another bone owns that skin, the root
-      tears when that bone moves (a tail hung from the hips while the lower back owns its root).
+    - root ownership: of the skin in a band round its root (chain bones left out), the share
+      its parent bone moves. If another bone owns that skin, the root tears when that bone
+      moves (a tail hung from the hips while the lower back owns its root).
     - weight hand-off: bone heat lets appendage bones move body skin (an ear flap dragging the
-      neck). Chain weight outside the appendage goes to the parent bone, fading over `rings`
-      rings (keep 1 - d / (rings + 1)) so there is no seam; the point's total is unchanged.
-    Returns {appendage: {...}}."""
+      neck). Chain weight outside the appendage goes to the parent bone, fading out over a
+      distance along the skin of ROOT_FADE x the root's radius (keep 1 - d / that), so there is
+      no seam on any mesh: the same width on a coarse game mesh as on a fine one. The point's
+      total is unchanged. The band is that wide too (`rings` edge rings when the root's radius
+      cannot be read). Returns {appendage: {...}}."""
     import numpy as np
     from .skin import set_weights, weight_matrix
     me = obj.data
@@ -547,14 +578,23 @@ def settle_appendages(obj, rig, rings: int = ROOT_RINGS) -> dict:
             W = np.hstack([W, np.zeros((n, 1))])
         cols = [names.index(b) for b in chain]
         pj = names.index(parent)
-        dist = ring_distance(n, E, reg, rings)
-        band = (dist >= 1) & (dist <= rings)
+        co = np.empty(n * 3)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        width = ROOT_FADE * root_radius(co, E, reg)
+        if width > 0:
+            dist = surface_distance(co, E, reg, width) / width        # (in widths: 1 = faded out)
+            band = (dist > 0) & (dist <= 1.0)
+            keep = np.clip(1.0 - dist, 0.0, 1.0)
+        else:
+            dist = ring_distance(n, E, reg, rings)
+            band = (dist >= 1) & (dist <= rings)
+            keep = np.clip(1.0 - dist / (rings + 1), 0.0, 1.0)
         rest = W[band].copy()
         rest[:, cols] = 0.0
         tot = rest.sum(axis=0)
         share = float(tot[pj] / tot.sum()) if tot.sum() > 0 else 0.0
         owner = names[int(np.argmax(tot))] if tot.sum() > 0 else parent
-        keep = np.clip(1.0 - dist / (rings + 1), 0.0, 1.0)
         moved = W[:, cols] * (1.0 - keep)[:, None]
         total = np.maximum(W.sum(axis=1), 1e-12)
         drag = moved.sum(axis=1) / total            # share of each point the chain was moving
@@ -562,6 +602,7 @@ def settle_appendages(obj, rig, rings: int = ROOT_RINGS) -> dict:
         W[:, pj] += moved.sum(axis=1)
         changed |= set(cols) | {pj}
         out[app] = {"chain": chain, "parent": parent, "root_share": round(share, 2), "root_owner": owner,
+                    "fade_mm": round(width * 1000.0, 1),
                     "root_ok": share >= ROOT_SHARE_WARN, "moved_points": int((drag > 0.01).sum()),
                     "moved_max": round(float(drag.max()), 2)}
     if changed:
