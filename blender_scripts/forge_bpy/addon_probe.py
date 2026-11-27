@@ -28,6 +28,11 @@ ADDONS = {
                      "props": ("smart_remesh", "smartremesh", "srm", "sremesh"),
                      "focus": ("",),               # every operator with its parameters
                      "by_module": True, "files": True},
+    "uvgami": {"names": ("uvgami",),
+               "ops_ns": (),
+               "props": ("uvgami",),
+               "focus": ("",),
+               "by_module": True, "files": True},
     "auto_rig_pro": {"names": ("auto-rig pro", "auto_rig_pro", "autorigpro", "auto rig pro"),
                      "ops_ns": ("arp",),
                      "props": ("arp",),
