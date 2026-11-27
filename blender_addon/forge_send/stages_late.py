@@ -428,8 +428,8 @@ class FORGE_OT_step(bpy.types.Operator):
         def done(st, rep):
             _save_rep(st, "uv_rep", rep)
             st.uv = "review"
-        run(st, "UV unwrap + pack", lambda: S.run_uv(int(st.tex_size), uvpm, engine=st.uv_engine,
-                                                     split=st.partuv_split, winner=uv_winner(st)), done)
+        run(st, S.UV_JOB, lambda: S.run_uv(int(st.tex_size), uvpm, engine=st.uv_engine,
+                                           split=st.partuv_split, winner=uv_winner(st)), done)
 
     def do_uv_compare_clear(self, context, st):
         st.uv_compare_rep = "{}"
@@ -1016,6 +1016,28 @@ def _draw_compare(col, rep, stale=False):
         c.label(text="(made before the meshes changed: compare again)", icon="INFO")
 
 
+def _auto_why(st, winner: str, used: str) -> str:
+    """Why Auto uses this engine: the comparison's winner, or why not (the note below says what
+    to do)."""
+    if winner and used == winner:
+        return "won Compare engines"
+    try:
+        cmp = json.loads(st.uv_compare_rep or "{}")
+    except ValueError:
+        cmp = {}
+    if winner:
+        label = next((r.get("label") for r in cmp.get("rows", []) if r.get("engine") == winner), winner)
+        row = next((e for e in S.uv_engines() if e["id"] == winner), None)
+        if row is None:
+            return f"{label} won Compare engines, but your UVgami comes without it"
+        if not row.get("available", True):
+            return f"{label} won Compare engines, but doesn't run on this computer"
+        return f"{label} won Compare engines, but isn't downloaded"
+    if cmp.get("rows"):
+        return "Compare engines found no winner"
+    return "no comparison yet"
+
+
 def _uv_engine_rows(st):
     """Which engine Unwrap + pack will use, in plain words."""
     out = []
@@ -1025,8 +1047,8 @@ def _uv_engine_rows(st):
     winner = uv_winner(st)
     plan = S.uv_engine_plan(st.uv_engine, winner, st.partuv_split)
     if st.uv_engine == "AUTO" and plan.get("engine"):
-        why = "won Compare engines" if winner and plan["engine"] == winner else "no comparison yet"
-        out.append(("INFO", f"Auto uses {plan['label'].split(',')[0]} ({why})"))
+        why = _auto_why(st, winner, plan["engine"])
+        out += _wrapped("INFO", f"Auto uses {plan['label'].split(',')[0]} ({why})")
     if plan.get("note"):
         out += _wrapped(WARN, plan["note"])
     return out, plan
@@ -1049,8 +1071,10 @@ def _draw_uv(col, st):
         last = _last_unwrap_seconds(st)
         c.label(text=f"Unwraps {len(have)} times" + (f"; the last unwrap took {S._duration(last)}"
                                                        if last else ""), icon="INFO")
-    elif have:
-        c.label(text="Download PartUV in UVgami to compare engines", icon="INFO")
+    elif have:                                # another engine this UVgami has, for this computer
+        more = next((e for e in S.uv_engines() if not e["installed"] and e.get("available", True)), None)
+        if more:
+            c.label(text=f"Download {more['label']} in UVgami to compare engines", icon="INFO")
     cmp = json.loads(st.uv_compare_rep or "{}")
     if cmp.get("rows") or cmp.get("why"):
         _draw_compare(col, cmp, stale=bool(cmp.get("meshes")) and cmp.get("meshes") != S.uv_fingerprint())
@@ -1217,7 +1241,7 @@ class FORGE_OT_uv_compare(bpy.types.Operator):
                 st.uv_engine = "AUTO"              # Auto = the winner, for this model
                 _save_rep(st, "uv_rep", rep)
                 st.uv = "review"
-        run(st, "comparing UV engines", lambda: S.run_uv_compare(int(st.tex_size), uvpm, st.partuv_split), done)
+        run(st, S.UV_COMPARE_JOB, lambda: S.run_uv_compare(int(st.tex_size), uvpm, st.partuv_split), done)
         return {"FINISHED"}
 
 

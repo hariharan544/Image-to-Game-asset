@@ -12,6 +12,7 @@ makes props swappable.
 from __future__ import annotations
 
 import math
+import sys
 
 import bmesh
 import bpy
@@ -111,6 +112,15 @@ SPLIT_LABELS = {"AI": "AI split", "TREE": "tree split", "GEOMETRIC": "geometric 
 ENGINE_FLAGS_250 = {e: {"supports_guided": e == "OPTCUTS", "supports_painted_islands": True}
                     for e in ENGINE_IDS}
 DOWNLOAD_HOW = "in Edit > Preferences > Add-ons > UVgami, press Download Engine under {}"
+# UVgami's Priority shapes every engine's own cut (PartUV's --threshold, xatlas' --max-cost,
+# OptCuts' bound and seam-border angle), so Forge sets it for every run instead of taking whatever
+# the director last left in UVgami's panel. Balanced is UVgami's own default ("low stretching with
+# moderate seams"): Less Stretch is the slowest and cuts the most seams (each seam a line a bake
+# can show), Fewer Seams leaves visible stretch. Forge measures the stretch itself, and Compare
+# engines ranks it first.
+UVGAMI_PRIORITY = "BALANCED"
+UVGAMI_PROXY = "AUTO"       # UVgami's default: a low-poly stand-in only for very large parts
+UVGAMI_WEIGHT = 3           # UVgami's default strength of painted weights (OptCuts' seam weight)
 _MODS: dict = {}
 
 
@@ -149,17 +159,23 @@ def uvgami_status() -> str:
 
 
 def uvgami_engines() -> list:
-    """The engines this UVgami build has, in Forge's order: [{'id', 'label', 'installed'}].
-    'installed' = downloaded and ready (UVgami's own installed_engines()). [] without UVgami."""
+    """The engines this UVgami build has, in Forge's order: [{'id', 'label', 'installed',
+    'available'}]. 'installed' = downloaded and ready (UVgami's own installed_engines());
+    'available' = UVgami offers it for this computer (Engine.is_available: PartUV has no build
+    for Intel Macs). [] without UVgami."""
     if not hasattr(bpy.context.scene, "uvgami"):
         return []
-    known, have = list(ENGINE_IDS), set()
+    known, have, gone = list(ENGINE_IDS), set(), set()
     mod = _uvgami_module("src.engines")
     if mod is not None and hasattr(mod, "installed_engines"):
         try:
             builds = getattr(mod, "ENGINES", None) or {}
             known = [e for e in ENGINE_IDS if e in builds] or known
             have = {str(getattr(e, "id", "")) for e in mod.installed_engines()}
+            for e in known:
+                fn = getattr(builds.get(e), "is_available", None)
+                if fn is not None and not fn():
+                    gone.add(e)
         except Exception as exc:                          # noqa: BLE001 - an add-on of another version
             print(f"[forge] UVgami engines not readable: {exc}")
     else:                                                 # no engine list: only the one its panel shows
@@ -167,7 +183,8 @@ def uvgami_engines() -> list:
             have = {str(bpy.context.scene.uvgami.engine)}
         except (AttributeError, TypeError):
             pass
-    return [{"id": e, "label": ENGINE_LABELS[e], "installed": e in have} for e in known]
+    return [{"id": e, "label": ENGINE_LABELS[e], "installed": e in have, "available": e not in gone}
+            for e in known]
 
 
 def _engine_object(eid: str):
@@ -213,20 +230,54 @@ def partuv_ai_ready() -> bool:
         return False
 
 
-def resolve_engine(choice: str = "AUTO", winner: str = "", installed=None) -> tuple:
+def engine_missing(eid: str, engines=None) -> str:
+    """Why this engine cannot be used now, in plain words with what to do. Only an engine this
+    UVgami has, for this computer, can be downloaded: UVgami 2.5.0 says some of its builds ship
+    without the xatlas and PartUV folders."""
+    if engines is None:
+        engines = uvgami_engines()
+    label = ENGINE_LABELS.get(eid, eid)
+    row = next((e for e in engines if e["id"] == eid), None)
+    if engines and row is None:
+        return f"Your UVgami comes without {label}."
+    if row is not None and not row.get("available", True):
+        return f"{label} doesn't run on this computer."
+    return f"{label} isn't downloaded yet: {DOWNLOAD_HOW.format(label)}."
+
+
+def resolve_engine(choice: str = "AUTO", winner: str = "", installed=None, engines=None) -> tuple:
     """(engine id to use, plain note). choice: 'AUTO' or an engine id; Auto = the engine that won
-    Compare engines for this model (winner), else OptCuts. An engine that is not downloaded is
-    replaced by the first downloaded one, and the note says so. ('', '') when none is."""
+    Compare engines for this model (winner), else OptCuts. An engine that cannot be used is
+    replaced by the first downloaded one, and the note says why (engine_missing). ('', '') when
+    none is downloaded."""
+    if engines is None:
+        engines = uvgami_engines()
     if installed is None:
-        installed = [e["id"] for e in uvgami_engines() if e["installed"]]
+        installed = [e["id"] for e in engines if e["installed"]]
     want = choice if choice in ENGINE_IDS else (winner if winner in ENGINE_IDS else "OPTCUTS")
     if want in installed:
         return want, ""
     use = next((e for e in ENGINE_IDS if e in installed), "")
     if not use:
         return "", ""
-    return use, (f"{ENGINE_LABELS[want]} isn't downloaded yet: {DOWNLOAD_HOW.format(ENGINE_LABELS[want])}. "
-                 f"Used {ENGINE_LABELS[use]} this time.")
+    return use, f"{engine_missing(want, engines)} Used {ENGINE_LABELS[use]} this time."
+
+
+def _on_mac() -> bool:
+    return sys.platform == "darwin"
+
+
+def partuv_ai_missing() -> str:
+    """Why PartUV's AI split cannot be used, in plain words with what to do. Only a UVgami that
+    has the AI part (src.engines.partuv.partfield: the Superhive build comes without it) offers
+    its download, and never on a Mac (it runs on an NVIDIA card's CUDA)."""
+    mod = _uvgami_module("src.engines.partuv")
+    if mod is not None and hasattr(mod, "partfield") and getattr(mod, "partfield") is None:
+        return "Your UVgami comes without PartUV's AI split."
+    if _on_mac():
+        return "PartUV's AI split needs an NVIDIA card, which a Mac doesn't have."
+    return ("PartUV's AI split isn't downloaded yet (in Edit > Preferences > Add-ons > UVgami, press "
+            "Download Engine under AI Segmentation; it needs an NVIDIA card).")
 
 
 def resolve_split(choice: str = "AUTO", ai_ready=None) -> tuple:
@@ -236,9 +287,7 @@ def resolve_split(choice: str = "AUTO", ai_ready=None) -> tuple:
     if choice in ("TREE", "GEOMETRIC"):
         return choice, ""
     if choice == "AI" and not ai:
-        return "TREE", ("PartUV's AI split isn't downloaded yet (in Edit > Preferences > Add-ons > UVgami, "
-                        "press Download Engine under AI Segmentation; it needs an NVIDIA card). "
-                        "Used the tree split this time.")
+        return "TREE", f"{partuv_ai_missing()} Used the tree split this time."
     return ("AI" if ai else "TREE"), ""
 
 
@@ -482,12 +531,17 @@ def _uvgami_unwrap(objs: list, args: dict):
         (props, "keep_quads", True),
         (props, "use_weights", weighted > 0),
         (props, "unwrap_timeout", int(max(1, args.get("uvgami_minutes", 20)))),
+        (props, "priority", UVGAMI_PRIORITY),   # shapes every engine's cut: never the panel's leftover
+        (props, "proxy_mode", UVGAMI_PROXY),
+        (props, "weight_value", UVGAMI_WEIGHT),
     ]
     if eid == "PARTUV":
         settings.append((getattr(props, "partuv", None), "segmentation", split))
     elif eid == "OPTCUTS":                  # organic or hard surface: chosen per loose part
         settings.append((getattr(props, "optcuts", None), "mode", "AUTO"))
     keep = _set_settings(settings)
+    run.update(priority=str(getattr(props, "priority", "") or ""),          # what UVgami really got
+               proxy=str(getattr(props, "proxy_mode", "") or ""))
     manager = _uvgami_manager()
     before = {o.name: _uv_array(o) for o in objs}
     try:

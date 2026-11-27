@@ -46,17 +46,20 @@ _UV_ENGINE_ITEMS: dict = {}        # Blender needs the strings of a dynamic enum
 
 
 def _uv_engine_items(self, context):
-    """The engines, each marked when UVgami has not downloaded it."""
+    """The engines, each marked when UVgami cannot use it now (not in this UVgami, not for this
+    computer, not downloaded)."""
     try:
         from . import steps as S
-        have = {e["id"]: e["installed"] for e in S.uv_engines()}
+        have = {e["id"]: e for e in S.uv_engines()}
     except Exception:                                     # noqa: BLE001
         have = {}
     items = [UV_ENGINES[0]]
     for eid, label, desc, n in UV_ENGINES[1:]:
         if eid not in have:
             label = f"{label} (not in this UVgami)" if have else label
-        elif not have[eid]:
+        elif not have[eid].get("available", True):
+            label = f"{label} (not for this computer)"
+        elif not have[eid]["installed"]:
             label = f"{label} (not downloaded)"
         items.append((eid, label, desc, n))
     return _UV_ENGINE_ITEMS.setdefault(tuple(items), items)

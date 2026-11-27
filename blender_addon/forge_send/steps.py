@@ -456,8 +456,16 @@ def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: 
     return _mod("retopo").run(args)
 
 
+# Step 5's jobs. Compare engines puts every mesh back as it was, hidden or shown and selected or
+# not, also on Stop: Stop must not show a part the director hid.
+UV_JOB = "UV unwrap + pack"
+UV_COMPARE_JOB = "comparing UV engines"
+KEEPS_VISIBILITY = (UV_COMPARE_JOB,)
+
+
 def stop_cleanup(label: str = "") -> None:
-    """After Stop: drop half-done pieces and results, show the original parts again."""
+    """After Stop: drop half-done pieces and results, show the original parts again (not after a
+    job that puts visibility back itself: a part the director hid stays hidden)."""
     if "retopo" in label:
         undo_retopo()                     # a half-done retopology is of no use: start clean
     try:
@@ -474,11 +482,12 @@ def stop_cleanup(label: str = "") -> None:
         retopo.STATUS["text"] = ""
     except Exception:                                 # noqa: BLE001
         pass
-    new = lows()
-    for p in parts():                     # with new meshes present the originals stay hidden
-        p.hide_set(bool(new))
-    for o in new:
-        o.hide_set(False)
+    if label not in KEEPS_VISIBILITY:
+        new = lows()
+        for p in parts():                 # with new meshes present the originals stay hidden
+            p.hide_set(bool(new))
+        for o in new:
+            o.hide_set(False)
     try:                                  # back to normal viewport colours
         for area in bpy.context.screen.areas:
             if area.type == "VIEW_3D":
@@ -561,27 +570,38 @@ def _uv_args(texture_size: int, use_uvpm: bool, use_uvgami: bool, engine: str = 
 def run_uv(texture_size: int, use_uvpm: bool = True, use_uvgami: bool = True, engine: str = "AUTO",
            split: str = "AUTO", winner: str = ""):
     """engine: Step 5's Unwrap engine ('AUTO' or a UVgami engine id); winner: the engine that won
-    Compare engines for this model (what Auto uses; OptCuts when there is none)."""
+    Compare engines for this model (what Auto uses; OptCuts when there is none).
+    The checker comes off first: it puts one material in every slot, so neither Forge nor UVgami
+    would see where two materials meet (material seams would stay off). It comes back on after."""
+    checker = checker_off()
     args = _uv_args(texture_size, use_uvpm, use_uvgami, engine, split, winner)
     rep = _mod("uv").run(args)
     if not hasattr(rep, "__next__"):
         rep["uvgami"] = uvgami_status()
+        _checker_back(checker)
         return rep
 
     def gen():
         out = yield from rep
         out["uvgami"] = uvgami_status()
+        _checker_back(checker)
         return out
     return gen()
 
 
 def run_uv_compare(texture_size: int, use_uvpm: bool = True, split: str = "AUTO"):
-    """Compare engines: a generator; returns {'rows', 'winner', 'why', 'report', 'meshes'}."""
+    """Compare engines: a generator; returns {'rows', 'winner', 'why', 'report', 'meshes'}.
+    The checker comes off before the meshes are held (see run_uv), and back on after."""
+    checker = checker_off()
     args = _uv_args(texture_size, use_uvpm, True, "AUTO", split, "")
-    out = yield from _mod("uv").compare(args)
-    if out.get("report"):
-        out["report"]["uvgami"] = uvgami_status()
-    return out
+
+    def gen():
+        out = yield from _mod("uv").compare(args)
+        if out.get("report"):
+            out["report"]["uvgami"] = uvgami_status()
+        _checker_back(checker)
+        return out
+    return gen()
 
 
 def uvgami_status() -> str:
@@ -637,9 +657,12 @@ CHECKER = "FORGE_UV_CHECKER"
 
 
 def toggle_checker() -> bool:
-    """Show a UV grid on every low mesh (squares should look square and even). Returns state."""
+    """Show a UV grid on every low mesh (squares should look square and even). Returns state.
+    The checker goes into each material slot in turn and the slots get their own materials back:
+    the faces keep their material numbers (clearing the slots would set every face to the first
+    material in Blender 5, and the borders between materials would be gone for good)."""
     objs = lows()
-    on = not any(o.get("forge_checker") for o in objs)
+    on = not any("forge_checker" in o for o in objs)
     if on:
         img = bpy.data.images.get(CHECKER) or bpy.data.images.new(CHECKER, 1024, 1024)
         img.generated_type = "COLOR_GRID"
@@ -652,23 +675,37 @@ def toggle_checker() -> bool:
         tex.image = img
         nt.links.new(tex.outputs["Color"], bsdf.inputs["Base Color"])
         for o in objs:
-            o["forge_checker"] = ",".join(m.name if m else "" for m in o.data.materials)
-            o.data.materials.clear()
-            o.data.materials.append(mat)
+            slots = o.data.materials
+            o["forge_checker"] = ",".join(m.name if m else "" for m in slots)
+            if not len(slots):
+                slots.append(mat)
+            for i in range(len(slots)):
+                slots[i] = mat
     else:
         for o in objs:
-            names = o.get("forge_checker", "")
-            o.data.materials.clear()
-            for n in names.split(","):
-                if n and n in bpy.data.materials:
-                    o.data.materials.append(bpy.data.materials[n])
-            if "forge_checker" in o:
-                del o["forge_checker"]
+            if "forge_checker" not in o:
+                continue
+            names = str(o["forge_checker"])
+            slots = o.data.materials
+            if not names:                         # it had no material
+                slots.clear()
+            for i, n in enumerate(names.split(",") if names else []):
+                if i < len(slots):
+                    slots[i] = bpy.data.materials.get(n) if n else None
+            del o["forge_checker"]
     return on
 
 
-def checker_off() -> None:
-    if any(o.get("forge_checker") for o in lows()):
+def checker_off() -> bool:
+    """The parts' own materials back. True when the checker was on."""
+    if any("forge_checker" in o for o in lows()):
+        toggle_checker()
+        return True
+    return False
+
+
+def _checker_back(was_on: bool) -> None:
+    if was_on and not any("forge_checker" in o for o in lows()):
         toggle_checker()
 
 

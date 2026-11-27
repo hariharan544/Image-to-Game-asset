@@ -7,7 +7,9 @@ Engines as in <module>.src.engines: OPTCUTS / PARTUV / XATLAS with their enum va
 supports_* flags, installed_engines() over the downloaded ones (set_installed), and the
 Scene.uvgami.engine enum lists only those, with UVgami's own get/set (a stored value that is
 not downloaded reads as the first downloaded one). PartUV's split (props.partuv.segmentation)
-offers AI only when the AI part is downloaded (set_ai). Each engine flattens differently
+offers AI only when the AI part is downloaded (set_ai); a build without the AI part has
+partuv.partfield None. An engine in STATE['unavailable'] has no build for this computer
+(Engine.is_available). Each engine flattens differently
 (RESULTS), so the engines give measurably different UVs. Nothing here downloads or runs a real
 engine."""
 
@@ -28,7 +30,8 @@ PARTUV = "fake_uvgami.src.engines.partuv"
 # small pieces, least stretch, long seams
 DEFAULT_RESULTS = {"OPTCUTS": ("smart", 50), "PARTUV": ("sphere", 0), "XATLAS": ("smart", 30)}
 STATE = {"installed": {"OPTCUTS"}, "ai": False, "auto": False, "results": dict(DEFAULT_RESULTS),
-         "refuse": set(), "crash": set(), "skip": {}}     # skip: {engine: {object names it gives nothing}}
+         "refuse": set(), "crash": set(), "skip": {},     # skip: {engine: {object names it gives nothing}}
+         "unavailable": set()}                            # engines UVgami offers no build of for this computer
 
 
 class _Engine:
@@ -42,6 +45,9 @@ class _Engine:
         self.supports_keep_quads = True
         for k, v in flags.items():
             setattr(self, k, v)
+
+    def is_available(self):
+        return self.id not in STATE["unavailable"]
 
     def paint_is_seam_cost(self, props):
         return props.use_weights and self.supports_guided and not self.supports_painted_islands
@@ -61,7 +67,7 @@ ENGINES = _engines()
 
 
 def installed_engines():
-    return [e for e in ENGINES.values() if e.id in STATE["installed"]]
+    return [e for e in ENGINES.values() if e.is_available() and e.id in STATE["installed"]]
 
 
 def active_engine(engine_id):
@@ -124,6 +130,9 @@ class _Props(bpy.types.PropertyGroup):
     engine: bpy.props.EnumProperty(items=_engine_items, get=_engine_get, set=_engine_set)
     priority: bpy.props.EnumProperty(items=(("LESS_STRETCH", "Less Stretch", ""), ("BALANCED", "Balanced", ""),
                                             ("FEWER_SEAMS", "Fewer Seams", "")), default="BALANCED")
+    proxy_mode: bpy.props.EnumProperty(items=(("AUTO", "Auto", ""), ("ON", "On", ""), ("OFF", "Off", "")),
+                                       default="AUTO")
+    weight_value: bpy.props.IntProperty(default=3, min=1, max=5)
     split_regions: bpy.props.BoolProperty(default=True)
     import_uvs: bpy.props.BoolProperty(default=False)
     material_seams: bpy.props.BoolProperty(default=False)
@@ -156,6 +165,7 @@ class _Manager:
         self.engine = None
         self.props = None
         self.seen_settings = {}
+        self.seen_materials = {}   # each mesh's materials as UVgami got it
         self.seen_meshes = {}
         self.starts = []           # every session: engine, settings and each mesh as it was given
         self.cancelled = 0
@@ -167,7 +177,7 @@ class _Manager:
 
 SEEN_PREFIX = "fake_seen_"      # the copies of what UVgami was given (not Forge's)
 SEEN = ("transfer_uvs", "pack_after_unwrap", "symmetry", "stack_similar", "use_weights", "auto_grid",
-        "split_regions", "material_seams", "import_uvs", "keep_quads")
+        "split_regions", "material_seams", "import_uvs", "keep_quads", "priority", "proxy_mode", "weight_value")
 
 
 class UVGAMI_OT_start(bpy.types.Operator):
@@ -188,6 +198,8 @@ class UVGAMI_OT_start(bpy.types.Operator):
             self.report({"ERROR"}, f"{engine.label} could not start")
             return {"CANCELLED"}
         m.seen_settings = {k: getattr(p, k) for k in SEEN}
+        m.seen_materials = {o.name: [x.name if x else "" for x in o.data.materials]
+                            for o in context.selected_objects if o.type == "MESH"}
         m.seen_settings.update(engine=p.engine, segmentation=p.partuv.segmentation, optcuts_mode=p.optcuts.mode)
         m.engine, m.props = engine, _Snapshot(p)
         m.jobs = [o.name for o in context.selected_objects if o.type == "MESH"]
@@ -207,7 +219,8 @@ class UVGAMI_OT_start(bpy.types.Operator):
         m.starts.append({"engine": engine.id, "settings": dict(m.seen_settings), "uvs": uvs,
                          "meshes": {n: bpy.data.objects[n].data.name for n in m.jobs},
                          "groups": {n: [g.name for g in bpy.data.objects[n].vertex_groups] for n in m.jobs},
-                         "faces": {n: len(bpy.data.objects[n].data.polygons) for n in m.jobs}})
+                         "faces": {n: len(bpy.data.objects[n].data.polygons) for n in m.jobs},
+                         "materials": dict(m.seen_materials)})
         m.transfer_uv_failed, m.transfer_uv_fail_detail = False, ""      # (a new session)
         m.error_messages, m.error_code = [], 0
         m.is_active = True
@@ -240,7 +253,7 @@ def set_ai(on: bool):
 
 def install(installed=("OPTCUTS",), ai=False, auto=False):
     STATE.update(installed=set(installed), ai=bool(ai), auto=bool(auto), results=dict(DEFAULT_RESULTS),
-                 refuse=set(), crash=set(), skip={})
+                 refuse=set(), crash=set(), skip={}, unavailable=set())
     global ENGINES
     ENGINES = _engines()
     mod = sys.modules.get(MOD) or types.ModuleType(MOD)
@@ -253,6 +266,7 @@ def install(installed=("OPTCUTS",), ai=False, auto=False):
     sys.modules[ENG] = eng
     part = types.ModuleType(PARTUV)
     part.is_ai_segmentation_available = is_ai_segmentation_available
+    part.partfield = types.SimpleNamespace()      # the AI part's package (None in builds without it)
     sys.modules[PARTUV] = part
     if not hasattr(bpy.types.Scene, "uvgami"):
         for c in (_PartUV, _OptCuts, _Props, UVGAMI_OT_start, UVGAMI_OT_cancel_all):

@@ -233,17 +233,22 @@ def test_the_chosen_engine_is_set_for_the_run_and_the_directors_settings_come_ba
     p.partuv.segmentation = "GEOMETRIC"
     p.optcuts.mode = "HARD"
     p.split_regions, p.import_uvs, p.keep_quads = False, True, False
+    p.priority, p.proxy_mode, p.weight_value = "FEWER_SEAMS", "ON", 5    # shape every engine's cut
     raw, raw_split = p.get("engine"), p.partuv.get("segmentation")
     rep = _drive_all(uv.run({**ARGS, "uvgami_engine": "PARTUV"}))
     s = uvg.seen_settings
     assert s["engine"] == "PARTUV" and s["segmentation"] == "TREE"        # Auto split, no AI: tree
     assert s["split_regions"] and s["keep_quads"] and not s["import_uvs"]
     assert not s["symmetry"] and not s["stack_similar"] and not s["auto_grid"] and s["transfer_uvs"]
+    assert (s["priority"], s["proxy_mode"], s["weight_value"]) == (uv.UVGAMI_PRIORITY, "AUTO", 3) == \
+        ("BALANCED", uv.UVGAMI_PROXY, uv.UVGAMI_WEIGHT)
     assert p.engine == "OPTCUTS" and p.get("engine") == raw                  # all back as they were
     assert p.partuv.segmentation == "GEOMETRIC" and p.partuv.get("segmentation") == raw_split
     assert p.optcuts.mode == "HARD" and not p.split_regions and p.import_uvs and not p.keep_quads
+    assert (p.priority, p.proxy_mode, p.weight_value) == ("FEWER_SEAMS", "ON", 5)
     run = rep["uvgami_run"]
     assert run["engine"] == "PARTUV" and run["split"] == "TREE" and not run["note"], run
+    assert run["priority"] == "BALANCED" and run["proxy"] == "AUTO", run
     rows = [t for _, t in _late()._uv_rows(rep)]
     assert "Seams cut by UVgami (PartUV, tree split)" in rows, rows
 
@@ -253,6 +258,7 @@ def test_the_chosen_engine_is_set_for_the_run_and_the_directors_settings_come_ba
     rep = _drive_all(uv.run({**ARGS, "uvgami_engine": "OPTCUTS"}))
     assert uvg.seen_settings["engine"] == "OPTCUTS" and uvg.seen_settings["optcuts_mode"] == "AUTO"
     assert rep["uvgami_run"]["label"] == "OptCuts" and p.optcuts.mode == "HARD"
+    assert uvg.seen_settings["priority"] == "BALANCED" and p.priority == "FEWER_SEAMS"
 
 
 def test_the_ai_split_without_its_download_uses_the_tree_split_and_says_so(uvg):
@@ -590,3 +596,167 @@ def test_islands_and_seam_length_are_measured():
     o.scale = (1, 1, 1)
     me.transform(__import__("mathutils").Matrix.Scale(3.0, 4))     # the same cut, three times the size
     assert metrics.uv_layout(o)["seam_ratio"] == m["seam_ratio"]
+
+
+def _text(rows):
+    """Panel rows as one sentence (a long one is wrapped over several rows)."""
+    return " ".join(t.strip() for _, t in rows)
+
+
+def test_notes_only_point_to_downloads_this_uvgami_has(uvg, monkeypatch):
+    """Some UVgami builds come without PartUV (or xatlas), the Superhive build without PartUV's AI
+    split, and PartUV has no build for every computer: the notes say so instead of sending the
+    director to a Download button that isn't there."""
+    import fake_uvgami
+
+    from forge_bpy import uv
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    from forge_send import stages_ui
+    fake_uvgami.set_installed(("OPTCUTS",))
+    _low("Body", "body", (0, 0, 0))
+    assert uv.resolve_engine("PARTUV")[1].startswith("PartUV isn't downloaded yet: in Edit > Preferences")
+
+    eng = sys.modules[fake_uvgami.ENG]                    # a build without the PartUV folder
+    eng.ENGINES = {k: v for k, v in eng.ENGINES.items() if k != "PARTUV"}
+    assert [e["id"] for e in uv.uvgami_engines()] == ["OPTCUTS", "XATLAS"]
+    assert uv.resolve_engine("PARTUV") == ("OPTCUTS", "Your UVgami comes without PartUV. Used OptCuts this time.")
+    rep = _drive_all(uv.run({**ARGS, "uvgami_engine": "PARTUV"}))
+    assert rep["uvgami_run"]["note"] == "Your UVgami comes without PartUV. Used OptCuts this time."
+    assert "Download" not in _text(_late()._uv_rows(rep))
+    labels = {i[0]: i[1] for i in stages_ui._uv_engine_items(None, None)}
+    assert labels["PARTUV"] == "PartUV (not in this UVgami)" and labels["XATLAS"] == "xatlas (not downloaded)"
+
+    eng.ENGINES = fake_uvgami.ENGINES                     # PartUV in the build, not for this computer
+    fake_uvgami.STATE["unavailable"] = {"PARTUV"}
+    assert uv.resolve_engine("PARTUV")[1] == "PartUV doesn't run on this computer. Used OptCuts this time."
+    assert {i[0]: i[1] for i in stages_ui._uv_engine_items(None, None)}["PARTUV"] == \
+        "PartUV (not for this computer)"
+    fake_uvgami.STATE["unavailable"] = set()
+
+    ai = "Download Engine under AI Segmentation"          # PartUV's AI split
+    assert ai in uv.resolve_split("AI", ai_ready=False)[1]
+    monkeypatch.setattr(uv, "_on_mac", lambda: True)
+    assert uv.resolve_split("AI", ai_ready=False) == \
+        ("TREE", "PartUV's AI split needs an NVIDIA card, which a Mac doesn't have. Used the tree split this time.")
+    monkeypatch.setattr(uv, "_on_mac", lambda: False)
+    sys.modules[fake_uvgami.PARTUV].partfield = None      # the Superhive build: no AI part at all
+    assert uv.resolve_split("AI", ai_ready=False) == \
+        ("TREE", "Your UVgami comes without PartUV's AI split. Used the tree split this time.")
+
+
+def test_the_auto_row_says_why_auto_uses_its_engine(uvg):
+    import json
+    import types
+
+    import fake_uvgami
+    L = _late()
+    fake_uvgami.set_installed(("OPTCUTS",))
+    _low("Body", "body", (0, 0, 0))
+    won = {"winner": "PARTUV", "why": "least stretch",
+           "rows": [{"engine": "OPTCUTS", "label": "OptCuts", "ok": True},
+                    {"engine": "PARTUV", "label": "PartUV", "ok": True}]}
+    st = types.SimpleNamespace(uv_engine="AUTO", partuv_split="AUTO", uv_compare_rep=json.dumps(won))
+    rows, plan = L._uv_engine_rows(st)                    # PartUV won, then was removed
+    assert plan["engine"] == "OPTCUTS" and _text(rows).startswith(
+        "Auto uses OptCuts (PartUV won Compare engines, but isn't downloaded) PartUV isn't downloaded yet"), rows
+    assert all(len(t.strip()) <= 44 for _, t in rows)             # fits the panel
+    eng = sys.modules[fake_uvgami.ENG]                    # ...or this UVgami has none
+    eng.ENGINES = {k: v for k, v in eng.ENGINES.items() if k != "PARTUV"}
+    assert _text(L._uv_engine_rows(st)[0]) == ("Auto uses OptCuts (PartUV won Compare engines, but your UVgami "
+                                               "comes without it) Your UVgami comes without PartUV. Used "
+                                               "OptCuts this time.")
+    st.uv_compare_rep = json.dumps({"winner": "", "why": "no engine delivered every part",
+                                    "rows": [{"engine": "OPTCUTS", "label": "OptCuts", "ok": False}]})
+    assert _text(L._uv_engine_rows(st)[0]) == "Auto uses OptCuts (Compare engines found no winner)"
+    st.uv_compare_rep = "{}"
+    assert _text(L._uv_engine_rows(st)[0]) == "Auto uses OptCuts (no comparison yet)"
+
+
+def _panel_ready():
+    """The add-on registered, Steps 1-4 approved (the panel's actions can run)."""
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    import importlib
+    F = importlib.import_module("forge_send")
+    F.register()
+    st = bpy.context.scene.forge_stage
+    st.repair, st.retopo, st.tex_size = "approved", "approved", "1024"
+    return F, st
+
+
+def test_with_the_checker_on_unwrap_and_compare_still_see_the_material_borders(uvg):
+    """'Checker on' puts one checker material on every mesh. Unwrap + pack and Compare engines take
+    it off first (UVgami must see where Skin meets Horn), and put it back on afterwards."""
+    import fake_uvgami
+    import numpy as np
+    F, st = _panel_ready()
+    from forge_send import steps as S
+    try:
+        fake_uvgami.set_installed(("OPTCUTS", "PARTUV"))
+        fake_uvgami.STATE["auto"] = True
+        body, bell = _two_lows_with_uvs()
+        for n in ("Skin", "Horn"):
+            body.data.materials.append(bpy.data.materials.new(n))
+        idx = np.zeros(len(body.data.polygons), np.int64)
+        idx[:10] = 1                                      # a horn on the skin
+        body.data.polygons.foreach_set("material_index", idx)
+
+        def materials_back():                             # checker off: Skin and Horn where they were
+            assert "forge_checker" in body and {m.name for m in body.data.materials} == {S.CHECKER}
+            S.checker_off()
+            now = np.zeros(len(body.data.polygons), np.int64)
+            body.data.polygons.foreach_get("material_index", now)
+            assert [m.name for m in body.data.materials] == ["Skin", "Horn"] and (now == idx).all()
+            assert S.toggle_checker()
+
+        assert S.toggle_checker()                          # the director looks at the checker
+        materials_back()                                  # (on / off alone keeps the borders)
+
+        assert bpy.ops.forge.step(action="uv_run") == {"FINISHED"} and not st.error, st.error
+        assert uvg.seen_settings["material_seams"] and uvg.seen_materials["Body"] == ["Skin", "Horn"]
+        materials_back()
+        n = len(uvg.starts)
+        assert bpy.ops.forge.uv_compare() == {"FINISHED"} and not st.error, st.error
+        compared = uvg.starts[n:]
+        assert [s["engine"] for s in compared] == ["OPTCUTS", "PARTUV"]
+        assert all(s["settings"]["material_seams"] and s["materials"]["Body"] == ["Skin", "Horn"]
+                   for s in compared), compared
+        materials_back()
+        S.checker_off()
+    finally:
+        F.unregister()
+
+
+def test_stop_from_the_panel_during_compare_keeps_what_the_director_hid_hidden(uvg):
+    """Stop (the panel's button) during Compare engines: the meshes come back as they were, a part
+    the director hid stays hidden and an original they showed stays shown."""
+    import fake_uvgami
+    import numpy as np
+    F, st = _panel_ready()
+    from forge_send import geometry as G
+    from forge_send import stages_late as L
+    from forge_send import steps as S
+    try:
+        fake_uvgami.set_installed(("OPTCUTS", "PARTUV"))
+        lows = _two_lows_with_uvs()
+        original = bpy.data.objects.new("Body_original", bpy.data.meshes.new("Body_original"))
+        col = bpy.data.collections.new(G.PARTS_COLLECTION)
+        bpy.context.scene.collection.children.link(col)
+        col.objects.link(original)                        # shown next to the new mesh by the director
+        lows[1].hide_set(True)
+        before = {o.name: _uvs(o) for o in lows}
+        names = {o.name: o.data.name for o in lows}
+        meshes = _meshes()
+        gen = S.run_uv_compare(1024, False)
+        next(gen)                                         # OptCuts is working...
+        assert uvg.is_active
+        L._JOB.update({"gen": gen, "on_done": lambda *a: None, "label": S.UV_COMPARE_JOB, "started": 0})
+        assert bpy.ops.forge.stop_job() == {"FINISHED"} and "Stopped" in st.error
+        assert uvg.cancelled == 1 and not uvg.is_active and not L.job_running()
+        assert lows[1].hide_get() and not lows[0].hide_get() and not original.hide_get()
+        assert all(np.array_equal(_uvs(o), before[o.name]) for o in lows)
+        assert {o.name: o.data.name for o in lows} == names and _meshes() == meshes
+        assert not any(m.use_fake_user for m in bpy.data.meshes)
+        S.stop_cleanup("baking")                          # (other jobs: the new meshes are shown)
+        assert not lows[1].hide_get() and original.hide_get()
+    finally:
+        F.unregister()
