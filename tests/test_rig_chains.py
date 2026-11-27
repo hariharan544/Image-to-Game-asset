@@ -696,3 +696,56 @@ def test_place_and_build_hang_the_chains_and_bind_like_the_engines(fake_arp, arp
     assert max(len(t) for _i, t in L._rig_rows(rep)) <= 60
     # the weights obey the 8-bone limit and nothing is left unweighted
     assert all(w["weighted"] for w in rep["weights"].values())
+
+
+def test_one_ear_two_tails_every_part_is_named_and_the_stray_ear_moves_no_skin(fake_arp, monkeypatch):
+    """A creature with one ear and two tails (or one the finder missed): Auto-Rig Pro adds both
+    ears, so the side no ear was found for stays at its default spot by the head. Its bones move
+    no skin after the build (the range-of-motion clip turning them drags nothing). The second
+    tail is rigged by no chain: it is named in plain words in the panel, never dropped without
+    a word, and no other chain's hand-off pins its skin."""
+    import bodies
+    from forge_bpy.skin import weight_matrix
+    S = importlib.import_module("forge_send.steps")
+    L = importlib.import_module("forge_send.stages_late")
+    body = bodies.bull()
+    body["forge_role"], body["forge_part"], body["forge_kind"] = "low", "Body", "body"
+    body.name = "Body_low"
+    mod = S._mod("appendages")
+    real = mod.from_object
+
+    def one_ear_two_tails(obj, J, *a, **kw):
+        apps = [x for x in real(obj, J, *a, **kw) if x["name"] != "ear_r"]
+        tail = next(x for x in apps if x["name"] == "tail")
+        half = np.asarray(tail["vert_idx"])[: len(tail["vert_idx"]) // 2]     # (its tip half, say)
+        return apps + [dict(tail, name="tail2", vert_idx=half)]
+    monkeypatch.setattr(mod, "from_object", one_ear_two_tails)
+    ex = S.place_joints()["extras"]
+    assert ex["added"] == {"tail": 4, "ears": 2} and ex["chains"] == ["tail", "ear_l"], ex
+    assert ex["stray"] == ["ear_r"] and body["forge_stray_chains"] == "ear_r"
+    assert ex["skipped"]["tail2"].startswith("not rigged yet")
+    assert "forge_free_tail2" in body.data.attributes
+    text = "\n".join(t for _i, t in L._rig_rows({"extras": ex}))
+    assert "second tail: not rigged yet" in text and "tail2" not in text, text
+    assert "right ear: none on this body" in text and max(len(t) for t in text.split("\n")) <= 60, text
+    # Auto-Rig Pro's default spot is beside the head: where bone heat gives it skin
+    ref = S.ref_rig()
+    bpy.ops.object.mode_set(mode="OBJECT")
+    for o in bpy.context.view_layer.objects:
+        o.select_set(False)
+    bpy.context.view_layer.objects.active = ref
+    bpy.ops.object.mode_set(mode="EDIT")
+    eb = ref.data.edit_bones
+    for i in (1, 2):
+        left, right = eb[f"ear_{i:02d}_ref.l"], eb[f"ear_{i:02d}_ref.r"]
+        right.head = (-left.head.x, left.head.y, left.head.z)
+        right.tail = (-left.tail.x, left.tail.y, left.tail.z)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    rep = S.build_rig(8)
+    st = rep["stray_chains"]["ear_r"]
+    assert st["parent"] == "head.x" and st["points"] > 50, st      # (bone heat had given it skin)
+    names, W = weight_matrix(body, {b.name for b in S.final_rig().data.bones if b.use_deform})
+    right_ear = [j for j, n in enumerate(names) if n.startswith("c_ear_") and n.endswith(".r")]
+    assert not right_ear or W[:, right_ear].max() < 1e-6
+    left_ear = [j for j, n in enumerate(names) if n.startswith("c_ear_") and n.endswith(".l")]
+    assert left_ear and W[:, left_ear].max() > 0.5                        # the found ear still bends

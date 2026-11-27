@@ -313,6 +313,12 @@ def finish(rig, body: list, props: list, args: dict) -> dict:
             report["appendages"].update(settle_appendages(o, rig))
         except Exception as exc:        # noqa: BLE001
             report["appendages"][str(o.get(C.PART_PROP))] = {"error": str(exc)}
+        stray = [c for c in str(o.get(STRAY_PROP, "") or "").split(",") if c]
+        if stray:                       # a chain no part was found for moves no skin
+            try:
+                report.setdefault("stray_chains", {}).update(still_chains(o, rig, stray))
+            except Exception as exc:    # noqa: BLE001
+                report.setdefault("stray_chains", {})["error"] = str(exc)
     # ARP's binding does not respect the engine's influence limit nor normalise: do it here
     from .skin import _cleanup_weights
     deform = {b.name for b in rig.data.bones if b.use_deform}
@@ -374,6 +380,9 @@ ROOT_RINGS = 3                     # edge rings round an appendage's root (weigh
 ROOT_FADE = 2.0                    # the hand-off fades over this x the root's radius (its
                                    # thickness), along the skin
 ROOT_SHARE_WARN = 0.5              # the chain's parent should move at least this much of its root skin
+RIGID = "rigid (follows its parent bone)"
+STRAY_PROP = "forge_stray_chains"  # (body object) chains placed by no part, comma-separated
+NOT_RIGGED = "not rigged yet, so it will not bend on its own"
 
 
 def appendage_parent(ref_segments: dict, root_point):
@@ -567,8 +576,8 @@ def own_piece(edges, region, n: int):
 
 def piece_root(co, edges, piece, faces) -> tuple:
     """Where a part kept as its own piece enters the body, measured in space: (the root points
-    - the piece's points within one of its edges of the body's surface, in the connected group
-    reaching deepest into the body - and the root's radius). `faces`: the body's triangles
+    - the piece's points within one of its edges of the body's surface, in the biggest connected
+    group of its points near or inside the body - and the root's radius). `faces`: the body's triangles
     (point indices). (empty, 0.0) when the piece is nowhere near the body."""
     import numpy as np
     from mathutils import Vector
@@ -594,11 +603,13 @@ def piece_root(co, edges, piece, faces) -> tuple:
     sel[pts[near]] = True
     se = pe[sel[pe[:, 0]] & sel[pe[:, 1]]]
     lab = _components(len(co), se[:, 0], se[:, 1]) if len(se) else np.arange(len(co))
-    groups = np.unique(lab[sel])
+    groups, sizes = np.unique(lab[sel], return_counts=True)
     dmap = np.full(len(co), np.inf)
     dmap[pts] = depth
-    deepest = min(groups.tolist(), key=lambda g: float(dmap[lab == g].min()))
-    grp = sel & (lab == deepest)
+    # the root: the biggest connected group (the plug and its ring), the deeper one on a tie (a
+    # tail tip dipping into a leg is a small group of its own)
+    root_g = max(zip(groups.tolist(), sizes.tolist()), key=lambda gs: (gs[1], -float(dmap[lab == gs[0]].min())))[0]
+    grp = sel & (lab == root_g)
     ring = grp.copy()
     ring[pts[np.abs(depth) > max(h, 1e-9)]] = False   # (the deep plug is not the root's ring)
     use = np.flatnonzero(ring if ring.sum() >= 3 else grp)
@@ -734,6 +745,40 @@ def settle_appendages(obj, rig, rings: int = ROOT_RINGS) -> dict:
     return out
 
 
+def still_chains(obj, rig, chains) -> dict:
+    """Chains Auto-Rig Pro added that no appendage was found for (it adds both ears; a
+    one-eared creature, or an ear the finder missed, leaves one at its default spot by the
+    head): all their weight goes to the bone they hang from, so they move no skin and the
+    range-of-motion clip turning them drags nothing. {chain: {"parent", "points"}}."""
+    import numpy as np
+    from .skin import set_weights, weight_matrix
+    deform = {b.name for b in rig.data.bones if b.use_deform}
+    names, W = weight_matrix(obj, deform)
+    n = len(obj.data.vertices)
+    weighted = {nm for j, nm in enumerate(names) if W[:, j].max() > 1e-4}
+    out, changed = {}, set()
+    for chain in chains:
+        bones = [b for b in chain_bones(rig, chain) if b in names]
+        if not bones:
+            continue
+        parent = _body_bone(rig, bones[0], weighted)
+        if parent is None:
+            continue
+        if parent not in names:
+            names.append(parent)
+            W = np.hstack([W, np.zeros((n, 1))])
+        cols = [names.index(b) for b in bones]
+        pj = names.index(parent)
+        moved = W[:, cols].sum(axis=1)
+        W[:, cols] = 0.0
+        W[:, pj] += moved
+        changed |= set(cols) | {pj}
+        out[chain] = {"parent": parent, "points": int((moved > 0.01).sum())}
+    if changed:
+        set_weights(obj, names, W, sorted(changed))
+    return out
+
+
 def build(args: dict) -> dict:
     """Full-auto pipeline: rebuild the AI (Tripo) skeleton as an ARP rig.
     Returns a report; raises on failure (caller falls back)."""
@@ -856,14 +901,18 @@ def add_extras(rig, appendages: list, args: dict) -> dict:
         except Exception as exc:                          # noqa: BLE001
             rep["errors"].append(f"ears: {exc}")
 
-    for kind, items in by_kind.items():
-        if kind not in ("tail", "ear"):
-            for a in items:
-                rep["skipped"][a["name"]] = "rigid (follows its parent bone)" if kind == "horn" \
-                    else "found, not rigged yet"
     # which appendage became which chain (their surfaces are stored for the bind)
     rep["chains"] = ([tail["name"]] if tail is not None and "tail" in rep["added"] else []) \
         + ([a["name"] for a in ears.values()] if "ears" in rep["added"] else [])
+    # every other part found is listed (a second tail, a third ear, wings...): none goes
+    # unmentioned. A part with no chain only follows the body; its skin is kept as bound
+    for a in appendages:
+        if a["name"] not in rep["chains"]:
+            rep["skipped"][a["name"]] = RIGID if a["kind"] == "horn" else NOT_RIGGED
+    # Auto-Rig Pro adds both ears: a side no ear was found for keeps its default spot by the
+    # head. Its bones must move no skin (finish() hands their weight to the parent bone)
+    if "ears" in rep["added"]:
+        rep["stray"] = [f"ear_{s}" for s in "lr" if s not in ears]
     try:                         # each chain hangs from the body bone its root grows out of
         rep["parents"] = hang_chains(rig)
     except Exception as exc:                              # noqa: BLE001

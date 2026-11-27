@@ -845,5 +845,5 @@ def test_a_part_whose_root_runs_along_the_body_stays_with_it(pose):
     body = me.copy()
     report: list = []
     assert rescue.split_off(body, ids, report) == []
-    assert report and "runs along the body" in report[0][1], report
+    assert report and "lies along the body" in report[0][1], report
     assert len(body.vertices) == len(me.vertices)               # the body is as it was

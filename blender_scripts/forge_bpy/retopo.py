@@ -176,6 +176,75 @@ def _local_edge(me, plug) -> float | None:
     return None
 
 
+def _lids_mirror_onto_skin(me, side: str) -> list:
+    """Cut-off parts whose cut mirroring would copy onto bare skin: [part k]. Mirroring copies
+    the kept side over the other, the lid that closes a cut included. Where the cut sits evenly
+    on the middle line, the copy lands on the other half of the same lid; where the cut lies on
+    the other side, its lid is dropped and the part later joins real skin there. Anywhere else
+    the copied lid lands where no part covers it - a dent - and the body's opening no longer
+    matches the part's ring. Read from the cut's ring on the capped body (forge_rim, the lid's
+    and the first faces round it): every ring point on the kept side must mirror onto them."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    a = me.attributes.get("forge_rim")
+    if a is None or a.domain != "POINT" or a.data_type != "INT" or not len(me.vertices):
+        return []
+    rim = np.zeros(len(me.vertices), np.int32)
+    a.data.foreach_get("value", rim)
+    co = np.empty(len(me.vertices) * 3, np.float64)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    sign = 1.0 if side == "left" else -1.0          # 'left' keeps +X
+    out = []
+    for k in np.unique(rim[rim > 0]).tolist():
+        ring = np.flatnonzero(rim == k)
+        if len(ring) < 3:
+            continue
+        P = co[ring]
+        d = np.sqrt(((P[:, None, :] - P[None, :, :]) ** 2).sum(axis=2))
+        np.fill_diagonal(d, np.inf)
+        h = float(np.median(d.min(axis=1)))         # the ring's spacing
+        kept = P[sign * P[:, 0] > h]
+        if not len(kept):
+            continue
+        on = rim == k
+        faces = [tuple(f.vertices) for f in me.polygons if sum(on[i] for i in f.vertices) >= 2]
+        if faces:
+            tree = BVHTree.FromPolygons([Vector(c) for c in co], faces)
+            far = [tree.find_nearest(Vector((-x, y, z)))[3] for x, y, z in kept]
+            far = np.array([np.inf if f is None else f for f in far])
+        else:
+            m = kept * np.array([-1.0, 1.0, 1.0])
+            far = np.sqrt(((m[:, None, :] - P[None, :, :]) ** 2).sum(axis=2)).min(axis=1)
+        if (far > 2.0 * h).any():
+            out.append(int(k))
+    return out
+
+
+def _symmetric_part(me, ids, k: int) -> bool:
+    """A part kept with the body (its cut refused) that is its own mirror image (a fin, a crest
+    on the middle line): mirroring leaves it as it is. Tested on its own points, within about
+    its own spacing."""
+    import numpy as np
+    from .parts import mirror_found
+    if ids is None:
+        return False
+    m = np.asarray(ids) == k
+    if m.sum() < 8:
+        return False
+    co = np.empty(len(me.vertices) * 3, np.float64)
+    me.vertices.foreach_get("co", co)
+    P = co.reshape(-1, 3)[m]
+    ev = np.empty(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    inside = m[ev[:, 0]] & m[ev[:, 1]]
+    cell = 2.0 * float(np.median(np.linalg.norm(co.reshape(-1, 3)[ev[inside, 0]] - co.reshape(-1, 3)[ev[inside, 1]],
+                                                axis=1))) if inside.any() else 0.0
+    return cell > 0 and float(np.mean(mirror_found(P, P, cell))) >= 0.95
+
+
 def _split_ngons(obj) -> int:
     """Engines want tris and quads only; remeshers occasionally leave a few n-gons."""
     bm = bmesh.new()
@@ -604,6 +673,7 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         full_backup = None
         split_pieces = []
         split_report: list = []
+        split_names: dict = {}                      # part k -> 'the tail' (for the report)
         side = str(args.get("symmetry", "auto"))
         # the director's side applies to parts that straddle the body's middle (body, collar,
         # bell on the chest). A part off to one side (a prop laid out beside the body, an
@@ -635,12 +705,32 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                 for _k, pme, _p in split_pieces:
                     keep_tmp(pme)
             blocked = backup.get("forge_mirror_blocked") or full_backup.get("forge_mirror_blocked")
-            if mirror and (split_report or blocked):
+            from .appendages import plain_name
+            names = {k: "the " + plain_name(v) for k, v in dict(full_backup.get("forge_split_names") or {}).items()
+                     if v}
+            split_names = names
+            # a part kept with the body that is its own mirror image (a fin on the middle line)
+            # is left as it is by the mirror: only a one-sided one blocks it
+            lopsided = [k for k, _w in split_report if k and not _symmetric_part(full_backup, ids, k)]
+            if mirror and (lopsided or blocked):
                 # a one-sided part that could not be cut would be copied or deleted by the
                 # mirror: this body is NOT mirrored (the director is told why)
                 mirror = False
                 obj["forge_symmetry_x"] = False
-                split_report.append((0, f"not mirrored: {blocked or 'a one-sided part'} could not be cut off"))
+                what = ", ".join("the " + plain_name(n.strip()) for n in str(blocked).split(",") if n.strip()) \
+                    if blocked else ", ".join(names.get(str(k)) or "a one-sided part" for k in lopsided)
+                split_report.append((0, f"not mirrored: {what} could not be cut off"))
+            elif mirror and split_report:
+                split_report.append((0, "still mirrored: the part kept with the body is symmetric"))
+            uneven = _lids_mirror_onto_skin(backup, side) if mirror and split_pieces else []
+            if uneven:
+                # (the cut would be copied as a lid onto the other side: a dent, and a joint
+                # that no longer fits. Fails safe until mirroring keeps the original skin there)
+                mirror = False
+                obj["forge_symmetry_x"] = False
+                what = ", ".join(names.get(str(k)) or "a cut-off part" for k in uneven)
+                split_report.append((0, f"not mirrored: the cut for {what} sits to one side of the "
+                                        f"middle, mirroring would copy it to the other side"))
             if mirror:
                 STATUS["text"] = f"{_short(obj.name)}: making it symmetric from the {side} side"
                 yield 0.05
@@ -664,6 +754,15 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                            for _k, pm, p in split_pieces]
             if sum(piece_quads) > 0.5 * whole:
                 piece_quads = [max(MIN_PIECE_QUADS, int(q * 0.5 * whole / sum(piece_quads))) for q in piece_quads]
+                # each part's floor: ROUND_EDGES edges round its root. Below it a part turns
+                # angular (six thin tentacles at a low count): say so, with the count that fits
+                floors = [_quads_for(_rescue.area(pm), 2 * math.pi * _plug_radius(p) / ROUND_EDGES)
+                          if _plug_radius(p) > 0 else MIN_PIECE_QUADS for _k, pm, p in split_pieces]
+                short = sum(1 for q, f in zip(piece_quads, floors) if q < 0.9 * f)
+                if short:
+                    need = int(round(4 * sum(floors) / headroom, -3))
+                    split_report.append((0, f"at this triangle count {short} of the cut-off parts cannot stay "
+                                            f"round: raise Triangles to about {need:,}"))
             target = max(whole - sum(piece_quads), whole * 0.5)
 
         def settle() -> list:
@@ -872,6 +971,9 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                                "name": str(part_names.get(str(k), ""))})
                 if info.get("folds_near"):
                     joints[-1]["folds_near"] = int(info["folds_near"])
+                shows = float(src.get("forge_plug_shows", 0.0))
+                if info.get("joint", "attached") != "welded" and shows > _rescue.PLUG_SHOWS:
+                    joints[-1]["plug_shows"] = round(shows, 3)        # (its hidden root is not all hidden)
                 names = {piece.data.name, src.name}
                 bpy.data.objects.remove(piece)
                 for n in names:
@@ -918,7 +1020,8 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         if piece_fallbacks:
             r["piece_fallbacks"] = piece_fallbacks
         if split_report:
-            r["split_kept"] = [why for _k, why in split_report]
+            r["split_kept"] = [f"{split_names[str(k)]}: {why}" if k and split_names.get(str(k)) else why
+                               for k, why in split_report]
         if crease or fit["carve"]:
             report[obj.get(C.PART_PROP)]["creases"] = {**crease, "carved_tris": fit["carve"].get("added", 0)}
         if shape is not None:

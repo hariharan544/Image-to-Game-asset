@@ -324,16 +324,23 @@ def hidden_faces(rest, tris) -> tuple:
     open_shell = set(np.unique(lab[se[cnt != 2].ravel()]).tolist())     # (parity needs a closed one)
     cen = rest[tris].mean(axis=1)
     size = float(np.ptp(rest, axis=0).max()) if len(rest) else 1.0
-    for s in shells.tolist():
+    eps = 1e-6 * max(size, 1e-3)
+    verts = None
+    order = np.argsort(tlab, kind="stable")             # each shell's triangles, without a scan per shell
+    starts = np.searchsorted(tlab[order], shells)
+    ends = np.searchsorted(tlab[order], shells, side="right")
+    for s, a, b in zip(shells.tolist(), starts.tolist(), ends.tolist()):
         if s in open_shell:
             continue
-        mine = tlab == s
-        lo, hi = rest[tris[mine]].reshape(-1, 3).min(axis=0), rest[tris[mine]].reshape(-1, 3).max(axis=0)
-        cand = np.flatnonzero(~mine & ~hid & np.all((cen >= lo) & (cen <= hi), axis=1))
+        own = order[a:b]
+        pts = rest[tris[own]].reshape(-1, 3)
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        cand = np.flatnonzero(~hid & (tlab != s) & np.all((cen >= lo) & (cen <= hi), axis=1))
         if not len(cand):
             continue
-        tree = BVHTree.FromPolygons([Vector(p) for p in rest], tris[mine].tolist(), all_triangles=True)
-        eps = 1e-6 * max(size, 1e-3)
+        if verts is None:
+            verts = [Vector(p) for p in rest]
+        tree = BVHTree.FromPolygons(verts, tris[own].tolist(), all_triangles=True)
         for t in cand.tolist():
             if _parity_inside(tree, Vector(cen[t]), eps):
                 hid[t] = True
@@ -400,10 +407,12 @@ def _joint_word(P: _Seg, C: _Seg):
     """The anatomical name of the joint between a parent and a child segment (None: none)."""
     if not (P.arp and C.arp):
         return None
-    if C.role == "tail" or P.role == "tail":
-        return "tail root"
-    if C.role == "ear" or P.role == "ear":
-        return "ear root"
+    for role in ("tail", "ear"):
+        if role in (C.role, P.role):
+            other = P if C.role == role else C
+            # its root is where it meets the body; skin it shares with a thigh it rests on is
+            # '<thigh> and <tail>' (the director is pointed at the right place)
+            return f"{role} root" if other.role in CORE else None
     if P.role == "spine" and C.role == "spine" and C.word != "chest":
         return f"back under the {C.word}"            # (three or more spine bones)
     w = JOINT_WORDS.get((P.role, C.role))

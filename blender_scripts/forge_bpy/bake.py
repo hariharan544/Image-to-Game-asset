@@ -128,6 +128,7 @@ def clear_fit_cache() -> None:
     a bake to free the memory of the originals' trees)."""
     _FIT.clear()
     _SURF.clear()
+    _HIDDEN.clear()
     _RASTER.clear()
     _FLIPPED.clear()
 
@@ -334,6 +335,22 @@ def _low_arrays(low):
     return tv, tl, co, vn, uv
 
 
+_HIDDEN: dict = {}            # hidden triangles of a low (key: its coordinates and triangles)
+
+
+def _hidden_tris(co, tv) -> np.ndarray:
+    """Triangles of the low lying inside another closed shell of the same low (bool per
+    triangle): a part Step 4 kept as its own piece has its root plugged into the body, and the
+    body's lid under it lies inside the part. Never seen, so never counted as a spot the new
+    mesh is too coarse for, nor as texture that could not be baked (motion_check.hidden_faces)."""
+    key = _hash(np.asarray(co, np.float64), np.asarray(tv, np.int64))
+    if key not in _HIDDEN:
+        from .motion_check import hidden_faces
+        _HIDDEN.clear()
+        _HIDDEN[key] = hidden_faces(np.asarray(co, np.float64), np.asarray(tv, np.int64))[0]
+    return _HIDDEN[key]
+
+
 def _to_high(low, high_mw):
     """low-local -> high-local: (3x3, offset, high scale, low scale)."""
     m = np.array(high_mw.inverted() @ low.matrix_world)
@@ -501,10 +518,11 @@ def fit_cage(low, surf: _Surface, high_mw, size: int = 1024, max_rel: float = CA
     seg = np.linalg.norm(Cg - L, axis=1)
     reach = 1.25 * float(np.max(seg + gin)) if S else 2 * lo
     reach = max(reach, 2 * lo)
-    failing = bad > 0
+    hid = _hidden_tris(co, tv)
+    failing = (bad > 0) & ~hid[fidx]            # (a hidden root is never seen: not counted)
     return {"push": push * s_h / s_l, "max_ray": reach * s_h,
             "need": need_v * s_h / s_l, "cap": cap * s_h / s_l, "failing_faces": np.unique(fidx[failing]),
-            "unenclosed": len(np.unique(fidx[failing])),
+            "unenclosed": len(np.unique(fidx[failing])), "hidden": int(hid.sum()),
             "unenclosed_samples": int(failing.sum()), "in_neighbour_samples": int((bad == 2).sum()),
             "samples": int(S), "raised": raised, "lowered": lowered,
             "push_mm": [round(float(x) * s_h * 1000, 2) for x in (np.percentile(push, 50), np.percentile(push, 99), push.max())] if n else [0, 0, 0]}
@@ -561,6 +579,7 @@ def build_cage(low, high, max_rel: float = CAGE_MAX_REL, min_rel: float = CAGE_F
     cage["forge_cage"] = True
     for k in ("unenclosed", "unenclosed_samples", "samples", "raised", "lowered"):
         cage[f"forge_{k}"] = int(fit[k])
+    cage["forge_hidden"] = int(fit.get("hidden", 0))
     cage["forge_max_ray"] = float(fit["max_ray"])
     return cage, float(fit["max_ray"])
 
@@ -829,10 +848,13 @@ def _validate_hits(low, high_mw, cage, surf: _Surface, max_ray: float, raster, v
             bad[k] = 4
         elif dn > 0:
             both += 1
+    seen = ~_hidden_tris(co, tv)[f]                # (a hidden root's texels are never seen)
+    bad[~seen] = 0
     invalid[ys, xs] = bad > 0
     kinds = {name: int((bad == i + 1).sum()) for i, name in enumerate(KINDS)}
+    nseen = max(int(seen.sum()), 1)
     return {"invalid": invalid, "covered": tri >= 0, "kinds": kinds,
-            "share": float((bad > 0).sum()) / len(ys), "both_ways": both / len(ys)}
+            "share": float((bad > 0).sum()) / nseen, "both_ways": both / nseen}
 
 
 def _upsample(a: np.ndarray, k: int) -> np.ndarray:
@@ -1309,6 +1331,7 @@ def run_iter(args: dict):
                 cage, max_ray = build_cage(low, high, size=size, solid=solid_me)
                 _CAGE["name"] = cage.name
                 entry["cage"] = {"unenclosed": int(cage["forge_unenclosed"]),
+                                 "hidden": int(cage.get("forge_hidden", 0)),
                                  "unenclosed_samples": int(cage["forge_unenclosed_samples"]),
                                  "samples": int(cage["forge_samples"]),
                                  "max_ray_mm": round(max_ray * 1000, 2)}

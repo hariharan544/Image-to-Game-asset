@@ -794,6 +794,9 @@ def _rim_cut(me, remove: np.ndarray, owner: np.ndarray):
     rim_k[lv[m]] = lown[m]
     bm = bmesh.new()
     bm.from_mesh(me)
+    stale = bm.verts.layers.int.get("forge_rim")       # (from an earlier cut: this cut's only)
+    if stale is not None:
+        bm.verts.layers.int.remove(stale)
     tag = bm.verts.layers.int.new("forge_rim")
     bm.verts.ensure_lookup_table()
     for i in np.nonzero(rim_k)[0]:
@@ -1073,6 +1076,7 @@ def _hide_plugs(me, bm, pieces: dict, regions: dict) -> list:
             else:
                 bpy.data.meshes.remove(alt)
         pieces[k] = (best[1], best[2], mine)
+        best[1]["forge_plug_shows"] = round(float(best[0][1]), 3)   # (kept when every shape shows)
         if best[0][0]:
             folded.append(k)
     return folded
@@ -1161,7 +1165,11 @@ def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
         if folded:
             bm.free()
             for k in folded:
-                refuse(k, "its root runs along the body, a cut there would fold: kept with the body")
+                # (every plug crosses itself or folds back into the part: a root running along
+                # the body, or a long thin slot - a fin, a sail, a wing root - that one cone-shaped
+                # plug cannot fill. The part is remeshed with the body instead)
+                refuse(k, "its root is too long and thin, or lies along the body, for a hidden plug: "
+                          "kept with the body")
             continue
         if not failed and all(k in pieces for k in regions):
             bm.to_mesh(me)
