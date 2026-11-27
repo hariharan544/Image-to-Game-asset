@@ -565,12 +565,13 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                 split_pieces = _rescue.split_off(backup, ids, split_report)
                 for _k, pme, _p in split_pieces:
                     keep_tmp(pme)
-            if mirror and split_report:
+            blocked = backup.get("forge_mirror_blocked") or full_backup.get("forge_mirror_blocked")
+            if mirror and (split_report or blocked):
                 # a one-sided part that could not be cut would be copied or deleted by the
                 # mirror: this body is NOT mirrored (the director is told why)
                 mirror = False
                 obj["forge_symmetry_x"] = False
-                split_report.append((0, "not mirrored: a one-sided part could not be cut off"))
+                split_report.append((0, f"not mirrored: {blocked or 'a one-sided part'} could not be cut off"))
             if mirror:
                 STATUS["text"] = f"{_short(obj.name)}: making it symmetric from the {side} side"
                 yield 0.05
@@ -653,8 +654,9 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
             is_prop = obj.get("forge_kind") == "prop"
             if is_prop and shape["lost_ratio"] >= max_lost:
                 # a prop's lost bits are fine surface detail (curls, rope twist): the bake keeps
-                # them as a normal map. Gluing rebuilt pieces on only leaves lumps and openings
-                shape["detail_only"] = True
+                # them as a normal map. Gluing rebuilt pieces on only leaves lumps and openings.
+                # A big gap (a spear tip gone) is a lost SHAPE: it stays red, paint and re-run
+                shape["detail_only"] = shape.get("max_rel", 0.0) < 0.03
             if shape["lost_ratio"] >= max_lost and args.get("shape_rescue", True) and not is_prop:
                 # still missing: retopologize each lost region on its own and fuse it back -
                 # kept only if the mesh comes out at least as clean as it went in
@@ -706,8 +708,10 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                 if ok2:
                     bpy.data.meshes.remove(keep)
                     _fit()
+                    flags = {k2: shape.get(k2) for k2 in ("detail_only", "rescue_undone")}
                     shape = shape_loss(backup, obj.data, tol)
                     shape["refined"], shape["rescued"] = 1, 0
+                    shape.update({k2: v2 for k2, v2 in flags.items() if v2})
                     used = "quadremesher(no-mirror)"
                 else:
                     _replace_mesh(obj, keep)

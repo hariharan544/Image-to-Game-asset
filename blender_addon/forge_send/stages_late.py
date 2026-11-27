@@ -568,6 +568,8 @@ def _retopo_rows(rep):
             elif sh.get("lost_pct", 0) > 0.5:
                 out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))
                 out.append(("BLANK1", "    paint the lost part red (Paint), run again"))
+            if sh.get("rescue_undone"):
+                out.append((WARN, "    rebuilding a lost part was undone (it left openings)"))
             else:
                 fixed = f", fixed {sh['refined']}x" if sh.get("refined") else ""
                 if "face-refined" in m:

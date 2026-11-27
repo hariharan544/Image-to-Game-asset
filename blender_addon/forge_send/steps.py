@@ -211,6 +211,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
         ids = np.zeros(len(me.vertices), np.int32)
         k = 0
         regions = []
+        blocked: list = []
         for a in apps:
             m = np.zeros(len(me.vertices), bool)
             m[a["vert_idx"]] = True
@@ -218,7 +219,12 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
             twin = parts_mod.has_twin(arr, m, a.get("thickness", a["width"]))
             # split only thin parts WITHOUT a twin; paired ears/horns stay with the mirrored
             # body, where they come out symmetric without extra seams near the face
-            if a.get("thin") and not twin and a["kind"] not in ("ear", "horn") and a.get("cut_ok", True):
+            if a.get("thin") and not twin and a["kind"] not in ("ear", "horn") and not a.get("cut_ok", True):
+                # one-sided and thin, but no clean cut (it rests against a leg...): mirroring
+                # would copy or delete it, so this body must not be mirrored
+                blocked.append(a["name"])
+                out[a["name"]] = "with the body (no clean cut): body NOT mirrored"
+            elif a.get("thin") and not twin and a["kind"] not in ("ear", "horn"):
                 k += 1
                 ids[m & (ids == 0)] = k
                 out[a["name"]] = "separate (cut at its root)"
@@ -239,12 +245,17 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
                 if kind == "pair":
                     out[f"{where} side differs"] = why
                 elif kind == "kept":
-                    # the director must know BEFORE the run: mirroring copies/deletes it
-                    out[f"one-sided part on the {where}"] = f"not cut ({why}): mirroring changes it"
+                    # the director must know BEFORE the run: mirroring would copy/delete it
+                    blocked.append(f"one-sided part on the {where}")
+                    out[f"one-sided part on the {where}"] = f"not cut ({why}): body NOT mirrored"
             me["forge_onesided_planned"] = True
         elif "forge_onesided_planned" in me:
             del me["forge_onesided_planned"]
         me["forge_plan_mirror"] = mirror
+        if mirror and blocked:
+            me["forge_mirror_blocked"] = ", ".join(blocked)[:120]
+        elif "forge_mirror_blocked" in me:
+            del me["forge_mirror_blocked"]
         dens.write_split(me, ids)
         # rigid horns: half the quads (they never deform, only their shape matters)
         horn = np.zeros(len(me.vertices), bool)

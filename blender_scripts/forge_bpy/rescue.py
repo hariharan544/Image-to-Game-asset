@@ -364,24 +364,28 @@ def _rim_cut(me, remove: np.ndarray, owner: np.ndarray):
     bm.verts.ensure_lookup_table()
     for i in np.nonzero(rim_k)[0]:
         bm.verts[int(i)][tag] = int(rim_k[i])
-    faces_before = {}
     bmesh.ops.delete(bm, geom=[v for v in bm.verts if remove[v.index]], context="VERTS")
     loose = [v for v in bm.verts if not v.link_faces and v[tag]]
     if loose:
         bmesh.ops.delete(bm, geom=loose, context="VERTS")
-    # scraps first (a separate inner shell of the part, left open by the cut): a filler must
-    # not close them into little lenses inside the body
-    _drop_cut_scraps(bm, tag, faces_before)
-    rim_open = [e for e in bm.edges if e.is_boundary and e.verts[0][tag] and e.verts[1][tag]]
+    # scraps first (the inner end of a part that was a separate shell, INSIDE the body): no
+    # filler may close them into little lenses. A shell outside (a horn base on the head) stays
+    _drop_cut_scraps(bm, tag)
+    # a fan first: it only adds edges to a new centre, so a body edge across the opening (a
+    # chord) can never get a third face, which made the n-gon fillers refuse the cut
+    opening = _cut_openings(bm, tag)
+    if opening:
+        _unpinch(bm, opening)                         # two loops meeting at one vertex: split it
+        opening = _cut_openings(bm, tag)
+        _fan_fill(bm, opening, tag)
+    rim_open = _cut_openings(bm, tag)                 # what a fan could not take
     if rim_open:
         res = bmesh.ops.holes_fill(bm, edges=rim_open, sides=100000)
         ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
         if ng:
             bmesh.ops.triangulate(bm, faces=ng)
-    still = [e for e in bm.edges if e.is_boundary and e.verts[0][tag] and e.verts[1][tag]]
+    still = _cut_openings(bm, tag)
     if still:
-        # a loop holes_fill will not take (body edges join rim vertices that are not
-        # neighbours on the loop): fill it as an edge loop instead
         try:
             res = bmesh.ops.edgeloop_fill(bm, edges=still)
             ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
@@ -389,16 +393,67 @@ def _rim_cut(me, remove: np.ndarray, owner: np.ndarray):
                 bmesh.ops.triangulate(bm, faces=ng)
         except (RuntimeError, ValueError):
             pass
-    still = [e for e in bm.edges if e.is_valid and e.is_boundary and e.verts[0][tag] and e.verts[1][tag]]
-    if still:
-        _fan_fill(bm, still, tag)                 # any simple loop closes as a fan of triangles
+    still = _cut_openings(bm, tag)
+    if still:                                         # small loops the fillers left behind
+        _unpinch(bm, still)
+        _fan_fill(bm, _cut_openings(bm, tag), tag)
+    stray = [v for v in bm.verts if not v.link_faces and (v[tag] or not v.link_edges)]
+    if stray:                                         # (left by splitting a pinch)
+        bmesh.ops.delete(bm, geom=stray, context="VERTS")
+    wire = [e for e in bm.edges if not e.link_faces and (e.verts[0][tag] or e.verts[1][tag])]
+    if wire:
+        bmesh.ops.delete(bm, geom=wire, context="EDGES")
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bad: dict = {}
+    why: dict = {}
     for e in bm.edges:
         k = e.verts[0][tag] or e.verts[1][tag]
-        if k and (e.is_boundary or len(e.link_faces) > 2):
+        if not k:
+            continue
+        if e.is_boundary and e.verts[0][tag] and e.verts[1][tag]:
             bad[k] = bad.get(k, 0) + 1
+            why.setdefault(k, [0, 0])[0] += 1
+        elif len(e.link_faces) > 2:               # (an old fin at the rim too: one ring further)
+            bad[k] = bad.get(k, 0) + 1
+            why.setdefault(k, [0, 0])[1] += 1
+    _rim_cut.last_why = why
     return bm, bad
+
+
+_rim_cut.last_why = {}
+
+
+def _unpinch(bm, edges) -> int:
+    """A vertex where two openings touch (four open edges) is split into one vertex per fan of
+    faces, so each opening becomes a simple loop (the copies stay at the same place)."""
+    deg: dict = {}
+    for e in edges:
+        if e.is_valid:
+            for v in e.verts:
+                deg.setdefault(v, []).append(e)
+    n = 0
+    for v, es in deg.items():
+        if len(es) > 2 and v.is_valid:
+            try:
+                bmesh.utils.vert_separate(v, [e for e in es if e.is_valid])
+                n += 1
+            except (ValueError, RuntimeError):
+                pass
+    return n
+
+
+def _cut_openings(bm, tag) -> list:
+    """Every opening the cut made, WHOLE: seeded by open edges with both ends on the rim,
+    followed along open edges, so a small old hole the cut runs into is closed with it."""
+    seed = [e for e in bm.edges if e.is_valid and e.is_boundary and e.verts[0][tag] and e.verts[1][tag]]
+    out, stack = set(seed), list(seed)
+    while stack:
+        for v in stack.pop().verts:
+            for e2 in v.link_edges:
+                if e2.is_boundary and e2 not in out:
+                    out.add(e2)
+                    stack.append(e2)
+    return list(out)
 
 
 def _fan_fill(bm, edges, tag=None) -> int:
@@ -443,18 +498,46 @@ def _fan_fill(bm, edges, tag=None) -> int:
     return made
 
 
+def _inside(bm, faces: set, pts: list) -> bool:
+    """Are these points inside the rest of the mesh? Ray parity in three directions (hits on
+    the shell itself are skipped), majority vote."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    tree = BVHTree.FromBMesh(bm)
+    bm.faces.ensure_lookup_table()
+    own = {f.index for f in faces}
+    votes = 0
+    for d in (Vector((0.37, 0.53, 0.76)), Vector((-0.61, 0.29, -0.73)), Vector((0.12, -0.95, 0.28))):
+        inside = 0
+        for p in pts:
+            o, n, far = Vector(p), 0, 0
+            while far < 10_000:
+                hit = tree.ray_cast(o, d)
+                if hit[0] is None:
+                    break
+                if hit[2] not in own:
+                    n += 1
+                o = hit[0] + d * 1e-6
+                far += 1
+            inside += n % 2
+        votes += inside * 2 > len(pts)
+    return votes >= 2
+
+
 def _drop_cut_scraps(bm, tag, _unused=None, max_share: float = 0.05) -> int:
-    """A small shell left open AT THE CUT is a scrap of the removed part (the inner end of a
-    part that was a separate shell overlapping the body): delete it. Shells away from the
-    cut, and big ones, are never touched."""
+    """A small shell left open AT THE CUT and lying INSIDE the body is a scrap of the removed
+    part (the inner end of a part that was a separate shell overlapping the body): delete it.
+    A shell outside (a horn base standing on the head), shells away from the cut, and big
+    ones are never touched."""
     total = len(bm.faces)
     seen: set = set()
     dropped = 0
+    cap = int(max_share * total) + 1
     for e in [e for e in bm.edges if e.is_boundary and (e.verts[0][tag] or e.verts[1][tag])]:
         if not e.is_valid or not e.link_faces or e.link_faces[0] in seen:
             continue
         shell, stack = set(), [e.link_faces[0]]
-        while stack:
+        while stack and len(shell) <= cap:            # (big shells are never scraps: stop early)
             f = stack.pop()
             if f in shell:
                 continue
@@ -462,11 +545,15 @@ def _drop_cut_scraps(bm, tag, _unused=None, max_share: float = 0.05) -> int:
             for ed in f.edges:
                 stack.extend(g for g in ed.link_faces if g not in shell)
         seen |= shell
-        if len(shell) < max_share * total:
-            verts = {v for f in shell for v in f.verts}
-            bmesh.ops.delete(bm, geom=list(shell), context="FACES")
-            bmesh.ops.delete(bm, geom=[v for v in verts if v.is_valid and not v.link_faces], context="VERTS")
-            dropped += 1
+        if len(shell) > cap:
+            continue
+        verts = list({v for f in shell for v in f.verts})
+        sample = [v.co.copy() for v in verts[:: max(1, len(verts) // 7)]][:7]
+        if not _inside(bm, shell, sample):
+            continue
+        bmesh.ops.delete(bm, geom=list(shell), context="FACES")
+        bmesh.ops.delete(bm, geom=[v for v in verts if v.is_valid and not v.link_faces], context="VERTS")
+        dropped += 1
     return dropped
 
 
@@ -519,6 +606,8 @@ def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
             if regions:
                 continue                          # (pieces being re-cut one ring further)
             break
+        if any(k not in pieces for k in regions):
+            continue                              # (one is being re-cut: cut all together)
         remove = np.zeros(len(ids), bool)
         owner = np.zeros(len(ids), np.int32)
         for k in pieces:
@@ -534,7 +623,9 @@ def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
         bm.free()
         for k in failed:
             if not grow(k):
-                refuse(k, "cutting it would leave an opening in the body: kept with the body")
+                o, b = _rim_cut.last_why.get(k, [0, 0])
+                refuse(k, f"cutting it would leave the body open ({o} open, {b} broken edges at the cut): "
+                          "kept with the body")
     return [(k, pieces[k][0], pieces[k][1]) for k in sorted(pieces)]
 
 

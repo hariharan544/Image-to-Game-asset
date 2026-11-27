@@ -700,6 +700,11 @@ def symmetrize(me, side: str) -> None:
         if bm.verts else 1.0
     bmesh.ops.symmetrize(bm, input=bm.verts[:] + bm.edges[:] + bm.faces[:],
                          direction="X" if side == "left" else "-X", dist=size * 1e-5)
+    # vertices that sat a hair off the plane leave doubles and zero-length edges on the seam
+    mid = [v for v in bm.verts if abs(v.co.x) < size * 1e-4]
+    if mid:
+        bmesh.ops.remove_doubles(bm, verts=mid, dist=size * 1e-5)
+        bmesh.ops.dissolve_degenerate(bm, dist=size * 1e-6, edges=bm.edges[:])
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bm.to_mesh(me)
     bm.free()

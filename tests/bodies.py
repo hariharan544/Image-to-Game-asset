@@ -174,3 +174,31 @@ def bull(voxel: float = 0.008, tail_side: float = 0.30, leg_x: float = 0.15, leg
     for v in ob.data.vertices:
         v.co.z -= zmin
     return ob
+
+
+def ragged(me, ids, k, seed, p=0.35, rings=6):
+    """A part border made ragged the way thickness noise at a fillet makes it: border
+    vertices flip in or out at random, then the biggest piece is kept and what it encloses
+    filled (as parts._finish_part does)."""
+    from forge_bpy.appendages import _components
+    from forge_bpy.density import _dilate
+    rng = np.random.default_rng(seed)
+    R = ids == k
+    inner = ~_dilate(~R, me, rings)
+    band = _dilate(R, me, rings) & ~inner & ((ids == 0) | R)
+    R2 = R ^ (band & (rng.random(len(R)) < p))
+    ev = np.empty(len(me.edges) * 2, np.int32)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2).astype(np.int64)
+    e_in = R2[ev[:, 0]] & R2[ev[:, 1]]
+    lab = _components(len(R2), ev[e_in, 0], ev[e_in, 1])
+    u, c = np.unique(lab[R2], return_counts=True)
+    R2 &= lab == u[np.argmax(c)]
+    e_out = ~R2[ev[:, 0]] & ~R2[ev[:, 1]]
+    lab2 = _components(len(R2), ev[e_out, 0], ev[e_out, 1])
+    u2, c2 = np.unique(lab2[~R2], return_counts=True)
+    R2 |= ~R2 & (lab2 != u2[np.argmax(c2)])
+    out = ids.copy()
+    out[R] = 0
+    out[R2] = k
+    return out

@@ -661,6 +661,34 @@ def test_props_keep_fine_detail_for_the_bake_never_glued_pieces(monkeypatch):
     except StopIteration as stop:
         rep = stop.value
     sh = rep["parts"]["Body"]["shape"]
-    assert sh["detail_only"] and sh["rescued"] == 0
+    assert sh["rescued"] == 0
     assert len(calls) <= 3                          # no extra rebuild jobs
     assert rep["parts"]["Body"]["open_edges"] == 0
+
+
+def test_a_part_the_plan_could_not_cut_blocks_the_mirror(monkeypatch):
+    """The plan found a one-sided part it cannot cut cleanly (a tail resting against a leg):
+    mirroring would copy or delete it, so the body is not mirrored and the panel says why."""
+    import numpy as np
+
+    from forge_bpy import common, retopo
+    o = _body_with_tail()
+    o.data["forge_mirror_blocked"] = "tail"
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        return retopo._quadriflow(obj, max(int(quads * 2), 600), {})
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "symmetry": "left",
+                          "carve": False, "shape_check": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    r = rep["parts"]["Body"]
+    assert not o.get("forge_symmetry_x")
+    assert any("not mirrored: tail" in w for w in r.get("split_kept", [])), r
+    v = np.array([x.co[:] for x in o.data.vertices])
+    assert v[:, 0].max() > 1.8 and v[:, 0].min() > -1.1

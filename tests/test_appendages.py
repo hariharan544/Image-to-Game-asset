@@ -479,3 +479,37 @@ def test_tail_curling_round_to_the_side_is_still_a_tail():
             v.co.y -= 0.25 * (0.16 - v.co.z) / 0.16
     names = [a["name"] for a in appendages.from_object(ob, joints.estimate(ob))]
     assert "tail" in names, names
+
+
+def test_ragged_cut_borders_are_closed_on_the_first_attempt():
+    """On a dense AI-like mesh a ragged cut border has chords (a body edge between two rim
+    vertices that are not neighbours on the loop); a hole filler then gives that edge a third
+    face and the cut was refused - the body was then not mirrored and the mouth lost detail
+    on one side. Closed with a fan first, every one is cut at the first attempt."""
+    import numpy as np
+
+    import bodies
+    from forge_bpy import parts, rescue
+    ob = bodies.bull(voxel=0.005)
+    me = ob.data
+    ids0 = parts.one_sided_parts(me)
+    assert ids0.max() == 1
+    calls = []
+    real = rescue._rim_cut
+
+    def counted(*a, **k):
+        calls.append(1)
+        return real(*a, **k)
+    rescue._rim_cut = counted
+    try:
+        for seed in range(6):
+            ids = bodies.ragged(me, ids0, 1, seed)
+            calls.clear()
+            m2 = me.copy()
+            rep = []
+            pieces = rescue.split_off(m2, ids, rep)
+            assert len(pieces) == 1 and not rep, (seed, rep)
+            assert len(calls) == 1, (seed, len(calls))          # no re-cut needed
+            assert rescue.mesh_defects(m2)[:2] == (0, 0), seed
+    finally:
+        rescue._rim_cut = real
