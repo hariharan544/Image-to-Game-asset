@@ -131,6 +131,17 @@ def ref_targets(j: dict, ground_z: float, top_z: float) -> dict:
     t["spine_02_ref.x"] = (mid, neck)
     t["neck_ref.x"] = (neck, head)
     t["head_ref.x"] = (head, Vector((head.x, head.y, max(top_z, head.z + (head - neck).length))))
+    if j.get("_skull_base") is not None:
+        # the head pivots at the base of the skull, not inside it: the head bone starts there and
+        # the neck bone runs below it; root, spine_01 and the spine's middle stay where they are
+        skull = Vector(j["_skull_base"])
+        sh_z = 0.5 * (j["upperarm_l"][0].z + j["upperarm_r"][0].z) if "upperarm_l" in j and "upperarm_r" in j \
+            else neck.z
+        n0 = Vector((skull.x, skull.y, max(0.5 * (sh_z + skull.z), mid.z + 0.02 * (top_z - ground_z))))
+        if n0.z < skull.z - 1e-4:
+            t["spine_02_ref.x"] = (mid, n0)
+            t["neck_ref.x"] = (n0, skull)
+            t["head_ref.x"] = (skull, Vector((skull.x, skull.y, max(top_z, skull.z + (skull - n0).length))))
     for s in ("l", "r"):
         x = f".{s}"
         if f"clavicle_{s}" in j:
@@ -257,12 +268,20 @@ def finish(rig, body: list, props: list, args: dict) -> dict:
     report: dict = {}
     C.select_only(rig)
     bpy.ops.object.mode_set(mode="EDIT")
+    try:                                # the joints may have moved since they were placed
+        hung = hang_chains(rig)
+    except Exception as exc:            # noqa: BLE001
+        hung = {"error": str(exc)}
     with bpy.context.temp_override(**_ov()):
         bpy.ops.arp.match_to_rig()
     bpy.ops.object.mode_set(mode="OBJECT")
     rig = bpy.data.objects.get(rig.name)
     rig[C.ROLE_PROP] = "rig"
     rig["forge_arp"] = True
+    try:
+        report["chain_parents"] = chain_parents(rig, hung)
+    except Exception as exc:            # noqa: BLE001
+        report["chain_parents"] = {"error": str(exc)}
     for o in body + props:              # drop any older binding
         for m in [m for m in o.modifiers if m.type == "ARMATURE"]:
             o.modifiers.remove(m)
@@ -274,6 +293,8 @@ def finish(rig, body: list, props: list, args: dict) -> dict:
     engine = args.get("bind_engine", "HEAT_MAP")
     if hasattr(sc, "arp_bind_engine"):
         sc.arp_bind_engine = engine
+    if hasattr(sc, "arp_bind_preserve"):  # ARP's default is on; engines blend linearly
+        sc.arp_bind_preserve = False
     for o in bpy.context.view_layer.objects:
         o.select_set(False)
     for o in body:
@@ -284,12 +305,21 @@ def finish(rig, body: list, props: list, args: dict) -> dict:
     with bpy.context.temp_override(**_ov()):
         bpy.ops.arp.bind_to_rig()
     report["bind_engine"] = engine
+    report["skinning"] = linear_blend(rig, body)
+    # appendage bones leak weight onto the body under bone heat: hand it to their parent bone
+    report["appendages"] = {}
+    for o in body:
+        try:
+            report["appendages"].update(settle_appendages(o, rig))
+        except Exception as exc:        # noqa: BLE001
+            report["appendages"][str(o.get(C.PART_PROP))] = {"error": str(exc)}
     # ARP's binding does not respect the engine's influence limit nor normalise: do it here
     from .skin import _cleanup_weights
     deform = {b.name for b in rig.data.bones if b.use_deform}
     max_inf = int(args.get("max_influences", 4))
     min_w = float(args.get("min_weight", 0.01))
-    report["weight_cleanup"] = {o.get(C.PART_PROP): _cleanup_weights(o, max_inf, min_w, deform) for o in body}
+    report["weight_cleanup"] = {o.get(C.PART_PROP): _cleanup_weights(o, max_inf, min_w, deform, continuous=True)
+                                for o in body}
     report["body_vertex_groups"] = {o.get(C.PART_PROP): len(o.vertex_groups) for o in body}
 
     # props: 100% to one bone - the named socket bone, else the nearest deform bone
@@ -307,6 +337,7 @@ def finish(rig, body: list, props: list, args: dict) -> dict:
         vg.add(list(range(len(p.data.vertices))), 1.0, "REPLACE")
         m = p.modifiers.new("Armature", "ARMATURE")
         m.object = rig
+        m.use_deform_preserve_volume = False
         p.parent = rig
         p.matrix_parent_inverse = rig.matrix_world.inverted()
         report["props"][part] = bone
@@ -315,6 +346,268 @@ def finish(rig, body: list, props: list, args: dict) -> dict:
     report["bones"] = len(rig.data.bones)
     report["deform_bones"] = sum(1 for b in rig.data.bones if b.use_deform)
     return report
+
+
+def linear_blend(rig, objs: list) -> dict:
+    """Engines blend bones linearly (LBS); Blender's Preserve Volume (dual quaternions) bends
+    differently, so the viewport and the checks would not show what ships. Turn it off on every
+    Armature modifier the rig drives and report what Auto-Rig Pro's bind had set."""
+    found = []
+    for o in objs:
+        for m in o.modifiers:
+            if m.type == "ARMATURE" and m.object == rig:
+                if m.use_deform_preserve_volume:
+                    found.append(o.name)
+                m.use_deform_preserve_volume = False
+    return {"preserve_volume_found": bool(found), "preserve_volume_on": found, "now": "linear blend"}
+
+
+# ----------------------------------------------------------------------------- extra chains
+
+# the body's reference bones a chain (tail, ears) can hang from, and each chain's first ref bone
+BODY_REFS = ("root_ref.x", "spine_01_ref.x", "spine_02_ref.x", "spine_03_ref.x", "neck_ref.x", "head_ref.x")
+CHAIN_ROOTS = {"tail": "tail_00_ref.x", "ear_l": "ear_01_ref.l", "ear_r": "ear_01_ref.r"}
+CHAIN_CONTROLS = {"tail": ("c_tail_", ".x"), "ear_l": ("c_ear_", ".l"), "ear_r": ("c_ear_", ".r")}
+APP_ATTR = "forge_app_"            # boolean point attribute on the body: the appendage's surface
+ROOT_RINGS = 3                     # edge rings round an appendage's root (weight hand-off, ownership)
+ROOT_FADE = 2.0                    # the hand-off fades over this x the root's radius (its
+                                   # thickness), along the skin
+ROOT_SHARE_WARN = 0.5              # the chain's parent should move at least this much of its root skin
+
+
+def appendage_parent(ref_segments: dict, root_point):
+    """The body bone a chain (tail, ear...) should hang from: the one whose segment the chain's
+    root projects onto (0 <= t <= 1) at the smallest perpendicular distance - that bone owns
+    the skin the chain grows out of. If the root projects onto none, the nearest one.
+    ref_segments: {name: (head, tail)} with any 3-vectors. Returns a name (None if empty)."""
+    import numpy as np
+    p = np.asarray(root_point, float)
+    best, best_key = None, None
+    for name, (h, t) in ref_segments.items():
+        h, t = np.asarray(h, float), np.asarray(t, float)
+        ab = t - h
+        L2 = float(ab @ ab)
+        if L2 < 1e-12:
+            continue
+        u = float((p - h) @ ab) / L2
+        d = float(np.linalg.norm(p - (h + min(max(u, 0.0), 1.0) * ab)))
+        key = (0 if 0.0 <= u <= 1.0 else 1, d)
+        if best_key is None or key < best_key:
+            best, best_key = name, key
+    return best
+
+
+def hang_chains(rig) -> dict:
+    """(EDIT mode, reference rig) Hang each extra chain's first reference bone from the body
+    reference bone its root projects onto (appendage_parent). Auto-Rig Pro builds the real
+    chain's parent from it at match_to_rig. Returns {chain: {"ref_parent", "was"}}."""
+    eb = rig.data.edit_bones
+    mw = rig.matrix_world
+    segs = {n: (mw @ eb[n].head, mw @ eb[n].tail) for n in BODY_REFS if n in eb}
+    out = {}
+    for chain, first in CHAIN_ROOTS.items():
+        b = eb.get(first)
+        if b is None or not segs:
+            continue
+        want = appendage_parent(segs, mw @ b.head)
+        was = b.parent.name if b.parent else None
+        if want and want != was:
+            b.use_connect = False
+            b.parent = eb[want]
+        out[chain] = {"ref_parent": want or was, "was": was}
+    return out
+
+
+def _bones_named(rig, prefix: str, side: str) -> list:
+    out = []
+    for b in rig.data.bones:
+        m = re.match(rf"^{re.escape(prefix)}(\d+){re.escape(side)}$", b.name)
+        if m:
+            out.append((int(m.group(1)), b.name))
+    return [n for _i, n in sorted(out)]
+
+
+def chain_bones(rig, chain: str) -> list:
+    """The chain's control bones in order (c_tail_00.x..., c_ear_01.l...)."""
+    prefix, side = CHAIN_CONTROLS.get(chain, (None, None))
+    return _bones_named(rig, prefix, side) if prefix else []
+
+
+def _body_bone(rig, bone: str, weighted=None):
+    """The deform bone a chain bone hangs from: walk up its parents, taking a deform parent or
+    the deform bone a control drives (c_neck.x -> neck.x). With `weighted`, the first one that
+    actually moves some skin (a skull control the bind left empty is passed over); if none
+    does, the first deform one."""
+    bones = rig.data.bones
+    b = bones.get(bone)
+    first = None
+    p = b.parent if b is not None else None
+    while p is not None:
+        for cand in (p.name, p.name[2:] if p.name.startswith("c_") else None):
+            if cand and cand in bones and bones[cand].use_deform:
+                if weighted is None or cand in weighted:
+                    return cand
+                first = first or cand
+        p = p.parent
+    return first
+
+
+def chain_parents(rig, hung: dict) -> dict:
+    """After match_to_rig: which bone each extra chain really hangs from, against the body bone
+    chosen for it. Auto-Rig Pro versions differ: a mismatch is reported, never raised."""
+    out = {}
+    for chain in CHAIN_ROOTS:
+        bones = chain_bones(rig, chain)
+        if not bones:
+            continue
+        first = rig.data.bones[bones[0]]
+        ref = (hung.get(chain) or {}).get("ref_parent") if isinstance(hung, dict) else None
+        want = ref.replace("_ref", "") if ref else None
+        ancestors = [a.name for a in first.parent_recursive]
+        ok = want is None or want in ancestors or ("c_" + want) in ancestors
+        out[chain] = {"bone": first.name, "parent": first.parent.name if first.parent else None,
+                      "body_bone": _body_bone(rig, first.name), "wanted": want, "ok": bool(ok)}
+    master = rig.data.bones.get("c_tail_master.x")
+    if master is not None and "tail" in out:
+        out["tail"]["master_parent"] = master.parent.name if master.parent else None
+    return out
+
+
+def store_regions(obj, appendages: list, names) -> list:
+    """Remember each rigged appendage's surface on the body (a boolean point attribute
+    forge_app_<name>): after the bind, its chain's weight outside it goes to the parent bone.
+    An attribute survives the bind, the weight clean-up and the engine exports."""
+    import numpy as np
+    me = obj.data
+    for a in [a for a in me.attributes if a.name.startswith(APP_ATTR)]:
+        me.attributes.remove(a)
+    stored = []
+    for a in appendages:
+        if a.get("name") not in names or a.get("vert_idx") is None:
+            continue
+        mask = np.zeros(len(me.vertices), bool)
+        idx = np.asarray(a["vert_idx"], np.int64)
+        mask[idx[(idx >= 0) & (idx < len(mask))]] = True
+        attr = me.attributes.new(APP_ATTR + a["name"], "BOOLEAN", "POINT")
+        attr.data.foreach_set("value", mask)
+        stored.append(a["name"])
+    return stored
+
+
+def ring_distance(n: int, edges, region, rings: int):
+    """Edge rings from a region: 0 inside it, 1..rings outside, inf further away."""
+    import numpy as np
+    dist = np.full(n, np.inf)
+    dist[region] = 0.0
+    front = np.asarray(region, bool).copy()
+    for k in range(1, rings + 1):
+        nb = front.copy()
+        nb[edges[front[edges[:, 0]], 1]] = True
+        nb[edges[front[edges[:, 1]], 0]] = True
+        dist[nb & ~np.isfinite(dist)] = k
+        front = nb
+    return dist
+
+
+def surface_distance(co, edges, region, rmax: float, rounds: int = 400):
+    """Distance over the surface (along edges) from a region: 0 inside it, inf past rmax."""
+    import numpy as np
+    el = np.linalg.norm(co[edges[:, 0]] - co[edges[:, 1]], axis=1)
+    d = np.where(np.asarray(region, bool), 0.0, np.inf)
+    for _ in range(rounds):
+        old = d.copy()
+        np.minimum.at(d, edges[:, 1], d[edges[:, 0]] + el)
+        np.minimum.at(d, edges[:, 0], d[edges[:, 1]] + el)
+        d[d > rmax] = np.inf
+        if np.array_equal(old, d):
+            break
+    return d
+
+
+def root_radius(co, edges, region) -> float:
+    """An appendage's root radius: its points next to the body, from their middle."""
+    import numpy as np
+    reg = np.asarray(region, bool)
+    a, b = edges[:, 0], edges[:, 1]
+    edge = np.unique(np.concatenate([a[reg[a] & ~reg[b]], b[reg[b] & ~reg[a]]]))
+    if len(edge) < 3:
+        return 0.0
+    p = co[edge]
+    return float(np.median(np.linalg.norm(p - p.mean(axis=0), axis=1)))
+
+
+def settle_appendages(obj, rig, rings: int = ROOT_RINGS) -> dict:
+    """After the bind, for each rigged appendage stored on the body:
+    - root ownership: of the skin in a band round its root (chain bones left out), the share
+      its parent bone moves. If another bone owns that skin, the root tears when that bone
+      moves (a tail hung from the hips while the lower back owns its root).
+    - weight hand-off: bone heat lets appendage bones move body skin (an ear flap dragging the
+      neck). Chain weight outside the appendage goes to the parent bone, fading out over a
+      distance along the skin of ROOT_FADE x the root's radius (keep 1 - d / that), so there is
+      no seam on any mesh: the same width on a coarse game mesh as on a fine one. The point's
+      total is unchanged. The band is that wide too (`rings` edge rings when the root's radius
+      cannot be read). Returns {appendage: {...}}."""
+    import numpy as np
+    from .skin import set_weights, weight_matrix
+    me = obj.data
+    regions = [a.name for a in me.attributes if a.name.startswith(APP_ATTR) and a.domain == "POINT"]
+    if not regions:
+        return {}
+    deform = {b.name for b in rig.data.bones if b.use_deform}
+    names, W = weight_matrix(obj, deform)
+    n = len(me.vertices)
+    weighted = {nm for j, nm in enumerate(names) if W[:, j].max() > 1e-4}
+    E = np.empty(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", E)
+    E = E.reshape(-1, 2)
+    out, changed = {}, set()
+    for attr_name in regions:
+        app = attr_name[len(APP_ATTR):]
+        reg = np.zeros(n, bool)
+        me.attributes[attr_name].data.foreach_get("value", reg)
+        chain = [b for b in chain_bones(rig, app) if b in names]
+        if not chain or not reg.any():
+            out[app] = {"skipped": "no chain bones carry weight" if reg.any() else "no surface stored"}
+            continue
+        parent = _body_bone(rig, chain[0], weighted)
+        if parent is None:
+            out[app] = {"skipped": "it hangs from no deforming bone"}
+            continue
+        if parent not in names:                         # a bone the bind gave no skin yet
+            names.append(parent)
+            W = np.hstack([W, np.zeros((n, 1))])
+        cols = [names.index(b) for b in chain]
+        pj = names.index(parent)
+        co = np.empty(n * 3)
+        me.vertices.foreach_get("co", co)
+        co = co.reshape(-1, 3)
+        width = ROOT_FADE * root_radius(co, E, reg)
+        if width > 0:
+            dist = surface_distance(co, E, reg, width) / width        # (in widths: 1 = faded out)
+            band = (dist > 0) & (dist <= 1.0)
+            keep = np.clip(1.0 - dist, 0.0, 1.0)
+        else:
+            dist = ring_distance(n, E, reg, rings)
+            band = (dist >= 1) & (dist <= rings)
+            keep = np.clip(1.0 - dist / (rings + 1), 0.0, 1.0)
+        rest = W[band].copy()
+        rest[:, cols] = 0.0
+        tot = rest.sum(axis=0)
+        share = float(tot[pj] / tot.sum()) if tot.sum() > 0 else 0.0
+        owner = names[int(np.argmax(tot))] if tot.sum() > 0 else parent
+        moved = W[:, cols] * (1.0 - keep)[:, None]
+        total = np.maximum(W.sum(axis=1), 1e-12)
+        drag = moved.sum(axis=1) / total            # share of each point the chain was moving
+        W[:, cols] -= moved
+        W[:, pj] += moved.sum(axis=1)
+        changed |= set(cols) | {pj}
+        out[app] = {"chain": chain, "parent": parent, "root_share": round(share, 2), "root_owner": owner,
+                    "fade_mm": round(width * 1000.0, 1),
+                    "root_ok": share >= ROOT_SHARE_WARN, "moved_points": int((drag > 0.01).sum()),
+                    "moved_max": round(float(drag.max()), 2)}
+    if changed:
+        set_weights(obj, names, W, sorted(changed))
+    return out
 
 
 def build(args: dict) -> dict:
@@ -444,5 +737,12 @@ def add_extras(rig, appendages: list, args: dict) -> dict:
             for a in items:
                 rep["skipped"][a["name"]] = "rigid (follows its parent bone)" if kind == "horn" \
                     else "found, not rigged yet"
+    # which appendage became which chain (their surfaces are stored for the bind)
+    rep["chains"] = ([tail["name"]] if tail is not None and "tail" in rep["added"] else []) \
+        + ([a["name"] for a in ears.values()] if "ears" in rep["added"] else [])
+    try:                         # each chain hangs from the body bone its root grows out of
+        rep["parents"] = hang_chains(rig)
+    except Exception as exc:                              # noqa: BLE001
+        rep["errors"].append(f"chain parents: {exc}")
     bpy.ops.object.mode_set(mode="OBJECT")
     return rep

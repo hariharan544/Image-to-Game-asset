@@ -9,6 +9,7 @@ carries them) using nearest-face interpolation, then clean them up.
 from __future__ import annotations
 
 import bpy
+import numpy as np
 
 from . import common as C
 
@@ -48,18 +49,73 @@ def _transfer(low, high) -> None:
     bpy.ops.object.modifier_apply(modifier=mod.name)
 
 
-def _cleanup_weights(low, max_influences: int, min_weight: float, deform_bones: set) -> int:
-    """Per vertex: drop tiny + non-deform weights, keep the strongest N, normalise.
-    Returns the number of vertices left without any weight (fixed by nearest neighbour)."""
+def limit_influences(W, k: int, continuous: bool = True) -> np.ndarray:
+    """At most k bones per point, each row summing to 1 (rows of W: one point's weights >= 0).
+
+    continuous (the default): first subtract each row's (k+1)-th largest weight from all its
+    weights and clamp at 0, then keep the k strongest. A hard cut (keep the k strongest) jumps
+    wherever the k-th and (k+1)-th bones swap places between neighbouring points - one point
+    keeps a 12 % bone, the next loses it - and the skin tears there when that bone moves;
+    subtracting the (k+1)-th weight fades the weakest bones out smoothly instead. A row whose
+    k strongest all equal the (k+1)-th (nothing would be left) falls back to the hard cut.
+    Rows without any weight stay 0. The columns can be bones or just slots: zeros are ignored.
+    This is the limit export_engine applies, so a check can measure exactly what ships."""
+    W = np.asarray(W, np.float64)
+    n, m = W.shape
+    kept = np.zeros_like(W)
+    if n == 0 or m == 0:
+        return kept
+    order = np.argsort(-W, axis=1, kind="stable")
+    rows = np.arange(n)[:, None]
+    top = order[:, :min(k, m)]
+    kept[rows, top] = W[rows, top]
+    if continuous and m > k:
+        cut = W[np.arange(n), order[:, k]]
+        soft = np.zeros_like(W)
+        soft[rows, top] = np.maximum(W[rows, top] - cut[:, None], 0.0)
+        ok = soft.sum(axis=1) > 1e-6 * np.maximum(kept.sum(axis=1), 1e-12)
+        kept[ok] = soft[ok]
+    s = kept.sum(axis=1, keepdims=True)
+    return np.where(s > 0, kept / np.where(s > 0, s, 1.0), 0.0)
+
+
+def engine_limit(W, k: int, min_weight: float = 0.01, continuous: bool = True) -> np.ndarray:
+    """What an engine build does to weights (points x bones): tiny weights go, then
+    limit_influences(k). export_engine and the bind use exactly this.
+
+    continuous (the default): weights under min_weight go, and those up to twice it fade in
+    (2 x (w - min_weight)); stronger ones are kept as they are. A hard cut keeps a 1.3 % bone on
+    one point and drops a 0.9 % one on its neighbour: when that far bone moves (a thigh in a
+    leg pose), the first point follows it a few millimetres and the skin between tears. Faded,
+    they keep 0.6 % and 0. A row with nothing left keeps its weights (renormalised)."""
+    W = np.asarray(W, np.float64)
+    if not continuous:
+        return limit_influences(np.where(W >= min_weight, W, 0.0), k, False)
+    soft = np.where(W >= 2.0 * min_weight, W, np.maximum(2.0 * (W - min_weight), 0.0))
+    gone = (soft.sum(axis=1) <= 1e-12) & (W.sum(axis=1) > 0)
+    soft[gone] = W[gone]
+    return limit_influences(soft, k, True)
+
+
+def _cleanup_weights(low, max_influences: int, min_weight: float, deform_bones: set,
+                     continuous: bool = True) -> int:
+    """Per vertex: drop tiny + non-deform weights, keep at most N bones (engine_limit:
+    continuous by default), normalise. Returns the number of vertices left without any
+    weight (fixed by nearest neighbour)."""
     groups = {vg.index: vg for vg in low.vertex_groups}
-    new_weights: list[list[tuple[int, float]]] = []
-    for v in low.data.vertices:
-        ws = [(g.group, g.weight) for g in v.groups
-              if g.weight >= min_weight and groups[g.group].name in deform_bones]
-        ws.sort(key=lambda t: t[1], reverse=True)
-        ws = ws[:max_influences]
-        total = sum(w for _, w in ws)
-        new_weights.append([(gi, w / total) for gi, w in ws] if total > 0 else [])
+    rows: list[list[tuple[int, float]]] = []
+    for v in low.data.vertices:                  # (continuous: engine_limit fades the tiny ones)
+        rows.append([(g.group, g.weight) for g in v.groups
+                     if g.weight >= (1e-6 if continuous else min_weight) and groups[g.group].name in deform_bones])
+    width = max((len(r) for r in rows), default=0)
+    gi = np.full((len(rows), max(width, 1)), -1, np.int64)
+    wt = np.zeros((len(rows), max(width, 1)))
+    for i, r in enumerate(rows):
+        for j, (g, w) in enumerate(r):
+            gi[i, j], wt[i, j] = g, w
+    wt = engine_limit(wt, max_influences, min_weight, continuous)
+    new_weights: list[list[tuple[int, float]]] = [
+        [(int(gi[i, j]), float(wt[i, j])) for j in np.flatnonzero(wt[i] > 0)] for i in range(len(rows))]
 
     # vertices that lost every weight copy their nearest weighted neighbour (by edge)
     adj: dict[int, list[int]] = {}
@@ -85,13 +141,38 @@ def _cleanup_weights(low, max_influences: int, min_weight: float, deform_bones: 
     for vg in low.vertex_groups:
         vg.remove(range(len(low.data.vertices)))
     for i, ws in enumerate(new_weights):
-        for gi, w in ws:
-            groups[gi].add([i], w, "REPLACE")
-    used = {gi for ws in new_weights for gi, _ in ws}
-    for gi, vg in list(groups.items()):
-        if gi not in used:
+        for g, w in ws:
+            groups[g].add([i], w, "REPLACE")
+    used = {g for ws in new_weights for g, _ in ws}
+    for g, vg in list(groups.items()):
+        if g not in used:
             low.vertex_groups.remove(vg)
     return len(missing)
+
+
+def weight_matrix(obj, names) -> tuple:
+    """(bone names, W points x bones): the object's weights of the vertex groups in `names`."""
+    cols = [vg for vg in obj.vertex_groups if vg.name in names]
+    at = {vg.index: j for j, vg in enumerate(cols)}
+    W = np.zeros((len(obj.data.vertices), len(cols)))
+    for v in obj.data.vertices:
+        for g in v.groups:
+            j = at.get(g.group)
+            if j is not None:
+                W[v.index, j] = g.weight
+    return [vg.name for vg in cols], W
+
+
+def set_weights(obj, names: list, W, columns=None) -> None:
+    """Write W (points x len(names)) back into the vertex groups `names` (created if missing).
+    Only the given columns are rewritten (all by default)."""
+    n = len(obj.data.vertices)
+    for j in (range(len(names)) if columns is None else columns):
+        vg = obj.vertex_groups.get(names[j]) or obj.vertex_groups.new(name=names[j])
+        vg.remove(range(n))
+        col = W[:, j]
+        for i in np.flatnonzero(col > 1e-6):
+            vg.add([int(i)], float(col[i]), "REPLACE")
 
 
 def _ensure_armature_mod(low, arm) -> None:

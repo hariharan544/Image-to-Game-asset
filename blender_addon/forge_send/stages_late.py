@@ -823,6 +823,11 @@ def _rig_rows(rep):
         out.append(("INFO", f"{k}: {why}"))
     for e in (ex.get("errors") or [])[:3]:
         out.append((BAD, e[:60]))
+    if not rep.get("chain_parents"):              # (placed, not built yet)
+        for chain, h in (ex.get("parents") or {}).items():
+            if isinstance(h, dict) and h.get("ref_parent"):
+                out.append(("BLANK1", f"  {_app_words(chain)} will hang from "
+                                      f"{_bone_words(h['ref_parent'].replace('_ref', ''))}"))
     if rep.get("bones"):
         out.append((GOOD, f"{rep['bones']} bones ({rep.get('deform_bones', 0)} deform)"))
     for part, w in rep.get("weights", {}).items():
@@ -833,24 +838,311 @@ def _rig_rows(rep):
         out.append((GOOD if un < 0.5 else BAD, f"{part}: {un:.1f}% unweighted"))
     for part, bone in rep.get("props", {}).items():
         out.append(("BONE_DATA", f"{part} > {bone}"))
+    out += _chain_rows(rep)
     return out
 
 
+def _bone_words(name) -> str:
+    """'spine_01.x' -> 'spine 01', 'c_ear_01.l' -> 'left ear 01' (for the panel)."""
+    if not name:
+        return "?"
+    base, _, side = str(name).rpartition(".")
+    if not base:
+        base, side = str(name), ""
+    if base.startswith("c_"):
+        base = base[2:]
+    return ({"l": "left ", "r": "right "}.get(side, "") + base.replace("_", " ")).strip()
+
+
+def _app_words(app) -> str:
+    """'ear_l' -> 'left ear', 'tail' -> 'tail'."""
+    base, _, side = str(app).rpartition("_")
+    if side in ("l", "r") and base:
+        return f"{'left' if side == 'l' else 'right'} {base.replace('_', ' ')}"
+    return str(app).replace("_", " ")
+
+
+def _chain_rows(rep):
+    """Tail / ears after the build: what they hang from, and whether that bone owns the skin
+    round their root (if another bone does, the root tears when that bone moves)."""
+    out = []
+    if (rep.get("skinning") or {}).get("preserve_volume_found"):
+        out.append(("INFO", "Preserve Volume turned off (engines blend"))
+        out.append(("BLANK1", "  bones linearly: now the viewport matches)"))
+    differs = set()
+    for chain, cp in (rep.get("chain_parents") or {}).items():
+        if isinstance(cp, dict) and cp.get("ok") is False:
+            differs.add(chain)
+            out.append((WARN, f"{_app_words(chain)} hangs from {_bone_words(cp.get('parent'))},"))
+            out.append(("BLANK1", f"  not {_bone_words(cp.get('wanted'))} (Auto-Rig Pro differs:"))
+            out.append(("BLANK1", "  tell Forge, the root may tear)"))
+    for app, a in (rep.get("appendages") or {}).items():
+        if not isinstance(a, dict):
+            continue
+        name = _app_words(app)
+        if a.get("error") or a.get("skipped"):
+            out.append(("INFO", f"{name}: root weights not checked"))
+            out.append(("BLANK1", f"  ({str(a.get('error') or a.get('skipped'))[:40]})"))
+            continue
+        share, parent, owner = a.get("root_share", 0.0), a.get("parent"), a.get("root_owner")
+        if a.get("root_ok", share >= 0.5):
+            out.append((GOOD, f"{name} hangs from {_bone_words(parent)}"))
+            out.append(("BLANK1", f"  which moves {share:.0%} of the skin round its root"))
+        else:
+            out.append((WARN, f"{name}: the skin round its root moves"))
+            out.append(("BLANK1", f"  with {_bone_words(owner)}, not {_bone_words(parent)}"))
+            out.append(("BLANK1", f"  ({share:.0%}): it can tear when {_bone_words(owner)} moves."))
+            if app not in differs:
+                out.append(("BLANK1", "  Check the joints near it, build again"))
+        if a.get("moved_points"):
+            out.append(("BLANK1", f"  {a['moved_points']:,} body points it pulled"))
+            out.append(("BLANK1", f"  now follow {_bone_words(parent)}"))
+    return out
+
+
+def _when(frame, pose) -> str:
+    """'pose 'elbows' (frame 85)': which test pose a finding was in, then the frame."""
+    if not pose or not pose.get("name"):
+        return f"frame {frame}"
+    part = "" if float(pose.get("weight", 1.0)) >= 0.9 else ", part way"
+    return f"pose '{pose['name']}'{part} (frame {frame})"
+
+
+ANIM_SHOWN = 6                                   # places listed in the panel (worst first)
+
+
+def _wrap(icon, text, width=60, first="    ", rest="      ") -> list:
+    """One finding as panel rows of at most `width` characters: the first with the icon."""
+    out, line = [], first
+    for word in text.split():
+        if len(line) + len(word) + (0 if line.endswith(" ") else 1) > width and line.strip():
+            out.append(line)
+            line = rest
+        line += ("" if line.endswith(" ") else " ") + word
+    if line.strip():
+        out.append(line)
+    return [(icon if i == 0 else "BLANK1", t) for i, t in enumerate(out)]
+
+
+def _when_bent(f) -> str:
+    """"pose 'elbows' (bent 120°, frame 85)": the test pose, how far the joint turned, the frame."""
+    frame, pose = f.get("frame"), f.get("pose")
+    turn = []
+    if f.get("bend_deg") is not None and (f.get("bend_deg") >= 10 or not f.get("twist_deg")):
+        turn.append(f"bent {f['bend_deg']}°")
+    if f.get("twist_deg") is not None and f["twist_deg"] >= 10:
+        turn.append(f"twisted {f['twist_deg']}°")
+    inside = ", ".join(turn + [f"frame {frame}"])
+    if not pose or not pose.get("name"):
+        return f"at {inside}"
+    part = "" if float(pose.get("weight", 1.0)) >= 0.9 else " part way"
+    return f"pose '{pose['name']}'{part} ({inside})"
+
+
+ANIM_ADVICE = {
+    "stretch": "Stretched skin: smooth the weights there over a wider band.",
+    "pose": "The pose asks for that stretch: on this body no weights can spread the turn "
+            "wider. Turn that part less in the animation.",
+    "squash": "Squashed skin away from a bend's crease: a bone there shrinks, or the weights "
+              "pull the points together - smooth them.",
+    "folds": "Faces turning inside out or folding through: smooth the weights there.",
+    "joint": "Thinner than game skinning makes it: smooth the weights across that joint.",
+    "inner": "The inside of a bend caves in: the weights blend over too long a stretch there. "
+             "Blend over a shorter one on the inside of the bend, or add a helper bone.",
+    "deep": "Game skinning cannot hold a turn that deep: turn it less, or add a helper bone.",
+    "touch": "Parts passing into each other: turn less in that pose, or move the part.",
+    "unity": "Unity's limit: fewer bones per point there (smoother, wider weights) helps.",
+}
+STRETCH_FAIL = 2.0                               # (motion_check.LIMITS["stretch"][1])
+
+
+def _pose_part(f) -> str:
+    """'the head' for a finding whose stretch the pose itself asks for (motion_check names
+    the part that turns); '' when unknown."""
+    m = f.get("pose_mover")
+    return f"the {m}" if m else ""
+
+
+def _finding_text(where, f) -> tuple:
+    """(one finding in plain words: where, in which pose, what happened; [the advice it needs])."""
+    c = f.get("check")
+    if c == "joints":
+        twist = f.get("kind") == "twist" or (f.get("bend_deg") or 0) < 10
+        what = f"{f.get('part') or 'thickness'} kept {f['value']:.0%}"
+        turn = "twist" if twist else "bend"
+        if f.get("normal") and f.get("grade") == "warn":
+            return f"{where}, {_when_bent(f)}: {what} - normal for game skinning at this {turn}", []
+        if f.get("normal"):
+            return f"{where}, {_when_bent(f)}: {what} - game skinning collapses at a {turn} this deep", ["deep"]
+        if f.get("part") == "inner side":
+            # outside the crease the inner side thins when the blend reaches too far along the limb
+            return f"{where}, {_when_bent(f)}: {what} - the inside of the bend caves in", ["inner"]
+        return f"{where}, {_when_bent(f)}: {what} - more than game skinning loses", ["joint"]
+    if c == "skin":
+        parts, why = [], []
+        if f.get("stretch_grade", f.get("grade")) not in (None, "pass"):
+            floor = f.get("pose_floor")
+            text = f"skin stretched {f['stretch']:.1f}x (the texture smears)"
+            part = _pose_part(f)
+            if floor is not None and floor > STRETCH_FAIL:
+                # no weights can bring it under the limit: the pose asks for it on this body
+                text += f"; the pose itself asks for at least {floor:.1f}x on this body"
+                if part:
+                    text += f": turn {part} less"
+                why.append("pose")
+            else:
+                if floor is not None:        # weights can help, down to what the pose asks
+                    text += f"; the pose itself asks for at least {floor:.1f}x here"
+                    if part:
+                        text += f" (turning {part} less helps too)"
+                why.append("stretch")
+            parts.append((f, text))
+        if f.get("squash_grade") not in (None, "pass"):
+            g = {"frame": f.get("squash_frame"), "pose": f.get("squash_pose")}
+            parts.append((g, f"skin squashed to {f['squash']:.0%} (the texture bunches)"))
+            why.append("squash")
+        if f.get("folds") and f.get("folds_grade") not in (None, "pass"):
+            g = {"frame": f.get("folds_frame"), "pose": f.get("folds_pose")}
+            parts.append((g, f"{f['folds']} faces turn inside out"))
+            why.append("folds")
+        if not parts:
+            return f"{where}: skin {f.get('grade')}", []
+        (g0, t0), rest = parts[0], parts[1:]
+        text = f"{where}, {_when_bent(g0)}: {t0}"
+        for g, t in rest:
+            same = g.get("frame") == g0.get("frame")
+            text += f"; {t}" + ("" if same else f" in {_when_bent(g)}")
+        return text, why
+    if c == "crossing" and f.get("kind") == "touch":
+        return f"{where} in {_when_bent(f)}: {f['faces']} faces pass into each other", ["touch"]
+    if c == "crossing":
+        return f"{where}, {_when_bent(f)}: {f['faces']} faces fold through each other", ["folds"]
+    if c == "unity":
+        text = (f"Unity, {where}, {_when_bent(f)}: its 4-bone limit moves the skin {f['shift_mm']:.0f} mm "
+                f"(about {f['shift_edges']:.1f} times the typical edge length)")
+        if float(f.get("added_stretch") or 1.0) >= 1.1 and f.get("added_where"):
+            g = {"frame": f.get("added_frame"), "pose": f.get("added_pose")}
+            text += (f"; it stretches the skin {f['added_stretch']:.1f}x more at {f['added_where']}, "
+                     f"{_when_bent(g)}")
+        return text, ["unity"]
+    if c == "contact":
+        return f"{where}, {_when_bent(f)}: inner side presses together - contact, expected", []
+    return f"{where}: {f.get('grade')}", []
+
+
+def _bad(f) -> bool:
+    return f.get("grade") in ("warn", "fail")
+
+
 def _anim_rows(rep):
-    """The automatic checks of one clip, in plain words."""
+    """The automatic checks of one clip, in plain words: the worst finding per place (a joint,
+    a part, two parts touching), in which test pose, and what to do; contact is information.
+    The places shown are the worst ones, and always the worst of each check (a collapsing joint
+    is never hidden behind stretched skin)."""
+    if "regions" not in rep:
+        return _anim_rows_legacy(rep)
+    icon = {"pass": GOOD, "warn": WARN, "fail": BAD, "info": "INFO"}
+    c = rep.get("checks", {})
+    out = [(icon.get(rep.get("grade"), WARN),
+            {"pass": "Animation looks clean", "warn": "Animation: worth a look",
+             "fail": "Animation: something breaks"}.get(rep.get("grade"), "Animation checked")
+            + f" ({rep.get('frames', 0)} frames)")]
+    if (rep.get("skinning") or {}).get("preserve_volume"):
+        out.append((WARN, "    the rig blends with Preserve Volume on;"))
+        out.append(("BLANK1", "      engines do not: build the rig again"))
+    regions = rep.get("regions") or []
+    bad = [r for r in regions if _bad(r)]
+    sev = {"fail": 2, "warn": 1}
+    shown = list(bad[:ANIM_SHOWN])
+    must = {}                                    # region index -> the check it is shown for
+    for chk in ("joints", "skin", "crossing"):
+        cands = [(k, f) for k, r in enumerate(bad) for f in (r.get("findings") or [r["worst"]])
+                 if f.get("check") == chk and _bad(f)]
+        if not cands:
+            continue
+        k, _f = max(cands, key=lambda kf: (sev[kf[1]["grade"]], float(kf[1].get("over") or 0.0), -kf[0]))
+        must.setdefault(k, chk)
+        if all(r is not bad[k] for r in shown):
+            shown.append(bad[k])
+    shown.sort(key=lambda r: next(k for k, x in enumerate(bad) if x is r))
+    advice = []
+    for r in shown:
+        k = next(k for k, x in enumerate(bad) if x is r)
+        fs = [f for f in (r.get("findings") or [r["worst"]]) if _bad(f)]
+        pick = fs[:2]
+        chk = must.get(k)
+        if chk and not any(f.get("check") == chk for f in pick):
+            pick = pick[:1] + [next(f for f in fs if f.get("check") == chk)]
+        for f in pick:
+            text, why = _finding_text(r["where"], f)
+            out += _wrap(icon.get(f["grade"], WARN), text)
+            for w in why:
+                if w not in advice:
+                    advice.append(w)
+        caves = any(f.get("check") == "joints" and f.get("part") == "inner side" for f in pick)
+        if r.get("contact") and not caves:
+            out.append(("BLANK1", "      (inner side presses there: contact, expected)"))
+    rest = [r for r in bad if all(r is not x for x in shown)]
+    if rest:
+        out += _wrap("BLANK1", f"and {len(rest)} more places worth a look: "
+                     + ", ".join(r["where"] for r in rest[:4])
+                     + (", ..." if len(rest) > 4 else ""))
+    touching = [r["where"] for r in regions if r.get("grade") == "info" and r.get("contact")]
+    if touching:
+        out += _wrap("INFO", "contact, expected at these bends: " + ", ".join(touching[:6]))
+    for why in advice:
+        out += _wrap("INFO", ANIM_ADVICE[why])
+    j, k, x = c.get("joints", {}), c.get("skin", {}), c.get("crossing", {})
+    if j and j.get("grade") == "pass":
+        out.append((GOOD, "    joints keep their shape"))
+    if k and k.get("grade") == "pass":
+        out.append((GOOD, f"    skin stretch fine (up to {k.get('stretch', 1.0):.1f}x)"))
+    if x and x.get("grade") == "pass":
+        out.append((GOOD, "    nothing passes through the body" if not x.get("contact")
+                    else "    nothing passes through (contact at bends only)"))
+    w = c.get("weights", {})
+    if w:
+        if w.get("unweighted"):
+            out.append((BAD, f"    {w['unweighted']} points no bone moves"))
+        u = w.get("unity") or {}
+        over = (w.get("over") or {}).get("Unity", 0)
+        if over:
+            out += _wrap("INFO", f"{over} points use more than 4 bones: Unity fades the weakest out")
+        if u and u.get("grade") not in (None, "pass"):
+            text, _why = _finding_text(u.get("where") or "the body", {**u, "check": "unity"})
+            out += _wrap(icon.get(u["grade"], WARN), text)
+            out += _wrap("BLANK1", ANIM_ADVICE["unity"], first="      ")
+        if u and u.get("grade") == "pass" and over:
+            out += _wrap(GOOD, f"that moves the skin {u.get('shift_mm', 0):.0f} mm at most (measured on the full "
+                         "mesh): fine")
+        if not w.get("unweighted") and w.get("grade") == "pass" and not over:
+            out.append((GOOD, "    weights fine for Unreal and Unity"))
+    for name, mods in ((rep.get("measured_as") or {}).get("without_modifiers") or {}).items():
+        out += _wrap("INFO", f"{name}: measured without its {', '.join(mods)} (it adds points after the "
+                     "bones move the mesh)")
+    for name, why in (rep.get("skipped") or {}).items():
+        out += _wrap(WARN, f"{name} not checked: {why}")
+    return out
+
+
+def _anim_rows_legacy(rep):
+    """A report from before the checks were made per region (kept in older files)."""
     icon = {"pass": GOOD, "warn": WARN, "fail": BAD}
     c = rep.get("checks", {})
     out = [(icon.get(rep.get("grade"), WARN),
             {"pass": "Animation looks clean", "warn": "Animation: worth a look",
              "fail": "Animation: something breaks"}.get(rep.get("grade"), "Animation checked")
             + f" ({rep.get('frames', 0)} frames)")]
+    if (rep.get("skinning") or {}).get("preserve_volume"):
+        out.append((WARN, "    the rig blends with Preserve Volume on;"))
+        out.append(("BLANK1", "      engines do not: build the rig again"))
     j = c.get("joints", {})
     if j:
         if j.get("frame") is None or j["grade"] == "pass":
             out.append((GOOD, "    joints keep their shape"))
         else:
             out.append((icon[j["grade"]], f"    {j['where'] or 'a joint'} thins to {j['value']:.0%}"))
-            out.append(("BLANK1", f"      at frame {j['frame']} (collapsing joint)"))
+            out.append(("BLANK1", f"      {_when(j['frame'], j.get('pose'))}"))
     k = c.get("skin", {})
     if k:
         if k["grade"] == "pass":
@@ -858,24 +1150,25 @@ def _anim_rows(rep):
         else:
             if k["stretch"] > 1.5:
                 out.append((icon[k["grade"]], f"    skin stretches {k['stretch']:.1f}x: {k['where']}"))
-                out.append(("BLANK1", f"      at frame {k['frame']} (texture smears there)"))
+                out.append(("BLANK1", f"      {_when(k['frame'], k.get('pose'))}"))
+                out.append(("BLANK1", "      (the texture smears there)"))
             if k["squash"] < 0.3:
                 out.append((WARN, f"    skin squashes to {k['squash']:.0%}: {k['squash_where']}"))
-                out.append(("BLANK1", f"      at frame {k['squash_frame']}"))
+                out.append(("BLANK1", f"      {_when(k['squash_frame'], k.get('squash_pose'))}"))
     x = c.get("crossing", {})
     if x:
         if not x.get("value"):
             out.append((GOOD, "    nothing passes through the body"))
         else:
             out.append((icon[x["grade"]], f"    {x['value']} faces pass through others"))
-            out.append(("BLANK1", f"      worst at frame {x['frame']}"))
+            out.append(("BLANK1", f"      worst in {_when(x['frame'], x.get('pose'))}"))
     w = c.get("weights", {})
     if w:
         if w.get("unweighted"):
             out.append((BAD, f"    {w['unweighted']} points no bone moves"))
         if (w.get("over") or {}).get("Unity"):
             out.append((WARN, f"    {w['over']['Unity']} points use more than 4 bones"))
-            out.append(("BLANK1", "      (Unity keeps the 4 strongest; Unreal: fine)"))
+            out.append(("BLANK1", "      (Unity takes 4: the weakest fade out; Unreal: fine)"))
         if not w.get("unweighted") and not (w.get("over") or {}).get("Unity"):
             out.append((GOOD, "    weights fine for Unreal and Unity"))
     return out

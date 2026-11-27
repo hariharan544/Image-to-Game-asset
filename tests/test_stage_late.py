@@ -325,6 +325,7 @@ def _arp_like_rig():
              "c_neck.x": ((0, 0, 1.35), (0, 0, 1.45)), "c_head.x": ((0, 0, 1.45), (0, 0, 1.7)),
              "c_hand_ik.l": ((0.8, 0, 1.4), (0.9, 0, 1.4)), "c_foot_ik.l": ((0.1, -0.1, 0.05), (0.1, -0.2, 0.05))}
     for s, x in (("l", 1), ("r", -1)):
+        bones[f"c_shoulder.{s}"] = ((0.05 * x, 0, 1.4), (0.2 * x, 0, 1.4))
         bones[f"c_arm_fk.{s}"] = ((0.2 * x, 0, 1.4), (0.5 * x, 0, 1.4))
         bones[f"c_forearm_fk.{s}"] = ((0.5 * x, 0, 1.4), (0.8 * x, 0, 1.4))
         bones[f"c_thigh_fk.{s}"] = ((0.1 * x, 0, 0.9), (0.1 * x, 0, 0.5))
@@ -368,6 +369,118 @@ def test_sample_animations_play_on_the_rig_and_stop_cleanly(clip):
     assert rig.pose.bones["c_hand_ik.l"]["ik_fk_switch"] == 0.0
 
 
+def _rot_deg(pb) -> float:
+    import math
+    q = pb.rotation_quaternion
+    return math.degrees(2 * math.acos(min(1.0, abs(q.w))))
+
+
+def test_rom_poses_go_out_hold_and_come_back_to_rest():
+    """Every range-of-motion pose starts and ends at rest inside its own window (no snap from
+    the full pose back to rest), reaches its full pose at the peak, and the clip names it."""
+    import math
+    S = importlib.import_module("forge_send.steps")
+    rig = _arp_like_rig()
+    S.sample_animation("rom")
+    sc = bpy.context.scene
+    pb = rig.pose.bones
+    used = [b for b in pb if rig.animation_data.action and b.name != "c_hand_ik.l"]
+    for i in range(len(S.ROM_POSES)):
+        for f in (1 + i * S.ROM_WINDOW, (i + 1) * S.ROM_WINDOW):          # first and last frame
+            sc.frame_set(f)
+            worst = max(_rot_deg(b) for b in used)
+            assert worst < 1e-4, (S.ROM_POSES[i][0], f, worst)
+    by_name = dict(S.ROM_POSES)
+    peaks = dict((name, f) for f, name in S.clip_peaks("rom"))
+    assert set(peaks) == {n for n, m in S.ROM_POSES if m}
+    for name, f in peaks.items():
+        sc.frame_set(f)
+        assert S.clip_pose("rom", f)[1:] == (name, 1.0)
+        for bone, _axis, deg in by_name[name]:
+            if "*" in bone or bone not in pb:
+                continue
+            assert abs(_rot_deg(pb[bone]) - abs(deg)) < 0.5, (name, bone, _rot_deg(pb[bone]), deg)
+    # smooth: no control turns more than a third of its pose between two frames
+    prev = None
+    for f in range(1, S.CLIP_LENGTH["rom"] + 2):
+        sc.frame_set(f)
+        now = {b.name: b.rotation_quaternion.copy() for b in used}
+        if prev:
+            step = max(math.degrees(now[n].rotation_difference(prev[n]).angle) for n in now)
+            assert step < 125 / 3, (f, step)
+        prev = now
+    # the frames the director's report named
+    assert [S.clip_pose("rom", f)[1] for f in (21, 85, 177)] == ["arms up", "elbows", "look round"]
+    S.pose_test_stop()
+
+
+def _tail_at(rig, bone, f=None):
+    if f is not None:
+        bpy.context.scene.frame_set(f)
+    bpy.context.view_layer.update()
+    return rig.matrix_world @ rig.pose.bones[bone].tail, rig.matrix_world @ rig.pose.bones[bone].head
+
+
+def test_rom_poses_move_the_way_their_names_say():
+    """The character faces -Y: 'arms forward' and 'elbows' bring the hands to the front, the
+    thigh swings forward and the shin back, the shoulder takes about a third of 'arms up', and
+    the walk's elbows bend on their hinge (about Z), not sideways."""
+    import math
+    S = importlib.import_module("forge_send.steps")
+    rig = _arp_like_rig()
+    S.sample_animation("rom")
+    peak = {name: f for f, name in S.clip_peaks("rom")}
+    for s in "lr":
+        t, h = _tail_at(rig, f"c_arm_fk.{s}", peak["arms forward"])
+        assert t.y < h.y - 0.2, (s, t, h)
+        t, h = _tail_at(rig, f"c_arm_fk.{s}", peak["arms back"])
+        assert t.y > h.y + 0.1, (s, t, h)
+        t, h = _tail_at(rig, f"c_forearm_fk.{s}", peak["elbows"])
+        assert t.y < h.y - 0.2, (s, t, h)                               # flexed, not hyperextended
+        sh_t, sh_h = _tail_at(rig, f"c_shoulder.{s}", peak["arms up"])
+        ar_t, ar_h = _tail_at(rig, f"c_arm_fk.{s}", peak["arms up"])
+        lift = lambda a, b: math.degrees(math.atan2(a.z - b.z, abs(a.x - b.x)))     # noqa: E731
+        assert 20 < lift(sh_t, sh_h) < 33 and 75 < lift(ar_t, ar_h) <= 90, (lift(sh_t, sh_h), lift(ar_t, ar_h))
+    t, h = _tail_at(rig, "c_thigh_fk.l", peak["leg forward and back"])
+    assert t.y < h.y - 0.2
+    t, h = _tail_at(rig, "c_leg_fk.l", peak["leg forward and back"])
+    assert t.y > h.y + 0.2
+    S.sample_animation("walk")
+    for f in (1, 9, 17, 25):
+        for s, x in (("l", 1), ("r", -1)):
+            t, h = _tail_at(rig, f"c_forearm_fk.{s}", f)
+            assert abs(t.z - h.z) < 1e-4 and t.y < h.y - 0.05, (s, f, t, h)    # about Z, forward
+    assert [S.clip_pose("walk", f)[1] for f in (1, 9, 17, 25)] == list(S.WALK_PHASES)
+    # the pose test uses the same table (same signs)
+    S.pose_test()
+    t, h = _tail_at(rig, "c_forearm_fk.l", 30)
+    assert t.y < h.y - 0.1
+    t, h = _tail_at(rig, "c_arm_fk.r", 30)
+    assert t.y < h.y - 0.1
+    S.pose_test_stop()
+
+
+def test_findings_name_the_pose_they_were_found_in():
+    S = importlib.import_module("forge_send.steps")
+    L = importlib.import_module("forge_send.stages_late")
+    rep = {"frames": 61, "grade": "fail", "worst_frame": 85, "checks": {
+        "joints": {"grade": "fail", "value": 0.12, "frame": 85, "where": "left forearm"},
+        "skin": {"grade": "fail", "stretch": 3.4, "frame": 177, "where": "left ear", "squash": 0.2,
+                 "squash_frame": 21, "squash_where": "left shoulder"},
+        "crossing": {"grade": "fail", "value": 523, "frame": 85, "at_rest": 0},
+        "weights": {"grade": "pass", "points": 10, "unweighted": 0, "over": {"Unity": 0, "Unreal": 0}}}}
+    S._attach_poses(rep, "rom")
+    assert rep["checks"]["joints"]["pose"]["name"] == "elbows"
+    assert rep["checks"]["joints"]["pose"]["bend_deg"] > 100
+    assert rep["checks"]["skin"]["pose"]["name"] == "look round"
+    assert rep["checks"]["skin"]["squash_pose"]["name"] == "arms up"
+    assert rep["worst_pose"]["name"] == "elbows"
+    text = "\n".join(t for _i, t in L._anim_rows(rep))
+    assert "left forearm thins to 12%" in text and "pose 'elbows'" in text and "(frame 85)" in text, text
+    assert "pose 'look round'" in text and "pose 'arms up'" in text, text
+    assert max(len(t) for _i, t in L._anim_rows(rep)) <= 60
+
+
 def test_animation_check_runs_on_the_clip_and_reads_in_plain_words():
     """Step 8 'Check it automatically': the clip goes on, its frames are measured, the panel
     rows say what breaks and where; the rig is left as it was."""
@@ -403,9 +516,22 @@ def test_animation_check_runs_on_the_clip_and_reads_in_plain_words():
         rep = stop.value
     assert rep["clip"] == "rom" and rep["frames"] >= 40, rep
     assert set(rep["checks"]) == {"joints", "skin", "crossing", "weights"}
+    peaks = {f for f, _n in S.clip_peaks("rom")}
+    assert rep["frames"] == len(set(range(1, 196, 4)) | peaks) > 49     # every pose at its peak too
+    assert rep["skinning"] == {"preserve_volume": False}
+    for k in ("joints", "skin", "crossing"):
+        if rep["checks"][k].get("frame") is not None:
+            assert rep["checks"][k]["pose"]["name"] == S.clip_pose("rom", rep["checks"][k]["frame"])[1]
     assert rig.animation_data.action.name == "FORGE_pose_rom"          # the clip is on to look at
     rows = L._anim_rows(rep)
     assert rows and all(isinstance(t, str) for _i, t in rows)
+    assert max(len(t) for _i, t in rows) <= 60
+    # the worst finding per place, each with the pose it was found in
+    for r in rep["regions"]:
+        for f in r["findings"]:
+            if f.get("frame") is not None:
+                assert f["pose"]["name"] == S.clip_pose("rom", f["frame"])[1], f
+    assert rep["measured_as"]["blend"] == "linear"
     assert rep["grade"] in ("pass", "warn", "fail")
     if rep["grade"] != "pass":
         assert rep["worst_frame"] and 1 <= rep["worst_frame"] <= S.CLIP_LENGTH["rom"]
