@@ -197,7 +197,7 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
 def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> dict:
     """The parts plan, made ONCE and used by the run (what the director sees is what runs):
     - thin parts without a twin (tail, antenna, trunk) are cut at their neck and remeshed on
-      their own, then attached;
+      their own, then joined back (welded into one skin where the joint comes out clean);
     - when a side is chosen for mirroring, parts that mirroring would copy or delete (a tail
       curling to one side) are cut the same way; pairs in another pose are not parts;
     - thick rigid parts (horns) get fewer quads; ears stay with the body.

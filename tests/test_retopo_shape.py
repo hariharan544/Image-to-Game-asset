@@ -885,7 +885,7 @@ def test_tail_root_is_one_skin_or_a_clean_attach(monkeypatch, defaults):
     assert rescue.mesh_defects(fin) == (0, 0, 0), r
     joint = r.get("joint", "")
     assert joint == "welded" or (joint.startswith("attached:") and "error" not in joint), r
-    assert "+decimate" not in r["method"], r
+    assert not r["method"].endswith("+decimate"), r            # never decimated after the joint
     root = Vector(plugs[-1][0:3]) + Vector((shift, 0.0, 0.0))
     rad = float(plugs[-1][6])
     n, wrong, p95, shells, cross = _root_faces(fin, orig, root, rad)
@@ -976,3 +976,35 @@ def test_a_mesh_with_joined_parts_is_never_decimated_its_overrun_is_reported():
     assert r["over_budget"] == tris - tris // 2
     retopo._finish_part(o, tris // 2, "quadremesher", tris, report, True)        # (no parts: reduced)
     assert common.tri_count(o) <= 1.05 * (tris // 2) and "+decimate" in report["Body"]["method"]
+
+
+def test_weld_opening_is_one_loop_islands_and_old_holes_go_with_it():
+    """The cut the weld makes must leave ONE simple opening on each side: kept faces it
+    encloses go with it, an old hole it runs into is taken in, and a cut that would take
+    off a big piece far from the joint is refused."""
+    import math
+
+    import bmesh
+    from mathutils import Vector
+
+    from forge_bpy import rescue
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=24, radius=1.0)
+    pole = Vector((0, 0, 1))
+
+    def ang(f):
+        return math.degrees(f.calc_center_median().normalized().angle(pole))
+    ring = {f for f in bm.faces if 12 < ang(f) < 30}            # an annulus: encloses an island
+    hole = min((f for f in bm.faces if 31 < ang(f) < 40), key=lambda f: f.calc_center_median().x)
+    bmesh.ops.delete(bm, geom=[hole], context="FACES_ONLY")       # an old hole next to the cut
+    island = {f for f in bm.faces if ang(f) <= 12}
+    opening, why = rescue._open_cut(bm, ring, pole, 1.5)
+    assert why is None and rescue._one_loop(opening), why
+    assert not any(f.is_valid for f in island)                    # the island went with the cut
+    assert not [e for e in bm.edges if e.is_boundary and e not in set(opening)]   # hole taken in
+    bm.free()
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=24, radius=1.0)
+    band = {f for f in bm.faces if abs(f.calc_center_median().z) < 0.1}   # a belt round the middle
+    assert rescue._open_cut(bm, band, Vector((1, 0, 0)), 0.5)[1] == "island"   # half a sphere: no
+    bm.free()
