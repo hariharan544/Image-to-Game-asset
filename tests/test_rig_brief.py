@@ -469,7 +469,9 @@ def test_templates_and_markers():
         assert t["preset"] != "bird_44"
         ids = {m["id"] for m in BP.MARKERS[t["markers"]]}
         assert set(t["marker_ids"]) <= ids, name
-        assert set(t["critical"]) <= set(t["marker_ids"]) and all(BP.is_critical(m) for m in t["critical"])
+        assert set(t["critical"]) <= set(t["marker_ids"])
+        # guided mode asks every point of its set; the others only the critical ones (spec 7.2)
+        assert all(BP.is_critical(m) or t["estimator"] == "guided" for m in t["critical"])
         for cls, ranges in t["ratio_ranges"].items():
             assert cls in dict(R.FIELDS["proportions"]["options"])
             assert all(lo <= hi for lo, hi in ranges.values())
@@ -508,7 +510,7 @@ JARGON = re.compile(r"\b(ref|reference bone|ik|fk|deform|vertex group|bone roll|
 def test_director_words_are_plain():
     words = [s["label"] for s in R.FIELDS.values()] + [s["note"] for s in R.FIELDS.values()]
     words += [w for s in R.FIELDS.values() for _v, w in s["options"]]
-    words += [w for _k, w, _p, _m in R.PART_KINDS] + [p for _k, _w, p, _m in R.PART_KINDS]
+    words += [w for k in R.KIND_WORDS for w in (R.KIND_WORDS[k], R.KIND_ONE[k], R.KIND_PLURAL[k])]
     words += [w for _k, w in R.MOTIONS + R.CLOTH_MOTIONS + R.PROP_ROLES]
     words += [BP.TEMPLATES[n]["words"] for n in BP.ORDER] + [BP.TEMPLATES[n]["short"] for n in BP.ORDER]
     words += [m["words"] for rows in BP.MARKERS.values() for m in rows]
@@ -564,9 +566,14 @@ def test_multi_arm_plans_an_arm_copy_per_extra_arm():
     p = R.plan(R.merge({"you": {"body_plan": "multi_arm"}, "measured": {"parts": head}}))
     assert {c["part"] for c in p.chains if c["limb"] == "arm_dupli"} == {"arm_l2", "arm_r2"}
     assert all(r["owner_hint"] == "head" for r in p.rigid)
-    # descriptors: the four-armed zoo body's second pair reads as arms; its legs do not
-    four = [dict(q, found=True) for q in zoo_four_arms() if q["id"].startswith(("arm2", "leg"))]
-    p = R.plan(R.merge({"you": {"body_plan": "multi_arm"}, "measured": {"parts": four}}))
+    # descriptors: the four-armed zoo body's whole part map. The rig's own arms (the pair at the
+    # shoulders) and legs are not extra parts; the second pair reads as arms
+    four = [dict(q, found=True) for q in zoo_four_arms()]
+    b = R.merge({"you": {"body_plan": "multi_arm"}, "measured": {"parts": four}})
+    assert [q["id"] for q in b["parts"]] == ["arm2_l", "arm2_r"] and b["rigid"] == []
+    assert b["limbs"] == [{"id": "arm_l", "role": "arm"}, {"id": "arm_r", "role": "arm"},
+                          {"id": "leg_l", "role": "leg"}, {"id": "leg_r", "role": "leg"}]
+    p = R.plan(b)
     assert [c["part"] for c in p.chains if c["limb"] == "arm_dupli"] == ["arm2_l", "arm2_r"]
     # nobody set the number of pairs: the parts found set it; two found pairs make rows 2 and 3
     apps4 = apps + _extras(("extra_l2", 0.2, 0.9), ("extra_r2", -0.2, 0.9))
@@ -848,3 +855,295 @@ def test_small_review_fixes():
     # a brief from elsewhere with a bad body plan or bare parts still plans
     p = R.plan({"fields": {"body_plan": {"value": "dragon"}}, "parts": [{"id": "tail"}]})
     assert p.template == "person" and [r["part"] for r in p.rigid] == ["tail"]
+
+
+# ----------------------------------------------------------------------------- one answer per piece
+
+def _chains(p, *keys):
+    return [tuple(c.get(k) for k in keys) for c in p.chains]
+
+
+def test_a_lower_stiff_list_never_overrides_how_you_said_a_part_moves():
+    # you said the tail bends; the shape's stiff list (and the image's) says stiff: you win, and
+    # the card row and the plan agree
+    for low in ("measured", "ai", "tripo"):
+        b = R.merge({"you": {"parts": [{"id": "tail", "kind": "tail", "motion": "bends"}]},
+                     low: {"parts": [{"id": "tail", "kind": "tail", "found": True}], "rigid": ["tail"]}})
+        assert [(q["id"], q["motion"]) for q in b["parts"]] == [("tail", "bends")] and b["rigid"] == [], low
+        assert [i for i in b["ignored"] if i.get("list") == "rigid"] == \
+            [{"src": low, "list": "rigid", "id": "tail", "why": "you said: bends"}]
+        p = R.plan(b)
+        assert _chains(p, "part", "limb") == [("tail", "tail")] and p.rigid == []
+    # a stored brief given back as your answers: its own part row says more than its stiff list
+    old = R.merge({"measured": {"parts": [{"id": "tail", "kind": "tail", "motion": "stiff", "sure": 0.9}]}})
+    assert old["rigid"] == ["tail"]
+    new = R.merge({"you": {"parts": [{"id": "tail", "kind": "tail", "motion": "bends"}], "rigid": old["rigid"]}})
+    assert new["parts"][0]["motion"] == "bends" and new["rigid"] == [] and R.plan(new).rigid == []
+    # your "must not bend" click beats a lower source's Bends, and the card row says so
+    b = R.merge({"you": {"rigid": ["tail"]},
+                 "measured": {"parts": [{"id": "tail", "kind": "tail", "motion": "bends", "sure": 0.9}]}})
+    row = b["parts"][0]
+    assert row["motion"] == "stiff" and "you said it must not bend" in row["why"] and b["rigid"] == ["tail"]
+    assert R.plan(b).rigid == [{"part": "tail", "owner_hint": None}] and not R.plan(b).chains
+    # nobody chose how the tail moves: any stiff list does
+    b = R.merge({"measured": {"parts": [{"id": "tail", "kind": "tail"}]}, "ai": {"rigid": ["tail"]}})
+    assert b["parts"][0]["motion"] == "stiff"
+    # an id that is no part is a clicked region; the plan stiffens only regions from the list
+    b = R.merge({"you": {"rigid": ["patch"], "parts": [{"id": "ear_l", "kind": "ear"}]}})
+    assert b["rigid"] == ["patch"]
+    p = R.plan(dict(b, rigid=b["rigid"] + ["ear_l"]))           # a stale list naming a part
+    assert p.rigid == [{"part": "patch", "owner_hint": None}] and _chains(p, "part") == [("ear_l",)]
+
+
+def test_cloth_made_stiff_stays_stiff_in_the_plan():
+    # a cape you made stiff: one stiff part, on the brief's stiff list and the plan's
+    b = R.merge({"you": {"parts": [{"id": "cape", "kind": "cape", "motion": "stiff"}]}})
+    assert b["rigid"] == ["cape"] and b["cloth"] == []
+    p = R.plan(b)
+    assert p.rigid == [{"part": "cape", "owner_hint": None}] and not p.chains and not p.cloth_masks
+    # your stiff list beats the shape's swinging cloth row: stiff, and no chains
+    cape = {"part": "cape", "kind": "cape", "motion": "swings", "width": 0.9, "length": 0.8}
+    b = R.merge({"you": {"rigid": ["cape"]}, "measured": {"cloth": [dict(cape, sure=0.9)]}})
+    assert [(q["id"], q["kind"], q["motion"]) for q in b["parts"]] == [("cape", "cape", "stiff")]
+    assert b["cloth"] == [] and b["rigid"] == ["cape"]
+    p = R.plan(b)
+    assert [r["part"] for r in p.rigid] == ["cape"] and not p.chains
+    # within one source the cloth row says more than the stiff list: it swings, nothing stiff
+    b = R.merge({"you": {"rigid": ["cape"], "cloth": [cape]}})
+    p = R.plan(b)
+    assert b["rigid"] == [] and p.rigid == [] and {c["limb"] for c in p.chains} == {"spline_ik"}
+    # a brief from elsewhere with both a stiff cape part and a swinging cape row: stiff only
+    p = R.plan({"parts": [{"id": "cape", "kind": "cape", "motion": "stiff"}], "cloth": [cape]})
+    assert [r["part"] for r in p.rigid] == ["cape"] and not p.chains
+
+
+def test_a_part_sits_on_the_side_its_descriptor_says():
+    # Step 4's part map names parts with no side in the name: the descriptor's side counts
+    ears = [{"id": f"part_{i}", "kind": "ear", "sure": 0.9,
+             "desc": _d("sheet", host="head", side=s, reach=0.5)} for i, s in ((3, "l"), (4, "r"))]
+    b = R.merge({"you": {"body_plan": "upright_animal"}, "measured": {"parts": ears}})
+    assert [(q["id"], q["side"]) for q in b["parts"]] == [("part_3", "l"), ("part_4", "r")]
+    p = R.plan(b)
+    assert _chains(p, "part", "limb", "side") == [("part_3", "ears", "l"), ("part_4", "ears", "r")]
+    assert p.remove_limbs == []
+    # one side reader for both modules: its own side, then its descriptor's, then its name; c = x
+    for q, want in (({"id": "extra_l", "side": "c"}, "x"), ({"id": "extra_l", "desc": {"side": "c"}}, "x"),
+                    ({"id": "t", "desc": {"side": "r"}}, "r"), ({"id": "horn_l2"}, "l"), ({"id": "tail"}, "x"),
+                    ({"id": "fin_r", "side": "left"}, "r")):
+        assert BP.part_side(q) == want and R.merge({"you": {"parts": [q]}})["parts"][0]["side"] == want, q
+        assert BP._side(q) == ("c" if want == "x" else want)
+
+
+def test_a_part_listed_twice_by_one_source_takes_nothing_from_the_dropped_entry():
+    two = [{"id": "tail", "kind": "tail", "sure": 0.9}, {"id": "tail", "kind": "tentacle", "sure": 0.7,
+                                                         "motion": "stiff", "app": "x"}]
+    for order in (two, list(reversed(two))):
+        b = R.merge({"measured": {"parts": order}})
+        q = b["parts"][0]
+        assert (q["kind"], q["motion"], q["found"], q.get("app")) == ("tail", "bends", False, None)
+        assert R.plan(b).rigid == []
+
+
+def test_every_kind_spec_5_5_names_is_a_card_kind():
+    for raw, kind, motion in (("bell", "hanging", "swings"), ("pouch", "hanging", "swings"),
+                              ("earring", "hanging", "swings"), ("hoof", "hoof", "stiff"), ("claw", "claw", "stiff"),
+                              ("armour_plate", "plate", "stiff"), ("extra_arm", "arm", "bends"),
+                              ("hair_tuft", "hair", "stiff"), ("snout", "muzzle", "head")):
+        q = R.merge({"measured": {"parts": [{"id": "p", "kind": raw, "sure": 0.9}]}})["parts"][0]
+        assert (q["kind"], q["motion"]) == (kind, motion), raw
+        assert R.KIND_WORDS[kind] != "Other"
+    # a swinging piece gets 1-2 bones from its length over its thickness
+    for length, want in ((0.05, 1), (0.1, 2)):
+        p = R.plan(R.merge({"you": {"parts": [{"id": "bell", "kind": "bell", "length": length, "thickness": 0.05}]}}))
+        assert _chains(p, "part", "limb", "bones") == [("bell", "tail_dupli", want)]
+
+
+def test_a_muzzle_is_part_of_the_head():
+    apps = bull_apps() + [{"name": "snout", "kind": "snout", "chain": [(0, -0.2, 0.8), (0, -0.3, 0.78)],
+                           "length": 0.1, "thickness": 0.12, "width": 0.14}]
+    b = R.merge({"you": {"body_plan": "upright_animal", "hands": "hooves", "feet": "hooves", "face": "jaw"},
+                 "measured": {"parts": R.parts_from_apps(apps), "measured": {"mouth_open": True}}})
+    snout = next(q for q in b["parts"] if q["id"] == "snout")
+    assert (snout["kind"], snout["motion"]) == ("muzzle", "head")
+    assert b["rigid"] == ["horn_l", "horn_r", "hooves"]                       # as spec 4.1's bull
+    assert R.summary_words(b) == "Animal on two legs · hooves · 2 horns · 2 ears · tail · no props"
+    p = R.plan(b, apps, bull_joints())
+    assert p.face == "jaw" and "snout" not in [r["part"] for r in p.rigid] + [c["part"] for c in p.chains]
+    # you can still make it stiff; "part of the head" is offered only for parts on the head
+    b = R.merge({"you": {"parts": [{"id": "snout", "kind": "muzzle", "motion": "stiff"}]}})
+    assert b["rigid"] == ["snout"] and R.plan(b).rigid == [{"part": "snout", "owner_hint": "head"}]
+    assert "head" in dict(R.motions_for({"kind": "muzzle"})) and "head" not in dict(R.motions_for({"kind": "tail"}))
+    b = R.merge({"you": {"parts": [{"id": "tail", "kind": "tail", "motion": "head"}]}})
+    assert b["parts"][0]["motion"] == "bends"
+
+
+def test_a_part_on_one_side_never_adds_a_pair_of_arms():
+    apps = _extras(("extra_l", 0.2, 1.1), ("extra_r", -0.2, 1.1), ("extra_l2", 0.25, 1.3))     # + a shoulder cannon
+    b = R.merge({"you": {"body_plan": "multi_arm"}, "measured": {"parts": R.parts_from_apps(apps)}})
+    assert b["fields"]["arm_pairs"]["value"] == 2
+    cannon = next(q for q in b["parts"] if q["id"] == "extra_l2")
+    assert (cannon["kind"], cannon["motion"], cannon["state"]) == ("other", "stiff", "yellow")
+    assert "no twin on the other side" in cannon["why"]
+    p = R.plan(b, apps)
+    assert [(c["part"], c["row"], c["found"]) for c in p.chains if c["kind"] == "arm"] == \
+        [("extra_l", 2, True), ("extra_r", 2, True)]
+    assert [r["part"] for r in p.rigid] == ["extra_l2"]
+
+
+def test_the_rigs_own_limbs_are_not_extra_parts():
+    # the whole part map of a four-armed body: the pair at the shoulders is the rig's own whatever
+    # it is called, the lower pair the extra one, and the legs are never stiff parts
+    names = {"high": "arm_l2", "mid": "arm_l"}                # names that sort the wrong way round
+    full = ([{"id": names[z].replace("_l", f"_{s}"), "side": s, "found": True, "desc": _d("tube", face="side", zone=z)}
+             for z in ("high", "mid") for s in "lr"]
+            + [{"id": f"leg_{s}", "side": s, "found": True, "desc": _d("tube", face="down", zone="low", ground=True)}
+               for s in "lr"])
+    b = R.merge({"measured": {"body_plan": BP.pick(full), "parts": full}})
+    assert R.value(b, "body_plan") == "multi_arm" and R.value(b, "arm_pairs") == 2
+    assert [q["id"] for q in b["parts"]] == ["arm_l", "arm_r"] and b["rigid"] == []
+    assert [x["id"] for x in b["limbs"]] == ["arm_l2", "arm_r2", "leg_l", "leg_r"]
+    p = R.plan(b)
+    assert [(c["part"], c["row"]) for c in p.chains] == [("arm_l", 2), ("arm_r", 2)] and p.rigid == []
+    # the same map in any order gives the same brief
+    assert R.merge({"measured": {"body_plan": BP.pick(full), "parts": list(reversed(full))}}) == b
+    # a list of extra parts (no legs in it) keeps every part; a part called an extra arm is never one
+    extras = [q for q in full if q["id"].startswith("arm_l") or q["id"].startswith("arm_r")]
+    b = R.merge({"you": {"body_plan": "multi_arm", "arm_pairs": 3}, "measured": {"parts": extras}})
+    assert b["limbs"] == [] and len(b["parts"]) == 4
+    named = [dict(q, kind="arm") for q in full if "arm" in q["id"]] + full[4:]
+    assert [x["role"] for x in R.merge({"measured": {"parts": named}})["limbs"]] == ["leg", "leg"]
+
+
+def test_arms_on_a_rig_that_has_none_are_added_not_copied():
+    arms = [{"id": "arm_l", "kind": "arm"}, {"id": "arm_r", "kind": "arm"}]
+    for plan_name, parent in (("serpent", "spine_02"), ("quadruped", "spine_02"), ("custom", "root")):
+        p = R.plan(R.merge({"you": {"body_plan": plan_name, "parts": arms}}))
+        assert _chains(p, "part", "limb", "add", "parent_hint") == \
+            [("arm_l", "arm", "arm.l", parent), ("arm_r", "arm", "arm.r", parent)], plan_name
+        assert any("rig has none" in n for n in p.notes)
+    # a second arm on the same side copies the one just added; on the human rig every one is a copy
+    p = R.plan(R.merge({"you": {"body_plan": "quadruped", "parts": arms + [{"id": "arm_l2", "kind": "arm"}]}}))
+    assert _chains(p, "part", "limb") == [("arm_l", "arm"), ("arm_r", "arm"), ("arm_l2", "arm_dupli")]
+    p = R.plan(R.merge({"you": {"body_plan": "person", "parts": [{"id": "arm_l2", "kind": "arm"}]}}))
+    assert _chains(p, "limb") == [("arm_dupli",)]
+    # a naga's arms from its part map: serpent counts them, and they hang from the top spine bone
+    naga = _limb_pair("arm", "side", "high") + [{"id": "snake", "side": "c",
+                                                 "desc": _d("tube", sym="off-centre", face="down", ground=True)}]
+    b = R.merge({"measured": {"body_plan": BP.pick(naga), "parts": naga,
+                              "measured": {"trunk_len": 3.0, "trunk_thick": 0.2}}})
+    assert R.value(b, "body_plan") == "serpent" and R.value(b, "arm_pairs") == 1
+    p = R.plan(b)
+    top = f"spine_{p.counts['spine']:02d}"
+    assert [(c["part"], c["limb"], c["parent_hint"]) for c in p.chains if c["kind"] == "arm"] == \
+        [("arm_l", "arm", top), ("arm_r", "arm", top)]
+    # wings may be arm copies only where the rig has an arm to copy
+    wings = [{"id": "wing_l", "kind": "wing"}, {"id": "wing_r", "kind": "wing"}]
+    p = R.plan(R.merge({"you": {"body_plan": "quadruped", "parts": wings}}), probe={"wings_ok": True})
+    assert {c["limb"] for c in p.chains if c["kind"] == "wing"} == {"tail_dupli"}
+    assert any("no arms to copy" in n for n in p.notes)
+    p = R.plan(R.merge({"you": {"body_plan": "person", "parts": wings}}), probe={"wings_ok": True})
+    assert {c["limb"] for c in p.chains} == {"arm_dupli"} and all(c["options"]["arm_wings"] for c in p.chains)
+
+
+def test_props_go_on_bones_the_rig_has():
+    props = [{"part": "sword", "role": "hand_r"}, {"part": "band", "role": "wrist_l"}, {"part": "hat", "role": "head"},
+             {"part": "anklet", "role": "ankle_r"}]
+    owners = {}
+    for plan_name in ("person", "quadruped", "serpent", "custom"):
+        b = R.merge({"you": {"body_plan": plan_name, "props": props}})
+        p = R.plan(b)
+        owners[plan_name] = {s["prop"]: s["owner"] for s in p.sockets}
+        yellow = sorted(pr["part"] for pr in b["props"] if pr["state"] == "yellow")
+        noted = sorted(n.split(":")[0] for n in p.notes if n.split(":")[0] in {"sword", "band", "hat", "anklet"})
+        assert yellow == noted, plan_name                 # the card row and the plan say the same
+    assert owners["person"] == {"sword": "hand.r", "band": "forearm.l", "hat": "head.x", "anklet": "leg.r"}
+    assert owners["quadruped"] == {"sword": "foot_dupli_001.r", "band": "leg_dupli_001.l", "hat": "head.x",
+                                   "anklet": "leg.r"}
+    assert owners["serpent"] == {"sword": "spine_02.x", "band": "spine_02.x", "hat": "head.x", "anklet": "spine_02.x"}
+    assert owners["custom"] == {"sword": "root", "band": "root", "hat": "root", "anklet": "root"}
+    b = R.merge({"you": {"body_plan": "custom", "props": props[:1]}})
+    assert "no right hand on this body: it follows the whole body" in b["props"][0]["why"]
+    # a naga with arms holds its sword in its hand
+    b = R.merge({"you": {"body_plan": "serpent", "props": props[:1],
+                         "parts": [{"id": "arm_l", "kind": "arm"}, {"id": "arm_r", "kind": "arm"}]}})
+    assert b["props"][0]["state"] == "ok" and R.plan(b).sockets[0]["owner"] == "hand.r"
+
+
+def test_swinging_tails_and_ears_keep_the_rigs_own_limbs():
+    for plan_name, add in (("quadruped", None), ("person", "tail")):
+        b = R.merge({"you": {"body_plan": plan_name, "parts": [{"id": "tail", "kind": "tail", "motion": "swings"},
+                                                               {"id": "ear_l", "kind": "ear"},
+                                                               {"id": "ear_r", "kind": "ear"}]}})
+        p = R.plan(b)
+        tail = [c for c in p.chains if c["kind"] == "tail"]
+        assert [(c["limb"], c["add"], c["options"]["tail_name"]) for c in tail] == [("tail", add, "tail")]
+        assert 1 <= tail[0]["bones"] <= 2 and p.counts["tail"] == tail[0]["bones"] and p.remove_limbs == []
+    b = R.merge({"you": {"body_plan": "quadruped", "parts": [{"id": "tail", "kind": "tail"},
+                                                             {"id": "ear_l", "kind": "ear", "motion": "swings"},
+                                                             {"id": "ear_r", "kind": "ear", "motion": "swings"}]}})
+    p = R.plan(b)
+    ears = [c for c in p.chains if c["kind"] == "ear"]
+    assert [(c["limb"], c["add"]) for c in ears] == [("ears", None), ("ears", None)] and p.remove_limbs == []
+    assert 1 <= p.counts["ear"] <= 2 and {c["options"]["ear_count"] for c in ears} == {p.counts["ear"]}
+    # a bending tail takes the tail limb before a swinging one
+    b = R.merge({"you": {"parts": [{"id": "tail", "kind": "tail", "motion": "swings"},
+                                   {"id": "tail2", "kind": "tail"}]}})
+    assert _chains(R.plan(b), "part", "limb") == [("tail", "tail_dupli"), ("tail2", "tail")]
+
+
+def test_pairs_of_arms_and_legs_rows_mean_something():
+    b = R.merge({"you": {"body_plan": "person", "arm_pairs": 2}})
+    row = b["fields"]["arm_pairs"]
+    assert row["state"] == "yellow" and "pick More than two arms" in row["why"]
+    p = R.plan(b)
+    assert not p.chains and any("Person has one pair of arms" in n for n in p.notes)
+    for n in (0, 1):
+        b = R.merge({"you": {"body_plan": "multi_arm", "arm_pairs": n}})
+        assert b["fields"]["arm_pairs"]["state"] == "yellow"
+        p = R.plan(b)
+        assert [c["part"] for c in p.chains] == ["arm_l2", "arm_r2"] and any("one extra pair" in x for x in p.notes)
+    b = R.merge({"you": {"body_plan": "quadruped", "leg_pairs": 1}})
+    assert b["fields"]["leg_pairs"]["state"] == "yellow" and "two pairs of legs" in b["fields"]["leg_pairs"]["why"]
+    # the defaults always fit; 'Something else' takes any number of legs; four legs take arms
+    for plan_name in BP.ORDER:
+        f = R.merge({"you": {"body_plan": plan_name}})["fields"]
+        assert R.limb_row_problems(plan_name, f["arm_pairs"]["value"], f["leg_pairs"]["value"]) == {}
+        assert "has" not in f["arm_pairs"]["why"] + f["leg_pairs"]["why"]
+    assert R.merge({"you": {"body_plan": "custom", "leg_pairs": 3}})["fields"]["leg_pairs"]["state"] == "ok"
+    p = R.plan(R.merge({"you": {"body_plan": "quadruped", "arm_pairs": 1}}))
+    assert _chains(p, "part", "limb", "found") == [("arm_l", "arm", False), ("arm_r", "arm", False)]
+
+
+def test_round_two_small_fixes():
+    # one ears limb, one bone count: the larger of the pair; sizes on the brief part count too
+    apps = [{"name": "ear_l", "kind": "ear", "length": 0.41, "width": 0.1, "thickness": 0.02},
+            {"name": "ear_r", "kind": "ear", "length": 0.39, "width": 0.1, "thickness": 0.02}]
+    p = R.plan(R.merge({"you": {"body_plan": "upright_animal"}, "measured": {"parts": R.parts_from_apps(apps)}}), apps)
+    assert [c["options"]["ear_count"] for c in p.chains] == [3, 3] and p.counts["ear"] == 3
+    ear = {"id": "ear_l", "kind": "ear", "length": 0.5, "width": 0.1, "thickness": 0.02}
+    assert [c["bones"] for c in R.plan(R.merge({"you": {"parts": [ear]}})).chains] == [3]
+    tail = {"id": "tail", "kind": "tail", "length": 1.0, "thickness": 0.04}
+    assert R.plan(R.merge({"you": {"parts": [tail]}})).counts["tail"] == R.chain_bones(1.0, 0.02)
+    # a part's end is asked with its start: a snake's tail tip, 2 clicks per part elsewhere
+    assert "tail_end" in BP.TEMPLATES["serpent"]["critical"] and BP.ASKED_WITH["part_end"] == "part_start"
+    assert BP.TEMPLATES["custom"]["critical"] == ("part_start", "part_end")
+    assert set(BP.TEMPLATES["quadruped"]["critical"]) == set(BP.TEMPLATES["quadruped"]["marker_ids"])
+    # the one-line summary: short words, cloth, and never longer than a few kinds
+    b = R.merge({"you": {"parts": [{"id": "bell", "kind": "hanging"}, {"id": "thing", "kind": "other"}],
+                         "cloth": [{"part": "cape", "kind": "cape"}]}})
+    assert R.summary_words(b) == "Person · 5 fingers · hanging piece · other part · cape · no props"
+    many = [{"id": f"{k}_{i}", "kind": k} for k in R.KIND_RANK for i in range(2)]
+    s = R.summary_words(R.merge({"you": {"parts": many}}))
+    assert len(s) < 100 and s.endswith("more · no props")
+    assert "hoof" not in R.summary_words(R.merge({"you": {"hands": "hooves", "parts": [{"id": "h", "kind": "hoof"}]}}))
+    # answers of the wrong type are listed, never a crash; counts are whole numbers
+    b = R.merge({"you": {"parts": [{"id": "tail", "kind": "tail", "motion": ["bends"]}],
+                         "props": [{"part": "s", "role": ["hand_r"]}], "rigid": "tail"}})
+    assert b["parts"][0]["motion"] == "bends" and b["props"][0]["role"] == "bends" and b["rigid"] == []
+    assert sorted(k for i in b["ignored"] for k in i if k in ("motion", "role")) == ["motion", "role"]
+    for bad in (4.9, True, "4.5"):
+        assert R.merge({"you": {"fingers": bad}})["fields"]["fingers"]["src"] == "default", bad
+    assert R.merge({"you": {"fingers": 4.0}})["fields"]["fingers"]["value"] == 4
+    # 'Both': loose pieces with no skin contact follow one bone; the body binds as usual
+    p = R.plan(R.merge({"you": {"moves_like": "both"}}))
+    assert p.loose_rigid and not p.rigid_pieces and p.bind_engine == "HEAT_MAP"

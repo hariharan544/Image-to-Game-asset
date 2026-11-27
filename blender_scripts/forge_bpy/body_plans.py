@@ -10,7 +10,9 @@ piece that grows out of the trunk, arms and legs included, each with a shape des
 words DESC_KEYS defines). Two tube twins that reach the ground from the trunk's underside are a
 pair of legs; two tube twins that leave its sides without reaching the ground are a pair of
 arms; and so on. The best template pre-fills "What it is", sure in proportion to how clearly it
-beats the next one.
+beats the next one. own_limbs(parts, plan) picks out of such a map the limbs the starting rig
+already has (its legs, a two-legged body's arms at the shoulders), so the brief's extra parts
+never hold them.
 
 Plain Python: no Blender, no numpy. Every rule here is a count or a ratio, never a size.
 """
@@ -18,6 +20,7 @@ Plain Python: no Blender, no numpy. Every rule here is a count or a ratio, never
 from __future__ import annotations
 
 import math
+import re
 
 # lead's choice: Step 8 asks at most 6 questions; Step 4's questions count inside them
 MAX_QUESTIONS = 6
@@ -163,10 +166,12 @@ QUESTION_ORDER = {
 }
 
 # Only these points can become click questions (spec 7.2). Everything else (clavicle, spine
-# middles, finger middles, heel) shows as a dot only.
+# middles, finger middles, heel) shows as a dot only. A part is two clicks, its start and its end
+# (spec 12), so the end points are asked too, always together with their start (ASKED_WITH).
 CRITICAL = ("chin", "skull_base", "neck_base", "groin", "shoulder", "elbow", "wrist", "hip", "knee", "hock",
-            "ankle", "tail_start", "ear_root", "wing_root", "part_start", "grip", "withers", "front_elbow",
-            "front_wrist", "stifle")
+            "ankle", "tail_start", "tail_end", "ear_root", "wing_root", "part_start", "part_end", "grip",
+            "withers", "front_elbow", "front_wrist", "stifle")
+ASKED_WITH = {"tail_end": "tail_start", "part_end": "part_start"}
 # a mark id can name what it belongs to: 'grip:<prop>' is that prop's grip point, 'part:<id>' that
 # part's start and end (spec 4.3)
 MARK_KINDS = {"grip": "grip", "part": "part_start"}
@@ -249,7 +254,10 @@ _BIPED_IDS = ("chin", "skull_base", "neck_base", "head_top", "shoulder_l", "wris
 _QUAD_IDS = tuple(m["id"] for m in MARKERS["quadruped"])
 
 # what each template expects to see in match(): ("eq", n) exactly n, ("min", n) at least n;
-# "cues" says how animal-like extras (a tail, horns, a muzzle, ears that stick out) count
+# "cues" says how animal-like extras (a tail, horns, a muzzle, ears that stick out) count.
+# rig_limbs: the pairs of arms and legs the starting rig has of its own (a bird's wings are its
+# arms). extra_arms: the card's "Pairs of arms" adds arms beyond those (more than two arms; arms
+# on a four-legged, snake or other body, whose rig has none).
 TEMPLATES = {
     "person": _t(
         words="Person", short="Person",
@@ -259,6 +267,7 @@ TEMPLATES = {
         defaults={"arm_pairs": 1, "leg_pairs": 1, "hands": "fingers", "feet": "flat", "stance": "t",
                   "height_to": "head_top"},
         match={"leg_pairs": ("eq", 1), "arm_pairs": ("eq", 1), "cues": "few"},
+        rig_limbs={"arm_pairs": 1, "leg_pairs": 1}, extra_arms=False,
         three_bone_legs=False, add_limbs=(), notes=""),
     "upright_animal": _t(
         words="Animal standing on two legs", short="Animal on two legs",
@@ -268,6 +277,7 @@ TEMPLATES = {
         defaults={"arm_pairs": 1, "leg_pairs": 1, "hands": "fingers", "feet": "flat", "stance": "t",
                   "height_to": "head_top"},
         match={"leg_pairs": ("eq", 1), "arm_pairs": ("eq", 1), "cues": "some"},
+        rig_limbs={"arm_pairs": 1, "leg_pairs": 1}, extra_arms=False,
         three_bone_legs=False, add_limbs=(),
         notes="Exports for ready-made human animations: the legs keep two bones, the ankle sits at the "
               "hock and the foot runs from the hock to the ball. Hands and feet are often hooves."),
@@ -280,6 +290,7 @@ TEMPLATES = {
         defaults={"arm_pairs": 0, "leg_pairs": 2, "hands": "none", "feet": "paws", "stance": "four",
                   "height_to": "withers"},
         match={"leg_pairs": ("eq", 2), "arm_pairs": ("eq", 0)},
+        rig_limbs={"arm_pairs": 0, "leg_pairs": 2}, extra_arms=True,
         three_bone_legs=True, add_limbs=(),
         notes="The horse rig for hooves or a long neck, else the dog rig. The front legs are leg copies "
               "with three bones; there are no arms."),
@@ -294,6 +305,7 @@ TEMPLATES = {
         defaults={"arm_pairs": 1, "leg_pairs": 1, "hands": "none", "feet": "toes", "stance": "other",
                   "height_to": "head_top"},
         match={"wing_pairs": ("min", 1), "arm_pairs": ("eq", 0), "leg_pairs": ("eq", 1)},
+        rig_limbs={"arm_pairs": 1, "leg_pairs": 1}, extra_arms=False,     # its wings are its arms
         three_bone_legs=False, add_limbs=(),
         notes="Only where the probe showed the bird rig does not crash this Blender; else the human rig."),
     "serpent": _t(
@@ -304,6 +316,7 @@ TEMPLATES = {
         defaults={"arm_pairs": 0, "leg_pairs": 0, "hands": "none", "feet": "none", "stance": "other",
                   "height_to": "head_top"},
         match={"leg_pairs": ("eq", 0), "long_body": ("min", 1)},
+        rig_limbs={"arm_pairs": 0, "leg_pairs": 0}, extra_arms=True,
         three_bone_legs=False, add_limbs=("spine", "head"),
         notes="A spine along the body and a head with at least one neck bone; a long body or tail bends "
               "along a smooth curve."),
@@ -315,6 +328,7 @@ TEMPLATES = {
         defaults={"arm_pairs": 2, "leg_pairs": 1, "hands": "fingers", "feet": "flat", "stance": "t",
                   "height_to": "head_top"},
         match={"arm_pairs": ("min", 2), "leg_pairs": ("eq", 1)},
+        rig_limbs={"arm_pairs": 1, "leg_pairs": 1}, extra_arms=True,
         three_bone_legs=False, add_limbs=(), per_extra_arm=("shoulder_l", "wrist_l"),
         notes="The human rig plus an arm copy per extra arm; each extra pair adds a shoulder and a wrist point."),
     "custom": _t(
@@ -324,13 +338,15 @@ TEMPLATES = {
         ratio_ranges={}, rom="custom", expected_parts={},
         defaults={"arm_pairs": 0, "leg_pairs": 0, "hands": "none", "feet": "none", "stance": "other",
                   "height_to": "head_top"},
-        match={}, three_bone_legs=False, add_limbs=(),
+        match={}, rig_limbs={"arm_pairs": 0, "leg_pairs": 0}, extra_arms=True,
+        three_bone_legs=False, add_limbs=(),
         notes="One chain per part, from where it starts to its end."),
 }
 for _name in ORDER:
     _tm = TEMPLATES[_name]
     _tm["name"] = _name
-    _tm["critical"] = tuple(m for m in _tm["marker_ids"] if is_critical(m))
+    # guided mode asks every point of its set (spec 12: four legs, all 12 side-view points)
+    _tm["critical"] = tuple(m for m in _tm["marker_ids"] if is_critical(m) or _tm["estimator"] == "guided")
 
 
 # A ratio this close to a boundary counts as on it, so rounding in the sizes (a body built 100
@@ -428,12 +444,25 @@ CUE_WEIGHTS = {"tail": 1.0, "muzzle": 1.0, "horns": 0.75, "ears": 0.5}
 
 
 def _desc(p: dict) -> dict:
-    return p.get("desc") or {}
+    d = p.get("desc")
+    return d if isinstance(d, dict) else {}
+
+
+def part_side(p: dict) -> str:
+    """Which side a part is on: 'l', 'r' or 'x' (the middle). The part's own 'side' first, then
+    its descriptor's ('c' and 'x' both mean the middle), then the end of its name ('horn_l',
+    'ear_r2'); anything else is the middle. rig_brief reads sides with this too, so the card, the
+    plan and match() always put a part on the same side."""
+    for s in (p.get("side"), _desc(p).get("side")):
+        if isinstance(s, str) and s in DESC_SIDES:
+            return "x" if s == "c" else s
+    m = re.search(r"_([lr])\d*$", str(p.get("id", "")))
+    return m.group(1) if m else "x"
 
 
 def _side(p: dict) -> str:
-    s = str(p.get("side") or _desc(p).get("side") or "")
-    return {"x": "c", "": "c"}.get(s, s)
+    s = part_side(p)
+    return "c" if s == "x" else s
 
 
 def role(p: dict) -> str:
@@ -464,6 +493,40 @@ def role(p: dict) -> str:
     if shape == "tube" and face == "back":
         return "tail"
     return ""
+
+
+# which root height a limb of each kind usually has, first: arms hang from the shoulders, legs
+# stand on the ground
+_ZONE_FIRST = {"arm": ("high", "mid", "low"), "leg": ("low", "mid", "high")}
+
+
+def own_limbs(parts: list, name: str) -> list:
+    """The parts that are limbs the starting rig already has, as [(id, role)] sorted by id: the
+    template's legs, and on two-legged bodies with arms its first arm pair (a bird's arms are its
+    wings, handled by the plan). Each side takes its parts by root height first (arms from the
+    shoulders down, legs from the ground up), then by name, so 'which pair is extra' never depends
+    on names alone.
+
+    Only a whole part map holds such limbs. A map that holds the legs (or a robe reaching the
+    ground, which hides them) is one; a list of extra parts never is, so nothing is taken from it.
+    The caller passes only parts with no card kind: a part called "Extra arm" is never the rig's
+    own arm."""
+    roles = [role(p) for p in parts]
+    if not any(r in ("leg", "hidden_legs") for r in roles):
+        return []
+    have = TEMPLATES[name]["rig_limbs"]
+    out = []
+    for want, n in (("leg", have["leg_pairs"]), ("arm", 0 if name == "bird" else have["arm_pairs"])):
+        first = _ZONE_FIRST[want]
+
+        def key(p):
+            zone = _desc(p).get("zone")
+            return (first.index(zone) if zone in first else len(first), str(p.get("id")))
+
+        for side in ("l", "r"):
+            mine = sorted((p for p, r in zip(parts, roles) if r == want and _side(p) == side), key=key)
+            out += [(str(p.get("id")), want) for p in mine[:n]]
+    return sorted(out)
 
 
 def _pairs(items: list) -> float:
