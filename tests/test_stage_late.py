@@ -525,6 +525,13 @@ def test_animation_check_runs_on_the_clip_and_reads_in_plain_words():
     assert rig.animation_data.action.name == "FORGE_pose_rom"          # the clip is on to look at
     rows = L._anim_rows(rep)
     assert rows and all(isinstance(t, str) for _i, t in rows)
+    assert max(len(t) for _i, t in rows) <= 60
+    # the worst finding per place, each with the pose it was found in
+    for r in rep["regions"]:
+        for f in r["findings"]:
+            if f.get("frame") is not None:
+                assert f["pose"]["name"] == S.clip_pose("rom", f["frame"])[1], f
+    assert rep["measured_as"]["blend"] == "linear"
     assert rep["grade"] in ("pass", "warn", "fail")
     if rep["grade"] != "pass":
         assert rep["worst_frame"] and 1 <= rep["worst_frame"] <= S.CLIP_LENGTH["rom"]

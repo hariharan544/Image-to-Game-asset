@@ -1266,7 +1266,9 @@ def animated_meshes(arm) -> list:
 def check_animation_job(clip: str):
     """Generator: put the clip on (if it is not), measure about 48 of its frames plus the
     frame where each pose is fully reached, return the report (motion_check: joints, skin,
-    faces passing through faces, weights). Every finding carries the pose it was found in."""
+    faces passing through faces, weights and Unity's bone limit). rep["regions"] lists the
+    worst finding per place (left elbow, tail root, left ear touches left upper arm...), contact
+    at a bend as information. Every finding carries the pose it was found in."""
     if clip not in CLIPS:
         raise ValueError(f"unknown clip {clip!r}")
     arm = final_rig()

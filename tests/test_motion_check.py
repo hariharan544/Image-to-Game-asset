@@ -100,3 +100,324 @@ def test_unweighted_points_and_too_many_bones_are_counted():
             tube.vertex_groups[g.group].remove([v.index])
     w = motion_check.weights([tube], deform)
     assert w["unweighted"] == 3 and w["over"]["Unity"] == 1 and w["over"]["Unreal"] == 1
+
+
+# ----------------------------------------------------------------------------- Auto-Rig Pro arms
+
+ARP_ARM = ("shoulder", "c_arm_twist_offset", "arm_stretch", "forearm_stretch", "forearm_twist", "hand")
+
+
+def _arp_arms(radius=0.4, length=1.0, blend=0.15, cuts=59):
+    """Two arms in a T (one tube along X) with Auto-Rig Pro's deform bones and names: shoulder,
+    upper arm = c_arm_twist_offset + arm_stretch, forearm = forearm_stretch + forearm_twist, hand;
+    left on +X, mirrored on -X. Each bone hangs from the one before; the weights blend linearly
+    over +-blend*length round every bone boundary. Returns (rig, tube, ends of the bones)."""
+    import math
+
+    import bmesh
+    from mathutils import Matrix
+    bpy.ops.wm.read_homefile(use_empty=True)
+    L = length
+    ends = [0.0, 0.3 * L, 0.8 * L, 1.3 * L, 1.8 * L, 2.3 * L, 2.7 * L]
+    ad = bpy.data.armatures.new("A")
+    arm = bpy.data.objects.new("Rig", ad)
+    bpy.context.scene.collection.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    for s, x in (("l", 1), ("r", -1)):
+        prev = None
+        for i, n in enumerate(ARP_ARM):
+            b = ad.edit_bones.new(f"{n}.{s}")
+            b.head, b.tail = (x * ends[i], 0, 0), (x * ends[i + 1], 0, 0)
+            if prev is not None:
+                b.parent, b.use_connect = prev, True
+            prev = b
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=24, radius1=radius, radius2=radius, depth=2 * ends[-1],
+                          matrix=Matrix.Rotation(math.pi / 2, 4, "Y"))
+    side = [e for e in bm.edges if abs(e.verts[0].co.x - e.verts[1].co.x) > ends[-1]]
+    bmesh.ops.subdivide_edges(bm, edges=side, cuts=cuts, use_grid_fill=True)
+    me = bpy.data.meshes.new("Arms")
+    bm.to_mesh(me)
+    bm.free()
+    tube = bpy.data.objects.new("Body_low", me)
+    bpy.context.scene.collection.objects.link(tube)
+    groups = {f"{n}.{s}": tube.vertex_groups.new(name=f"{n}.{s}") for s in "lr" for n in ARP_ARM}
+    h = blend * L
+
+    def ramp(u):
+        return min(max((u + h) / (2 * h), 0.0), 1.0)
+    for v in me.vertices:
+        x, s = abs(v.co.x), ("l" if v.co.x >= 0 else "r")
+        for i, n in enumerate(ARP_ARM):
+            lo = 1.0 if i == 0 else ramp(x - ends[i])
+            hi = 0.0 if i == len(ARP_ARM) - 1 else ramp(x - ends[i + 1])
+            if lo - hi > 1e-6:
+                groups[f"{n}.{s}"].add([v.index], lo - hi, "REPLACE")
+    mod = tube.modifiers.new("Armature", "ARMATURE")
+    mod.object = arm
+    arm.animation_data_create()
+    arm.animation_data.action = bpy.data.actions.new("FORGE_pose_test")
+    return arm, tube, ends
+
+
+def _turn(arm, bone, axis, deg, frame=None):
+    """Turn a bone about a WORLD axis (as Forge's test poses do) and key it at `frame`."""
+    import math
+
+    from mathutils import Quaternion, Vector
+    rest = arm.data.bones[bone].matrix_local.to_3x3()
+    q = Quaternion(Vector(axis), math.radians(deg))
+    pb = arm.pose.bones[bone]
+    pb.rotation_mode = "QUATERNION"
+    pb.rotation_quaternion = (rest.inverted() @ q.to_matrix() @ rest).to_quaternion()
+    if frame is not None:
+        pb.keyframe_insert("rotation_quaternion", frame=frame)
+
+
+def _key_rest(arm, bones, frame):
+    for b in bones:
+        pb = arm.pose.bones[b]
+        pb.rotation_mode = "QUATERNION"
+        pb.rotation_quaternion = (1, 0, 0, 0)
+        pb.keyframe_insert("rotation_quaternion", frame=frame)
+
+
+def _elbows(deg=120.0, **kw):
+    """Both elbows bent from straight (frame 1) to `deg` (frame 12), forearms to the front (-Y)."""
+    arm, tube, ends = _arp_arms(**kw)
+    _key_rest(arm, ["forearm_stretch.l", "forearm_stretch.r"], 1)
+    _turn(arm, "forearm_stretch.l", (0, 0, 1), -deg, 12)
+    _turn(arm, "forearm_stretch.r", (0, 0, 1), deg, 12)
+    return arm, tube
+
+
+def test_a_fat_elbow_names_the_elbow_and_tells_contact_from_thinning():
+    """r/L = 0.4 bent 120 degrees: the inner sides press together (contact, information), the
+    outer side keeps about cos(60) = half its distance under linear blending (a warning, normal
+    for game skinning), and the faces crossing in the crease are contact, not faults."""
+    arm, tube = _elbows(120.0)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    joints = {e["where"]: e for e in rep["checks"]["joints"]["regions"]}
+    for side in ("left", "right"):
+        e = joints[f"{side} elbow"]
+        assert e["part"] == "outer side" and 0.5 <= e["value"] < 0.7 and e["grade"] == "warn", e
+        assert e["normal"] and e["frame"] == 12 and 115 <= e["bend_deg"] <= 121, e
+        assert e["contact"]["value"] < 0.5 and e["contact"]["faces"] > 0, e      # pressed, reported
+    assert joints["left elbow"]["value"] == pytest.approx(joints["right elbow"]["value"], abs=0.02)
+    cross = rep["checks"]["crossing"]["regions"]
+    assert {x["where"] for x in cross} == {"left elbow", "right elbow"}, cross
+    assert all(x["kind"] == "contact" and x["grade"] == "info" for x in cross), cross
+    assert rep["checks"]["crossing"]["grade"] == "pass" and rep["checks"]["crossing"]["value"] > 0
+    skin = {e["where"]: e for e in rep["checks"]["skin"]["regions"]}
+    for side in ("left", "right"):                       # folds in the crease are not graded
+        assert skin.get(f"{side} elbow", {}).get("folds", 0) == 0, skin.get(f"{side} elbow")
+    assert rep["checks"]["joints"]["grade"] == "warn"
+    # the panel: one sentence per finding, contact as information, nothing longer than 60
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    L = importlib.import_module("forge_send.stages_late")
+    _fake_poses(rep, "elbows")
+    rows = L._anim_rows(rep)
+    text = " ".join(t.strip() for _i, t in rows)
+    assert "left elbow, pose 'elbows' (bent 120°, frame 12): outer side kept" in text, text
+    assert "normal for game skinning at this bend" in text and "contact, expected" in text, text
+    assert "touches" not in text and "fold" not in text, text
+    assert max(len(t) for _i, t in rows) <= 60
+    warn_rows = [t for i, t in rows if i == L.WARN]
+    assert any("left elbow" in t for t in warn_rows), rows
+
+
+def _fake_poses(node, name):
+    """What steps._attach_poses adds: the test pose at every frame of a finding."""
+    if isinstance(node, dict):
+        for k in list(node):
+            if (k == "frame" or k.endswith("_frame")) and isinstance(node[k], int):
+                node["pose" if k == "frame" else k[:-5] + "pose"] = {"name": name, "weight": 1.0, "bend_deg": 120}
+            elif isinstance(node[k], (dict, list)):
+                _fake_poses(node[k], name)
+    elif isinstance(node, list):
+        for x in node:
+            _fake_poses(x, name)
+
+
+def test_b_a_twisted_upper_arm_fails_as_a_twist():
+    """160 degrees between the twist bone and the stretch bone of one segment: linear blending
+    wrings it to cos(80) (the candy wrapper), judged all round and named '<segment> twist'."""
+    arm, tube, _ends = _arp_arms(radius=0.1)
+    _key_rest(arm, ["arm_stretch.l"], 1)
+    _turn(arm, "arm_stretch.l", (1, 0, 0), 160.0, 12)
+    rep = _run(arm, [tube], list(range(1, 13)))
+    joints = {e["where"]: e for e in rep["checks"]["joints"]["regions"]}
+    e = joints["left upper arm twist"]
+    assert e["grade"] == "fail" and e["part"] == "all round" and e["twist_deg"] >= 150 and e["bend_deg"] < 10, e
+    assert e["value"] < 0.3 and e["normal"], e                      # what linear blending does at 160
+    assert rep["checks"]["joints"]["where"] == "left upper arm twist"
+    assert "left elbow" not in joints and "right upper arm twist" not in joints, joints   # nothing else turns
+
+
+def test_d_the_bend_direction_is_taken_each_frame():
+    """A shoulder raised and then swung forward: the top of the arm is the inner side of the
+    first bend and a side of the second; the front the other way round."""
+    from forge_bpy import motion_check as M
+    arm, tube, _ends = _arp_arms(radius=0.3)
+    _key_rest(arm, ["c_arm_twist_offset.l"], 1)
+    _turn(arm, "c_arm_twist_offset.l", (0, 1, 0), -60.0, 10)                  # up (+Z)
+    _turn(arm, "c_arm_twist_offset.l", (0, 0, 1), -60.0, 20)                  # forward (-Y)
+    st = M.rest_layout(arm, [tube])
+    lay = st["L"]
+    J = next(j for j in lay.joints if j.name == "left shoulder")
+    top, front, bottom = J.rdir[:, 2] > 0.9, J.rdir[:, 1] < -0.9, J.rdir[:, 2] < -0.9
+    assert top.sum() > 5 and front.sum() > 5 and bottom.sum() > 5
+
+    def sides(f):
+        bpy.context.scene.frame_set(f)
+        dg = bpy.context.evaluated_depsgraph_get()
+        co = M._posed(tube, dg, len(tube.data.vertices))
+        _m, R, H, T = M.pose_state(arm, lay)
+        res = lay.measure(J, co, R, H, T)
+        assert 55 < res["bend"] < 65, res["bend"]
+        return res["side"]
+    up, fw = sides(10), sides(20)
+    # 1 inner side, 2 inner side within the contact zone, 0 a side, -1 outer side (a point on the
+    # bend's own plane can lie in the zone: the zone is the half the bend closes on)
+    assert set(up[top].tolist()) <= {1, 2} and set(up[bottom].tolist()) == {-1}, (up[top], up[bottom])
+    assert set(up[front].tolist()) <= {0, 2} and (up[front] == 0).any(), up[front]
+    assert set(fw[front].tolist()) <= {1, 2} and set(fw[top].tolist()) <= {0, 2}, (fw[front], fw[top])
+    assert set(fw[bottom].tolist()) <= {0, 2} and (fw[top] == 0).any(), fw[bottom]
+    assert (up[top] == 2).any() and (fw[front] == 2).any()               # contact near the pivot
+    bpy.context.scene.frame_set(1)
+
+
+def test_e_a_sliver_does_not_blow_up_the_stretch_and_a_fold_is_counted():
+    """A rest edge of 1e-7 m (a remesher sliver) would read 10000x as an edge ratio; per
+    triangle, slivers are left out and the skin reads what it is. A point weighted to the wrong
+    bone is left behind when the forearm bends: its faces turn inside out (a fold, a fault)."""
+    import numpy as np
+    from mathutils import Vector
+    arm, tube = _arm(25)
+    me = tube.data
+    v = min(me.vertices, key=lambda p: (p.co - Vector((1.02, 0, 0.15))).length)
+    nb = [me.vertices[i] for e in me.edges if v.index in e.vertices for i in e.vertices if i != v.index]
+    u = min(nb, key=lambda p: abs(p.co.y - v.co.y) + abs(p.co.z - v.co.z))     # its neighbour along the arm
+    v.co = u.co + (v.co - u.co).normalized() * 1e-7       # (v keeps the weights of where it was)
+    vi, ui = v.index, u.index
+    rep = _run(arm, [tube], list(range(1, 13, 2)) + [12])
+    assert rep["checks"]["skin"]["stretch"] < 3.0 and rep["checks"]["skin"]["grade"] == "pass", rep["checks"]["skin"]
+    from forge_bpy import motion_check as M
+    st = M.rest_layout(arm, [tube])
+    bpy.context.scene.frame_set(12)
+    co = M._posed(tube, bpy.context.evaluated_depsgraph_get(), len(me.vertices))
+    rest = st["rest"]                                    # what the old edge ratio read there
+    assert np.linalg.norm(co[ui] - co[vi]) / np.linalg.norm(rest[ui] - rest[vi]) > 100
+    bpy.context.scene.frame_set(1)
+    # a point of the forearm left on the upper arm
+    arm, tube = _arm(60)
+    bad = min(tube.data.vertices, key=lambda p: (p.co - Vector((1.6, 0, 0.15))).length)
+    for g in tube.vertex_groups:
+        g.remove([bad.index])
+    tube.vertex_groups["upperarm.l"].add([bad.index], 1.0, "REPLACE")
+    rep = _run(arm, [tube], list(range(1, 13)))
+    sk = rep["checks"]["skin"]
+    assert sk["folds"] >= 1 and sk["grade"] == "fail" and sk["folds_where"], sk
+    assert any(r["where"] == sk["folds_where"] and r["grade"] == "fail" for r in rep["regions"])
+
+
+def test_f_preserve_volume_does_not_change_what_is_measured():
+    """The check measures linear blending (what the engines play) whatever the modifier says,
+    puts the setting back, and numpy's linear blend is Blender's modifier to 1e-6 m."""
+    import numpy as np
+    from forge_bpy import motion_check as M
+    arm, tube = _elbows(120.0, radius=0.3)
+    mod = tube.modifiers["Armature"]
+    frames = list(range(1, 13))
+    mod.use_deform_preserve_volume = False
+    a = _run(arm, [tube], frames)
+    mod.use_deform_preserve_volume = True
+    b = _run(arm, [tube], frames)
+    assert mod.use_deform_preserve_volume                          # put back
+    assert a["checks"] == b["checks"] and a["regions"] == b["regions"]
+    assert b["measured_as"]["preserve_volume_was_on"] and not a["measured_as"]["preserve_volume_was_on"]
+    mod.use_deform_preserve_volume = False
+    st = M.rest_layout(arm, [tube])
+    for f in (6, 12):
+        bpy.context.scene.frame_set(f)
+        co = M._posed(tube, bpy.context.evaluated_depsgraph_get(), len(tube.data.vertices))
+        mats, _R, _H, _T = M.pose_state(arm, st["L"])
+        assert np.abs(M.lbs(st["rest"], st["L"].Wn, mats) - co).max() < 1e-6
+    bpy.context.scene.frame_set(1)
+
+
+def _far_bone_tube(tail):
+    """A tube on four bones that never move, and a band of points also weighted `tail` to a
+    fifth bone off to the side, which turns 30 degrees (frames 1 to 5)."""
+    import math
+
+    import bmesh
+    from mathutils import Matrix
+    bpy.ops.wm.read_homefile(use_empty=True)
+    ad = bpy.data.armatures.new("A")
+    arm = bpy.data.objects.new("Rig", ad)
+    bpy.context.scene.collection.objects.link(arm)
+    bpy.context.view_layer.objects.active = arm
+    bpy.ops.object.mode_set(mode="EDIT")
+    for i in range(4):
+        b = ad.edit_bones.new(f"near_{i}")
+        b.head, b.tail = (0.5 * i, 0, 0), (0.5 * i + 0.5, 0, 0)
+    far = ad.edit_bones.new("far")
+    far.head, far.tail = (1.0, 0.5, 0), (1.0, 0.8, 0)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=0.15, radius2=0.15, depth=2.0,
+                          matrix=Matrix.Translation((1, 0, 0)) @ Matrix.Rotation(math.pi / 2, 4, "Y"))
+    side = [e for e in bm.edges if abs(e.verts[0].co.x - e.verts[1].co.x) > 1.0]
+    bmesh.ops.subdivide_edges(bm, edges=side, cuts=39, use_grid_fill=True)
+    me = bpy.data.meshes.new("Tube")
+    bm.to_mesh(me)
+    bm.free()
+    tube = bpy.data.objects.new("Tube_low", me)
+    bpy.context.scene.collection.objects.link(tube)
+    g = [tube.vertex_groups.new(name=f"near_{i}") for i in range(4)] + [tube.vertex_groups.new(name="far")]
+    for v in me.vertices:
+        band = 0.85 <= v.co.x <= 1.15
+        t = tail if band else 0.0
+        for i in range(4):
+            g[i].add([v.index], (1.0 - t) / 4.0, "REPLACE")
+        if band:
+            g[4].add([v.index], t, "REPLACE")
+    tube.modifiers.new("Armature", "ARMATURE").object = arm
+    arm.animation_data_create()
+    arm.animation_data.action = bpy.data.actions.new("FORGE_pose_test")
+    _key_rest(arm, ["far"], 1)
+    _turn(arm, "far", (0, 0, 1), 30.0, 5)
+    return arm, tube
+
+
+def test_g_unity_four_bone_limit_is_measured_not_counted():
+    """Unity keeps 4 bones (the export's own continuous limit). A 12 % fifth bone that moves
+    shifts the skin by more than half an edge: a warning with the frame and the place. A 5 %
+    tail moves it less: still counted (information), but it passes."""
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    S = importlib.import_module("forge_send.steps")
+    out = {}
+    for tail in (0.12, 0.05):
+        arm, tube = _far_bone_tube(tail)
+        rep = _run(arm, [tube], [1, 3, 5])
+        out[tail] = rep
+        w = rep["checks"]["weights"]
+        assert w["over"]["Unity"] > 0 and w["over"]["Unreal"] == 0, w
+        assert w["unity"]["measured_on"] == "full mesh"
+    big, small = out[0.12]["checks"]["weights"], out[0.05]["checks"]["weights"]
+    assert big["grade"] == "warn" and big["unity"]["grade"] == "warn", big
+    assert big["unity"]["shift_edges"] > 0.5 and big["unity"]["frame"] == 5 and big["unity"]["where"], big
+    assert big["unity"]["shift_mm"] == pytest.approx(small["unity"]["shift_mm"] * 0.12 / 0.05, rel=0.05)
+    assert small["grade"] == "pass" and small["unity"]["shift_edges"] < 0.5, small
+    S._attach_poses(out[0.12], "rom")                        # the frame gets its pose, as in Step 8
+    assert out[0.12]["checks"]["weights"]["unity"]["pose"]["name"] == S.clip_pose("rom", 5)[1]
+    L = importlib.import_module("forge_send.stages_late")
+    text = " ".join(t.strip() for _i, t in L._anim_rows(out[0.12]))
+    assert "Unity" in text and "4-bone limit moves the skin" in text and "points use more than 4 bones" in text, text
+    text = " ".join(t.strip() for _i, t in L._anim_rows(out[0.05]))
+    assert "4-bone limit moves the skin" not in text and "fine" in text, text
