@@ -7,10 +7,11 @@ body plan's defaults. merge() picks one value per row, by a fixed precedence, an
 the director should look at: yellow when Forge is unsure, red when two sources disagree.
 
 plan() turns a brief into a RigPlan: which Auto-Rig Pro rig to start from, which limb options
-change (fingers, toes, neck, spine), which chains the extra parts get, which parts stay stiff,
-where props attach, how the skin is bound and how the rig is exported. Every count in it comes
-from ratios (a tail's length to its thickness, a neck's length to its thickness), so the same
-character gives the same plan at any scale.
+change (fingers, toes, neck, spine), which limbs it adds or removes, which chains the extra parts
+get, which parts stay stiff, where props attach, how the skin is bound and how the rig is
+exported. Every count in it comes from ratios (a tail's length to its thickness, a neck's length
+to its thickness), so the same character gives the same plan at any scale, and parts are taken
+in card order, so the order of the brief's lists never changes it.
 
 Plain Python: no Blender. (Part names are read with appendages.plain_name, so the card and
 the panel word them the same way.)
@@ -18,6 +19,7 @@ the panel word them the same way.)
 
 from __future__ import annotations
 
+import json
 import math
 import re
 from dataclasses import asdict, dataclass, field
@@ -191,8 +193,10 @@ def _clean(name: str, value):
         if spec["type"] == "bool":
             return bool(value) if isinstance(value, bool) or value in (0, 1) else None
         v = int(value) if spec["type"] == "int" else float(value)
-    except (TypeError, ValueError):
+    except (TypeError, ValueError, OverflowError):
         return None
+    if not math.isfinite(v):
+        return None                               # not a number, or endless: no answer
     if (spec["lo"] is not None and v < spec["lo"]) or (spec["hi"] is not None and v > spec["hi"]):
         return None
     if spec["unset"] is not None and v == spec["unset"]:
@@ -253,9 +257,17 @@ def merge(layers: dict, sig=None, confirmed: bool = False) -> dict:
     you > step1 > step2 > job > measured (sure >= 0.8) > tripo > ai > measured (weak) > default.
 
     Every field comes back as {value, src, sure, why, state}. state is "yellow" when the value
-    is not from you or Step 1 and sure < 0.8, "red" when two sources at least 0.5 sure disagree
-    (with "options": the two answers [value, words], and a one-line "reason"), else "ok".
-    Answers that are not valid for their field are left out and listed in "ignored"."""
+    is not from you or Step 1 and sure < 0.8, or when the winner allows several values and
+    nothing picks one; "red" when two sources at least 0.5 sure disagree (with "options": the two
+    answers [value, words], and a one-line "reason"); else "ok". Lead's choice: a row you
+    answered is never red, whatever the other sources say.
+    Answers that are not valid for their field (and descriptor values that are not in
+    body_plans.DESC_KEYS) are left out and listed in "ignored".
+
+    The body plan sets some part defaults: under 'Something else' every part bends unless a
+    source made it stiff; under 'More than two arms' unnamed parts on the body's sides become
+    the extra arms. Cloth kinds (cape, skirt, sash) move to the cloth list. Hooves and claws are
+    always on the stiff list."""
     bad = sorted(set(layers) - set(SOURCES))
     if bad:
         raise ValueError(f"unknown brief sources: {bad}")
@@ -282,15 +294,24 @@ def merge(layers: dict, sig=None, confirmed: bool = False) -> dict:
     template = BP.TEMPLATES[fields["body_plan"]["value"]]
     for name in FIELD_ORDER[1:]:
         fields[name] = _resolve(name, cands[name], _default(name, template))
-    parts = _merge_list(layers, "parts", "id", _fill_part)
+    parts = _merge_list(layers, "parts", "id", lambda m: _fill_part(m, ignored), ignored)
+    cloth = _merge_list(layers, "cloth", "part", _fill_cloth, ignored)
+    # parts whose motion a source chose (the rest carry their kind's default)
+    chosen = {str(raw["id"]) for src in SOURCES for raw in (layers.get(src) or {}).get("parts", []) or []
+              if isinstance(raw, dict) and raw.get("id") is not None and raw.get("motion") in dict(MOTIONS)}
+    parts, cloth = _cloth_out(parts, cloth, chosen)
+    _template_parts(fields, parts, chosen)
+    parts.sort(key=_part_key)                     # a part the body plan named moves to its kind's place
     rigid_extra = sorted({str(r) for src in SOURCES for r in (layers.get(src) or {}).get("rigid", [])})
     stiff = [p["id"] for p in parts if p["motion"] == "stiff"]
-    rigid = stiff + [r for r in rigid_extra if r not in stiff]
+    rigid = stiff + [r for r in body_rigid(fields["hands"]["value"], fields["feet"]["value"]) + rigid_extra
+                     if r not in stiff]
+    rigid = list(dict.fromkeys(rigid))
     notes = next((str((layers.get(s) or {}).get("notes")) for s in SOURCES if (layers.get(s) or {}).get("notes")), "")
     return {"v": 1, "confirmed": bool(confirmed), "sig": list(sig) if sig is not None else None,
             "fields": fields, "parts": parts,
-            "props": _merge_list(layers, "props", "part", _fill_prop),
-            "cloth": _merge_list(layers, "cloth", "part", _fill_cloth),
+            "props": _merge_list(layers, "props", "part", _fill_prop, ignored),
+            "cloth": cloth,
             "rigid": rigid, "notes": notes,
             "measured": dict((layers.get("measured") or {}).get("measured") or {}),
             "ignored": ignored}
@@ -312,31 +333,42 @@ def _resolve(name: str, cands: list, default: dict) -> dict:
     row = {"value": win["value"], "src": win["src"], "sure": win["sure"], "why": win["why"]}
     allowed = (win["value"],)
     refined = None
-    if win["any_of"]:
-        # a lower source picks inside what the winner allows (Step 1 "Biped" + the shape's "animal")
+    open_choice = False
+    if win["any_of"] and len(win["any_of"]) > 1:
+        # A lower source picks inside what the winner allows (Step 1 "Biped" + the shape's
+        # "animal"): the first one at least 0.5 sure, else the surest weaker one, which still
+        # shows yellow. When nothing picks, the row keeps the winner's value but is not sure.
         allowed = win["any_of"]
-        refined = next((c for c in order[1:] if c["src"] != "default" and c["sure"] >= DISAGREE
-                        and c["value"] in allowed), None)
+        inside = [c for c in order[1:] if c["src"] != "default" and c["value"] in allowed]
+        refined = next((c for c in inside if c["sure"] >= DISAGREE), None)
+        if refined is None and inside:
+            refined = max(inside, key=lambda c: c["sure"])        # (max keeps the first of equals)
         if refined is not None:
             row = {"value": refined["value"], "src": refined["src"], "sure": refined["sure"],
                    "why": _join_why(refined["why"], win["why"])}
-        elif row["value"] not in allowed:
-            row["value"] = allowed[0]
+        else:
+            open_choice = True
+            row["value"] = row["value"] if row["value"] in allowed else allowed[0]
+            row["sure"] = BARE_SURE["default"]
+            row["why"] = _join_why(win["why"], "either " + " or ".join(_words(name, a) for a in allowed)
+                                   + ": please pick")
     state = "ok"
-    if win["src"] != "you" and win["sure"] >= DISAGREE:
-        other = next((c for c in order if c is not win and c is not refined and c["src"] != "default"
-                      and c["sure"] >= DISAGREE and not any(_same(name, c["value"], a) for a in allowed)), None)
-        if other is not None:
-            words_a = win["words"] or (" or ".join(_words(name, a) for a in allowed) if win["any_of"]
+    pair = None if win["src"] == "you" else _disagreement(name, order, win, allowed)
+    if pair is not None:
+        a, b = pair
+        if a is win:
+            value_a = row["value"]
+            words_a = win["words"] or (" or ".join(_words(name, x) for x in allowed) if len(allowed) > 1
                                        else _words(name, row["value"]))
-            words_b = other["words"] or _words(name, other["value"])
-            reason = f"{SAYS[win['src']]} {words_a}; {SAYS[other['src']]} {words_b}"
-            if other["why"]:
-                reason += f" ({other['why']})"
-            row.update(options=[[row["value"], words_a], [other["value"], words_b]],
-                       reason=reason[:1].upper() + reason[1:])
-            state = "red"
-    if state == "ok" and row["src"] not in ("you", "step1") and row["sure"] < STRONG:
+        else:
+            value_a, words_a = a["value"], a["words"] or _words(name, a["value"])
+        words_b = b["words"] or _words(name, b["value"])
+        reason = f"{SAYS[a['src']]} {words_a}; {SAYS[b['src']]} {words_b}"
+        if b["why"]:
+            reason += f" ({b['why']})"
+        row.update(options=[[value_a, words_a], [b["value"], words_b]], reason=reason[:1].upper() + reason[1:])
+        state = "red"
+    if state == "ok" and (open_choice or (row["src"] not in ("you", "step1") and row["sure"] < STRONG)):
         state = "yellow"
     if state == "ok" and FIELDS[name]["unset"] is not None and row["value"] == FIELDS[name]["unset"]:
         state = "yellow"
@@ -345,19 +377,42 @@ def _resolve(name: str, cands: list, default: dict) -> dict:
     return row
 
 
-def _merge_list(layers: dict, key: str, id_key: str, fill) -> list:
+def _disagreement(name: str, order: list, win: dict, allowed: tuple):
+    """The first two sources, in precedence order, that are both at least 0.5 sure and give
+    answers with nothing in common (the winner's answer is everything it allows), or None."""
+    sure = [c for c in order if c["src"] != "default" and c["sure"] >= DISAGREE]
+
+    def answers(c):
+        return allowed if c is win else (c["any_of"] or (c["value"],))
+
+    for i, a in enumerate(sure):
+        for b in sure[i + 1:]:
+            if not any(_same(name, x, y) for x in answers(a) for y in answers(b)):
+                return a, b
+    return None
+
+
+def _merge_list(layers: dict, key: str, id_key: str, fill, ignored: list) -> list:
     """Entries of one list (parts, props, cloth) merged by their id: the highest source's keys
-    win, keys only a lower source has are kept (Step 4's descriptor, the found part's name)."""
+    win, keys only a lower source has are kept (Step 4's descriptor, the found part's name).
+    One source listing the same id twice: the surer entry wins (then the one that sorts first),
+    and the other is listed in `ignored`."""
     by_id: dict = {}
     for src in SOURCES:
+        seen: set = set()
         for raw in (layers.get(src) or {}).get(key, []) or []:
             if not isinstance(raw, dict) or raw.get(id_key) is None:
                 continue
             sure = _sure(src, raw.get("sure"))
-            by_id.setdefault(str(raw[id_key]), []).append((_rank(src, sure), SOURCES.index(src), src, sure, raw))
+            pid = str(raw[id_key])
+            if pid in seen:
+                ignored.append({"src": src, "list": key, "id": pid,
+                                "why": "listed twice by one source: the surer entry is used"})
+            seen.add(pid)
+            by_id.setdefault(pid, []).append((_rank(src, sure), SOURCES.index(src), src, sure, raw))
     out = []
     for pid in sorted(by_id):
-        entries = sorted(by_id[pid], key=lambda e: (e[0], e[1]))
+        entries = sorted(by_id[pid], key=lambda e: (e[0], e[1], -e[3], json.dumps(e[4], sort_keys=True, default=str)))
         merged: dict = {}
         for entry in reversed(entries):
             merged.update({k: v for k, v in entry[4].items() if v is not None})
@@ -382,22 +437,129 @@ def _merge_list(layers: dict, key: str, id_key: str, fill) -> list:
         merged["state"] = state
         out.append(merged)
     if key == "parts":
-        out.sort(key=lambda p: (KIND_RANK.get(p["kind"], len(KIND_RANK)), p["id"]))
+        out.sort(key=_part_key)
     return out
 
 
-def _fill_part(p: dict) -> dict:
-    p["kind"] = _norm_kind(p.get("kind"))
+def _fill_part(p: dict, ignored: list | None = None) -> dict:
+    raw = str(p.get("kind") or "other").lower()
+    p["kind"] = _norm_kind(raw)
+    if p["kind"] == "other" and raw != "other":
+        p["found_kind"] = raw                     # the finder's own word ('extra', 'head_extra'): where it sits
     if p.get("motion") not in dict(MOTIONS):
         p["motion"] = KIND_MOTION.get(p["kind"], "stiff")
-    p["bones"] = max(0, int(p.get("bones") or 0))         # 0 = auto
+    try:
+        p["bones"] = max(0, int(p.get("bones") or 0))     # 0 = auto
+    except (TypeError, ValueError, OverflowError):
+        p["bones"] = 0
     p["side"] = p.get("side") if p.get("side") in ("l", "r", "x") else _side_of(p["id"])
     p["words"] = p.get("words") or part_words(p["id"], p["kind"])
     if p.get("desc") is not None:
-        p["desc"] = dict(p["desc"])
-    if p.get("step4") is not None:
+        p["desc"], bad = BP.clean_desc(p["desc"])
+        for k, v in bad:
+            if ignored is not None:
+                ignored.append({"src": p.get("src"), "part": p["id"], "desc": k, "value": v,
+                                "why": "not a descriptor value"})
+    if isinstance(p.get("step4"), dict):
         p["step4"] = {"row": p["step4"].get("row"), "disposition": p["step4"].get("disposition")}
     return p
+
+
+def _cloth_out(parts: list, cloth: list, chosen: set) -> tuple:
+    """Parts of a cloth kind (cape, skirt, sash) go to the cloth list, so they move with the body
+    (lead's choice) instead of landing on the stiff list. A cloth part a source made stiff stays
+    a stiff part; one called 'not a part' stays on the card as that. A cloth entry for the same
+    piece wins over the part."""
+    have = {c["part"] for c in cloth}
+    keep = []
+    for q in parts:
+        if q["kind"] not in CLOTH_KINDS or q["motion"] == "not_part" or (q["motion"] == "stiff" and q["id"] in chosen):
+            keep.append(q)
+            continue
+        if q["id"] not in have:                   # (its sizes, found name and Step 4 facts come along)
+            c = {k: v for k, v in q.items() if k not in ("id", "kind", "motion", "bones", "side", "found_kind")}
+            c.update(part=q["id"], kind=q["kind"], motion="swings" if q["motion"] == "swings" else "with_body")
+            cloth.append(_fill_cloth(c))
+    cloth.sort(key=lambda c: c["part"])
+    return keep, cloth
+
+
+def body_rigid(hands: str, feet: str) -> list:
+    """Body regions that are always stiff (spec 5.1): hooves, and claws on the hands."""
+    out = ["hooves"] if "hooves" in (hands, feet) else []
+    return out + (["claws"] if hands == "claws" else [])
+
+
+def _on_head(q: dict) -> bool:
+    return ((q.get("desc") or {}).get("host") == "head" or q["kind"] in HEAD_KINDS
+            or q.get("found_kind") == "head_extra")
+
+
+def _arm_rank(q: dict, auto_motion: bool = False):
+    """How clearly a part is an extra arm: 0 when it is named an arm, 1 when its descriptor reads
+    as an arm, 2 when it is an unnamed part on one side of the body, off the head, with no
+    descriptor; None when it is not one. A stiff part is never one, unless stiff is only its
+    kind's default (auto_motion)."""
+    if q.get("motion") == "not_part" or (q.get("motion") == "stiff" and not auto_motion):
+        return None
+    if q["kind"] == "arm":
+        return 0
+    if q["kind"] != "other" or q.get("side") not in ("l", "r") or _on_head(q):
+        return None
+    host = (q.get("desc") or {}).get("host")
+    if host not in (None, "core"):
+        return None                               # a part on a part
+    if q.get("desc"):
+        return 1 if BP.role(q) == "arm" else None
+    return 2
+
+
+def _arm_slots(ranked: list, n: int) -> list:
+    """n extra arm pairs as [(left part or None, right part or None)] from [(rank, part)]: the
+    clearest candidates first, then by name, so the same parts give the same pairs in any order."""
+    def side(s):
+        return [q for _r, q in sorted(((r, q) for r, q in ranked if q.get("side") == s),
+                                      key=lambda rq: (rq[0], rq[1]["id"]))]
+
+    lefts, rights = side("l"), side("r")
+    return [(lefts[i] if i < len(lefts) else None, rights[i] if i < len(rights) else None) for i in range(n)]
+
+
+def _template_parts(fields: dict, parts: list, chosen: set) -> None:
+    """Part defaults that come from the body plan (in place). 'Something else': every part
+    bends (one chain each) unless a source made it stiff. 'More than two arms': the extra arm
+    pairs take the parts named arms first, then parts on the body's sides that read as arms,
+    then unnamed parts on its sides; nobody having set the number of arm pairs, the parts found
+    set it."""
+    tname = fields["body_plan"]["value"]
+    if tname == "custom":
+        for q in parts:
+            if q["motion"] == "stiff" and q["id"] not in chosen:
+                q["motion"] = "bends"
+                q["why"] = _join_why(q["why"], "Something else: every part bends unless you make it stiff")
+        return
+    if tname != "multi_arm":
+        return
+    ranked = [(r, q) for q in parts for r in [_arm_rank(q, q["id"] not in chosen)] if r is not None]
+    row = fields["arm_pairs"]
+    found = max(sum(1 for _r, q in ranked if q["side"] == s) for s in ("l", "r")) if ranked else 0
+    if row["src"] == "default" and 1 + found > int(row["value"]):
+        n = min(1 + found, FIELDS["arm_pairs"]["hi"])
+        sure = min(q["sure"] for _r, q in ranked)
+        fields["arm_pairs"] = {"value": n, "src": "measured", "sure": sure,
+                               "why": f"{n} pairs of arms counted from the parts found",
+                               "state": "ok" if sure >= STRONG else "yellow"}
+    for left, right in _arm_slots(ranked, max(0, int(fields["arm_pairs"]["value"]) - 1)):
+        for q in (left, right):
+            if q is None or q["kind"] == "arm":
+                continue
+            q["kind"], q["words"] = "arm", part_words(q["id"], "arm")
+            q.pop("found_kind", None)
+            if q["id"] not in chosen:
+                q["motion"] = "bends"
+            q["why"] = _join_why(q["why"], "More than two arms: a part on the body's side")
+            if q["state"] == "ok":
+                q["state"] = "yellow"
 
 
 def _fill_prop(p: dict) -> dict:
@@ -469,10 +631,13 @@ def parts_from_apps(apps: list) -> list:
 # ----------------------------------------------------------------------------- reading a brief
 
 def value(brief: dict, name: str):
-    """A field's value, or its default (the body plan's default where it has one)."""
+    """A field's value, or its default (the body plan's default where it has one) when the row is
+    missing or holds no valid answer."""
     row = (brief.get("fields") or {}).get(name)
     if isinstance(row, dict) and row.get("value") is not None:
-        return row["value"]
+        v = _clean(name, row["value"])
+        if v is not None:
+            return v
     if name != "body_plan":
         t = BP.TEMPLATES.get(value(brief, "body_plan"))
         if t is not None and name in t["defaults"]:
@@ -533,26 +698,62 @@ def summary_words(brief: dict) -> str:
 BONE_LEN = 2.5        # one chain bone is about 2.5 times the chain's mean radius long
 MIN_BONES, BASE_MAX, BEND_MAX = 2, 8, 10
 MAX_TURN = 35.0       # a bone may turn at most this much (degrees) from the one before it
+SMOOTH_STEPS = 16     # points per span of the smoothed centre line
+EPS = BP.EPS          # a ratio this close to a boundary counts as on it (the same at any scale)
 
 
 def chain_bones(arc_len: float, mean_radius: float, cap=None, bend=None) -> int:
     """Bones for a bending chain (tail, trunk, tentacle): clamp(round(L / 2.5 r), 2, 8).
 
     With `bend`, the chain's centre line at rest (a polyline of points, root to tip), the count
-    is raised while any bone would turn more than 35 degrees from the one before it, up to 10.
-    `cap` (the bone budget) has the last word. Only ratios of the sizes count, so the result is
-    the same at any scale."""
+    is the smallest from there up to 10 at which no bone turns more than 35 degrees from the one
+    before it, measured on a smooth line through the points (10 when none is). `cap` (the bone
+    budget) has the last word. Only ratios of the sizes count, so the result is the same at any
+    scale."""
     if mean_radius and mean_radius > 0 and arc_len and arc_len > 0:
         n = int(math.floor(arc_len / (BONE_LEN * mean_radius) + 0.5 + 1e-9))
     else:
         n = MIN_BONES
     n = min(max(n, MIN_BONES), BASE_MAX)
     if bend is not None and len(bend) >= 3:
-        while n < BEND_MAX and max_turn(bend, n) > MAX_TURN:
-            n += 1
+        line = smooth_line(bend)
+        n = next((m for m in range(n, BEND_MAX + 1) if _turn(line, m) <= MAX_TURN), max(n, BEND_MAX))
     if cap is not None:
         n = min(n, max(1, int(cap)))
     return n
+
+
+def _mix(a, b, u: float) -> tuple:
+    return tuple(x + (y - x) * u for x, y in zip(a, b))
+
+
+def smooth_line(poly, steps: int = SMOOTH_STEPS) -> list:
+    """A smooth centre line through a polyline's points, sampled `steps` times per span.
+
+    The finder gives a chain as a handful of points. Bones laid on that coarse line turn at its
+    corners however many there are, so the turn is measured on this line instead: a centripetal
+    Catmull-Rom spline (it never loops or overshoots at a sharp corner), running straight on
+    past both ends. Its shape depends only on the points, so it is the same at any scale."""
+    pts: list = []
+    for q in poly:
+        q = tuple(float(c) for c in q)
+        if not pts or math.dist(q, pts[-1]) > 0:
+            pts.append(q)
+    if len(pts) < 3:
+        return pts
+    ext = [_mix(pts[0], pts[1], -1.0)] + pts + [_mix(pts[-1], pts[-2], -1.0)]
+    out = [pts[0]]
+    for i in range(1, len(ext) - 2):
+        p0, p1, p2, p3 = ext[i - 1], ext[i], ext[i + 1], ext[i + 2]
+        t1 = math.dist(p0, p1) ** 0.5
+        t2 = t1 + math.dist(p1, p2) ** 0.5
+        t3 = t2 + math.dist(p2, p3) ** 0.5
+        for k in range(1, steps + 1):
+            t = t1 + (t2 - t1) * k / steps
+            a1, a2, a3 = _mix(p0, p1, t / t1), _mix(p1, p2, (t - t1) / (t2 - t1)), _mix(p2, p3, (t - t2) / (t3 - t2))
+            b1, b2 = _mix(a1, a2, t / t2), _mix(a2, a3, (t - t1) / (t3 - t1))
+            out.append(_mix(b1, b2, (t - t1) / (t2 - t1)))
+    return out
 
 
 def _resample(pts: list, n: int) -> list:
@@ -572,9 +773,13 @@ def _resample(pts: list, n: int) -> list:
 
 
 def max_turn(poly, n: int) -> float:
-    """The largest turn (degrees) between neighbouring bones when n bones follow the polyline."""
-    pts = [tuple(float(c) for c in p) for p in poly]
-    q = _resample(pts, n)
+    """The largest turn (degrees) between neighbouring bones when n bones follow the smooth line
+    through the polyline's points (smooth_line)."""
+    return _turn(smooth_line(poly), n)
+
+
+def _turn(line: list, n: int) -> float:
+    q = _resample(line, n)
     worst = 0.0
     for a, b, c in zip(q, q[1:], q[2:]):
         u = [y - x for x, y in zip(a, b)]
@@ -609,6 +814,9 @@ def _size(part: dict, app: dict | None) -> tuple:
     return (float(arc) if arc else None, float(r) if r else None, poly)
 
 
+EAR_LONG, EAR_SHORT = 4.0, 2.0       # ear length over its root width / over its thickness
+
+
 def ear_bones(part: dict, app: dict | None) -> int:
     """2 bones; 3 when the ear is longer than 4 times its root width; 1 (it turns as one piece)
     when it is shorter than twice its root thickness (spec 5.5)."""
@@ -619,9 +827,9 @@ def ear_bones(part: dict, app: dict | None) -> int:
     ring = src.get("ring")
     width = 2.0 * float(ring[2]) if ring is not None and len(ring) > 2 and ring[2] else src.get("width")
     thick = src.get("thickness")
-    if length and thick and length < 2.0 * float(thick):
+    if length and thick and float(length) / float(thick) < EAR_SHORT - EPS:
         return 1
-    if length and width and length > 4.0 * float(width):
+    if length and width and float(length) / float(width) > EAR_LONG + EPS:
         return 3
     return 2
 
@@ -646,6 +854,10 @@ class RigPlan:
     export_type: str = "UNIVERSAL"
     max_influences: int = 4
     add_limbs: list = field(default_factory=list)      # limbs the starting rig lacks (Auto-Rig Pro add_limb)
+    remove_limbs: list = field(default_factory=list)   # [(ref_bone, limb_type, side)] the starting rig has
+    #                                                    and this body lacks (Auto-Rig Pro disable_limb)
+    rigid_regions: list = field(default_factory=list)  # stiff body regions that are not parts: hooves,
+    #                                                    claws, a tail tuft
     ankle_at_hock: bool = False                        # heel-raised legs kept two-bone for human animations
     rigid_pieces: bool = False                         # a machine: each loose piece follows one bone, no heat
     cloth_masks: list = field(default_factory=list)    # cloth left for game physics (a mask in the export)
@@ -655,6 +867,7 @@ class RigPlan:
     def to_json(self) -> dict:
         d = asdict(self)
         d["limb_options"] = [list(o) for o in self.limb_options]
+        d["remove_limbs"] = [list(o) for o in self.remove_limbs]
         return d
 
 
@@ -692,13 +905,16 @@ def toe_changes(feet: str, toes: int = 5) -> dict:
     return {}
 
 
+SPINE_LONG = 2.5      # a trunk longer than this many times its thickness gets 3 spine bones
+
+
 def neck_count(length, thickness) -> int:
     """1 bone when the neck is shorter than its thickness, 2 when shorter than twice it, else 3;
     never below 1 (spec 9.3)."""
     if not thickness or thickness <= 0 or length is None:
         return 1
     ratio = float(length) / float(thickness)
-    return 1 if ratio < 1.0 else (2 if ratio < 2.0 else 3)
+    return 1 if ratio < 1.0 - EPS else (2 if ratio < 2.0 - EPS else 3)
 
 
 def _pt(p) -> tuple:
@@ -742,22 +958,42 @@ def _trunk_size(brief: dict, J: dict | None) -> tuple:
 
 def _limb_name(pid: str) -> str:
     """A chain name Auto-Rig Pro accepts: letters, digits and '_', never 'head', 'root' or 'neck'
-    (those break its own bone lookups)."""
+    in any case (those break its own bone lookups)."""
     name = re.sub(r"[^A-Za-z0-9_]", "_", str(pid)) or "part"
-    for bad in ("head", "root", "neck"):
-        name = name.replace(bad, "part")
-    return name
+    return re.sub(r"(?i)head|root|neck", "part", name)
+
+
+def _unique_names(chains: list) -> None:
+    """Two spline chains on the same side never share a name: a later one gets '_2', '_3'
+    (the chains are already in a fixed order)."""
+    used: set = set()
+    for c in chains:
+        opts = c.get("options") or {}
+        if "spline_name" not in opts:
+            continue
+        base, side, k = opts["spline_name"], opts.get("spline_side"), 1
+        name = base
+        while (name.lower(), side) in used:
+            k += 1
+            name = f"{base}_{k}"
+        used.add((name.lower(), side))
+        opts["spline_name"] = name
 
 
 def _owner_hint(p: dict) -> str | None:
     host = (p.get("desc") or {}).get("host")
     if host and host not in ("core", "head"):
         return str(host)                          # a part on a part follows that part
-    if host == "head" or p["kind"] in HEAD_KINDS:
+    if _on_head(p):
         return "head"
     if p["kind"] == "mane":
         return "neck"
     return None                                   # the body bone its root grows from (found at build)
+
+
+def _part_key(q: dict) -> tuple:
+    """Card order: kind from the head down, then name. Every list the plan builds follows it."""
+    return (KIND_RANK.get(q["kind"], len(KIND_RANK)), str(q["id"]))
 
 
 def _side_suffix(side: str) -> str:
@@ -768,7 +1004,9 @@ def plan(brief: dict, apps=None, J=None, targets=None, probe=None) -> RigPlan:
     """The rig plan for a brief (spec 5.5). apps: appendages.find items (their chains and
     thicknesses size the chains); J: the joint dict (neck and trunk sizes). targets: {"engines":
     ["unity", "unreal"], "chain_cap": n} from the Step 9 budgets. probe: {"bird_ok", "wings_ok"}
-    from the WP0 Auto-Rig Pro probe (unknown = allowed for the bird rig, not for wings)."""
+    from the WP0 Auto-Rig Pro probe; until the probe says True, neither the bird rig nor wings on
+    arm copies are used. Parts are taken in card order (kind, then name), so the order of the
+    brief's lists never changes the plan."""
     targets, probe = targets or {}, probe or {}
     tname = value(brief, "body_plan")
     t = BP.TEMPLATES[tname]
@@ -785,85 +1023,122 @@ def plan(brief: dict, apps=None, J=None, targets=None, probe=None) -> RigPlan:
     cap = targets.get("chain_cap")
 
     # ---- extra parts: chains and stiff parts
-    rigid_ids = set(str(r) for r in brief.get("rigid", []))
-    parts = [q for q in brief.get("parts", []) if q.get("motion") != "not_part"]
-    cloth = {str(c["part"]): c for c in brief.get("cloth", [])}
+    rigid_ids = {str(r) for r in brief.get("rigid", [])}
+    parts = sorted((_fill_part(dict(q)) for q in brief.get("parts", [])
+                    if isinstance(q, dict) and q.get("id") is not None), key=_part_key)
+    known = {q["id"] for q in parts}
+    parts = [q for q in parts if q["motion"] != "not_part"]
+    cloth = {str(c["part"]): c for c in brief.get("cloth", []) if isinstance(c, dict) and c.get("part") is not None}
     wing_arms = _wing_arms(parts) if tname == "bird" else set()
     # the dog and horse rigs already have a tail and a pair of ears: those are set, not added
     own_limbs = ("tail", "ears") if preset in ("dog", "horse") else ()
-    ears, tails = [], []
-    for q in parts:
-        stiff = q["motion"] == "stiff" or q["id"] in rigid_ids
-        if not stiff and q["kind"] == "ear" and q["motion"] == "bends":
-            ears.append(q)
-        elif not stiff and q["kind"] == "tail" and q["motion"] == "bends":
-            tails.append(q)
+
+    def stiff(q):
+        return q["motion"] == "stiff" or q["id"] in rigid_ids
+
+    def parent(q, usual=None):
+        hint = _owner_hint(q)
+        if tname == "custom" and hint in (None, "head", "neck"):
+            return "root"                         # 'Something else' has no body bones: the rig's root
+        return hint or usual
+
+    ears = [q for q in parts if not stiff(q) and q["kind"] == "ear" and q["motion"] == "bends"]
+    tails = [q for q in parts if not stiff(q) and q["kind"] == "tail" and q["motion"] == "bends"]
     pair = _ear_pair(ears)
     first_tail = tails[0]["id"] if tails and tname != "serpent" else None
     fingers = finger_changes(hands, value(brief, "fingers"), value(brief, "thumb"))
+
+    # ---- more than two arms: an arm copy per extra arm, on the parts found when there are some
+    taken: set = set()
+    if tname == "multi_arm":
+        extra = max(0, int(value(brief, "arm_pairs")) - 1)
+        ranked = [(r, q) for q in parts if q["id"] not in rigid_ids for r in [_arm_rank(q)] if r is not None]
+        for i, slot in enumerate(_arm_slots(ranked, extra)):
+            for s, q in zip(("l", "r"), slot):
+                if q is not None:
+                    taken.add(q["id"])
+                p.chains.append({"part": q["id"] if q is not None else f"arm_{s}{i + 2}", "kind": "arm", "side": s,
+                                 "found": bool(q is not None and q.get("found")), "limb": "arm_dupli",
+                                 "add": f"arm.{s}", "bones": 3, "parent_hint": "spine_02", "row": i + 2,
+                                 "options": dict(fingers)})
+        if extra:
+            p.notes.append(f"more than two arms: {2 * extra} arm copies, one per extra arm")
+
     for q in parts:
         kind, motion, app = q["kind"], q["motion"], apps_by.get(str(q.get("app") or q["id"]))
         base = {"part": q["id"], "kind": kind, "side": q.get("side", "x"), "found": bool(q.get("found")),
                 "options": {}}
+        if q["id"] in taken:
+            continue
         if kind in CLOTH_KINDS:
             cloth.setdefault(q["id"], {"part": q["id"], "kind": kind, "app": q.get("app"),
                                        "motion": "swings" if motion == "swings" else "with_body"})
             continue
         if q["id"] in wing_arms:
             continue                              # a bird's wings are its arms
-        if motion == "stiff" or q["id"] in rigid_ids:
-            p.rigid.append({"part": q["id"], "owner_hint": _owner_hint(q)})
+        if stiff(q):
+            p.rigid.append({"part": q["id"], "owner_hint": parent(q)})
             continue
         arc, r, poly = _size(q, app)
         if kind == "ear" and motion == "bends":
             n = q["bones"] or ear_bones(q, app)
             if q["id"] in pair:
                 p.chains.append({**base, "limb": "ears", "add": None if "ears" in own_limbs else "ears",
-                                 "bones": n, "parent_hint": "head",
+                                 "bones": n, "parent_hint": parent(q, "head"),
                                  "options": {"ear_count": n}})
             else:                                 # more ears than one pair: tail copies hung from the head
-                p.chains.append({**base, "limb": "tail_dupli", "add": "tail", "bones": n, "parent_hint": "head",
+                p.chains.append({**base, "limb": "tail_dupli", "add": "tail", "bones": n,
+                                 "parent_hint": parent(q, "head"),
                                  "options": {"tail_count": n, "tail_side": _side_suffix(q.get("side"))}})
             continue
-        if kind == "arm" or (kind == "wing" and probe.get("wings_ok")):
+        if kind == "arm" or (kind == "wing" and probe.get("wings_ok") is True):
             opts = dict(fingers)
             if kind == "wing":
                 opts["arm_wings"] = True
             side = q.get("side") if q.get("side") in ("l", "r") else "l"
             p.chains.append({**base, "limb": "arm_dupli", "add": f"arm.{side}", "bones": 3,
-                             "parent_hint": "spine_02", "options": opts})
+                             "parent_hint": "spine_02", "row": None, "options": opts})
             continue
         if kind == "wing":                        # wings on an arm copy only where the probe allows it
             p.chains.append({**base, "limb": "tail_dupli", "add": "tail", "bones": q["bones"] or 3,
-                             "parent_hint": "spine_02", "options": {"tail_count": q["bones"] or 3,
-                                                                    "tail_side": _side_suffix(q.get("side"))}})
+                             "parent_hint": parent(q, "spine_02"),
+                             "options": {"tail_count": q["bones"] or 3, "tail_side": _side_suffix(q.get("side"))}})
             continue
         if motion == "swings":
             n = q["bones"] or (2 if kind in ("mane", "hair") or not (arc and r)
                                else min(max(int(math.floor(arc / (BONE_LEN * r) + 0.5 + 1e-9)), 1), 2))
             p.chains.append({**base, "limb": "tail_dupli", "add": "tail", "bones": n,
-                             "parent_hint": _owner_hint(q), "options": {"tail_count": n, "tail_side": ".x"}})
+                             "parent_hint": parent(q), "options": {"tail_count": n,
+                                                                   "tail_side": _side_suffix(q.get("side"))}})
             continue
         n = q["bones"] or (chain_bones(arc, r, cap, bend=poly) if arc and r else 4)
         if cap is not None:
             n = min(n, max(1, int(cap)))
         if kind in ("trunk", "tentacle") or (kind == "tail" and tname == "serpent"):
             p.chains.append({**base, "limb": "spline_ik", "add": "spline_ik", "bones": max(n, 2),
-                             "parent_hint": _owner_hint(q) or ("pelvis" if kind == "tail" else None),
+                             "parent_hint": parent(q, "pelvis" if kind == "tail" else None),
                              "options": {"spline_count": max(n, 2), "spline_bendy": 0, "spline_deform": True,
                                          "spline_name": _limb_name(q["id"]),
                                          "spline_side": _side_suffix(q.get("side"))}})
         elif kind == "tail" and q["id"] == first_tail:
             p.chains.append({**base, "limb": "tail", "add": None if "tail" in own_limbs else "tail", "bones": n,
-                             "parent_hint": "pelvis",
+                             "parent_hint": parent(q, "pelvis"),
                              "options": {"tail_count": n, "tail_name": "tail"}})
         else:
             p.chains.append({**base, "limb": "tail_dupli", "add": "tail", "bones": n,
-                             "parent_hint": _owner_hint(q) or ("pelvis" if kind == "tail" else None),
+                             "parent_hint": parent(q, "pelvis" if kind == "tail" else None),
                              "options": {"tail_count": n, "tail_side": _side_suffix(q.get("side"))}})
-    known = {q["id"] for q in brief.get("parts", [])}
+        if kind == "tail" and _tuft(q, app):
+            p.rigid_regions.append({"region": "tuft", "part": q["id"], "bone": "last", "owner_hint": q["id"]})
     for rid in sorted(rigid_ids - known):          # clicked regions ("Click a part that must not bend")
-        p.rigid.append({"part": rid, "owner_hint": None})
+        if rid in BODY_RIGID:
+            continue
+        p.rigid.append({"part": rid, "owner_hint": "root" if tname == "custom" else None})
+    # hooves and claws: stiff on the hand or foot bone they sit on (spec 5.1)
+    for region, where in (("hooves", [w for w, v in (("hand", hands), ("foot", feet)) if v == "hooves"]),
+                          ("claws", ["hand"] if hands == "claws" else [])):
+        if region in rigid_ids and where:
+            p.rigid_regions.append({"region": region, "where": where, "owner_hint": None})
 
     # ---- cloth and hair (lead's choice: they move with the body unless told otherwise)
     for _pid, c in sorted(cloth.items()):
@@ -871,6 +1146,12 @@ def plan(brief: dict, apps=None, J=None, targets=None, probe=None) -> RigPlan:
             p.cloth_masks.append(c["part"])
         elif c.get("motion") == "swings":
             p.chains += _cloth_chains(c, apps_by.get(str(c.get("app") or c["part"])), cap)
+
+    # ---- limbs the starting rig has and this body lacks
+    p.remove_limbs = _remove_limbs(p.chains, own_limbs)
+    for _ref, limb, side in p.remove_limbs:
+        p.notes.append("no tail that bends: the rig's own tail is removed" if limb == "tail" else
+                       f"no {'left' if side == '.l' else 'right'} ear: that ear of the rig is removed")
 
     # ---- counts and limb options
     ear_n = max((c["bones"] for c in p.chains if c["limb"] == "ears"), default=None)
@@ -881,15 +1162,18 @@ def plan(brief: dict, apps=None, J=None, targets=None, probe=None) -> RigPlan:
     spine_n = None
     if tname == "serpent" and trunk_len and trunk_thick:
         spine_n = chain_bones(trunk_len, 0.5 * trunk_thick, cap)
-    elif trunk_len and trunk_thick and trunk_len / trunk_thick > 2.5:
+    elif trunk_len and trunk_thick and trunk_len / trunk_thick > SPINE_LONG + EPS:
         spine_n = 3
     p.counts = {"spine": spine_n if has_spine else None,
                 "neck": neck_count(neck_len, neck_thick) if has_head else None,
                 "tail": tail_n, "ear": ear_n}
 
     # ---- props: sockets, swinging chains, or skin that follows the body
-    for pr in sorted(brief.get("props", []), key=lambda pr: str(pr["part"])):
+    for pr in sorted((pr for pr in brief.get("props", []) if isinstance(pr, dict) and pr.get("part") is not None),
+                     key=lambda pr: str(pr["part"])):
         role = pr.get("role", "bends")
+        if role not in dict(PROP_ROLES):
+            role = "bends"
         if role == "bends":
             p.skinned_props.append(pr["part"])
         elif role == "swings":
@@ -898,6 +1182,7 @@ def plan(brief: dict, apps=None, J=None, targets=None, probe=None) -> RigPlan:
                              "options": {"tail_count": 2, "tail_side": ".x"}})
         else:
             p.sockets.append(_socket(pr, role, p.counts.get("spine")))
+    _unique_names(p.chains)
 
     p.export_type = export_rig_type(p, value(brief, "export"))
     if preset == "human" and feet == "heel_raised":
@@ -915,17 +1200,50 @@ def plan(brief: dict, apps=None, J=None, targets=None, probe=None) -> RigPlan:
 
     # ---- binding and export
     build = value(brief, "build")
-    p.bind_engine = "PSEUDO_VOXELS" if build in ("heavy", "round") and hands not in DIGIT_HANDS else "HEAT_MAP"
     p.rigid_pieces = value(brief, "moves_like") == "machine"
+    if p.rigid_pieces:
+        p.bind_engine = "RIGID"                   # each loose piece follows one bone, no heat (spec 9.8)
+    elif build in ("heavy", "round") and hands not in DIGIT_HANDS:
+        # Spec 9.8 names Fingers only. Claws and mittens get finger bones too (finger_changes),
+        # which voxels blur the same way, so they keep the heat bind as well.
+        p.bind_engine = "PSEUDO_VOXELS"
+    else:
+        p.bind_engine = "HEAT_MAP"
     engines = targets.get("engines") or ([targets["engine"]] if targets.get("engine") else [])
     known_engines = [ENGINE_INFLUENCES[e.lower()] for e in engines if str(e).lower() in ENGINE_INFLUENCES]
     p.max_influences = min(known_engines) if known_engines else 4
     return p
 
 
+BODY_RIGID = ("hooves", "claws")
+TUFT = 1.5            # a tail end loop wider than this many times the tail's radius is a tuft
+
+
+def _tuft(part: dict, app: dict | None) -> bool:
+    """A tail tuft: the end loop wider than 1.5 times the tail's mean radius (spec 5.5). It stays
+    stiff on the last tail bone. Needs the end loop's radius ('end_radius') from the finder."""
+    end = (app or {}).get("end_radius") or part.get("end_radius")
+    _arc, r, _poly = _size(part, app)
+    return bool(end and r and float(end) / r > TUFT + EPS)
+
+
+def _remove_limbs(chains: list, own_limbs: tuple) -> list:
+    """[(ref_bone, limb_type, side)] for limbs the starting rig would have that nothing bends in:
+    the dog or horse rig's own tail with no tail chain, and an ear side with no ear (Auto-Rig
+    Pro's ears limb always comes as a pair, so one ear drops the other side)."""
+    out = []
+    if "tail" in own_limbs and not any(c["limb"] == "tail" for c in chains):
+        out.append(("tail_00_ref.x", "tail", ".x"))
+    sides = {c["side"] for c in chains if c["limb"] == "ears"}
+    if sides or "ears" in own_limbs:
+        keep = (sides & {"l", "r"}) or ({"l"} if sides else set())    # a lone ear on the middle uses the left one
+        out += [(f"ear_01_ref.{s}", "ear", f".{s}") for s in ("l", "r") if s not in keep]
+    return out
+
+
 def _wing_arms(parts: list) -> set:
     """A bird's wings that are its arms: the first left and first right wing by name."""
-    wings = [q for q in parts if q["kind"] == "wing"]
+    wings = sorted((q for q in parts if q["kind"] == "wing"), key=lambda q: str(q["id"]))
     out = set()
     for side in ("l", "r"):
         w = next((q for q in wings if q.get("side") == side), None)
@@ -948,18 +1266,23 @@ def _ear_pair(ears: list) -> set:
     return out
 
 
+CLOTH_STRIPS = 3.0    # cape chains = clamp(round(3 x width / length), 1, 3)
+CLOTH_RADIUS = 0.25   # a strip's radius for chain_bones: a quarter of its width
+
+
 def _cloth_chains(c: dict, app: dict | None, cap) -> list:
     """Swinging cloth (spec 9.7): a skirt becomes Auto-Rig Pro's kilt; a cape or long hair gets
     1-3 chains across its width (count = clamp(round(3 x width / length), 1, 3)), each a smooth
-    curve whose bones come from chain_bones on its length and half its strip's width."""
+    curve whose bones come from chain_bones on its length, with a quarter of its strip's width
+    as the radius: a sheet bends more easily than a tube as wide, so it gets twice the bones."""
     if c.get("kind") == "skirt":
         return [{"part": c["part"], "kind": "skirt", "side": "x", "found": True, "limb": "kilt", "add": "kilt",
                  "bones": 0, "parent_hint": "pelvis", "options": {}}]
     src = app or {}
     width, length = c.get("width") or src.get("width"), c.get("length") or src.get("length")
-    k = min(max(int(math.floor(3.0 * width / length + 0.5 + 1e-9)), 1), 3) if width and length else 1
+    k = min(max(int(math.floor(CLOTH_STRIPS * width / length + 0.5 + 1e-9)), 1), 3) if width and length else 1
     sides = {1: ("x",), 2: ("l", "r"), 3: ("l", "x", "r")}[k]
-    n = chain_bones(length, 0.25 * width / k, cap) if width and length else 4
+    n = chain_bones(length, CLOTH_RADIUS * width / k, cap) if width and length else 4
     return [{"part": c["part"], "kind": c.get("kind", "other"), "side": s, "found": True, "limb": "spline_ik",
              "add": "spline_ik", "bones": max(n, 2), "parent_hint": "spine_02", "strip": i, "of": k,
              "options": {"spline_count": max(n, 2), "spline_bendy": 0, "spline_deform": True,

@@ -6,15 +6,18 @@ default, which points can become questions, the bone-length ratios a check accep
 extra parts such a body usually has.
 
 match(parts) scores every template against the parts Forge measured (Step 4's part map: every
-piece that grows out of the trunk, arms and legs included, each with a shape descriptor). Two
-tube twins that reach the ground from the trunk's underside are a pair of legs; two tube twins
-that leave its sides without reaching the ground are a pair of arms; and so on. The best
-template pre-fills "What it is", sure in proportion to how clearly it beats the next one.
+piece that grows out of the trunk, arms and legs included, each with a shape descriptor whose
+words DESC_KEYS defines). Two tube twins that reach the ground from the trunk's underside are a
+pair of legs; two tube twins that leave its sides without reaching the ground are a pair of
+arms; and so on. The best template pre-fills "What it is", sure in proportion to how clearly it
+beats the next one.
 
 Plain Python: no Blender, no numpy. Every rule here is a count or a ratio, never a size.
 """
 
 from __future__ import annotations
+
+import math
 
 # lead's choice: Step 8 asks at most 6 questions; Step 4's questions count inside them
 MAX_QUESTIONS = 6
@@ -104,6 +107,10 @@ MARKERS = {
         _m("tail_start", "where the tail starts", "side", "0.5 + push",
            sets=("part:tail",), ask_if=("PARTS_MATCH", "TAIL_ROOT")),
         _m("tail_end", "the end of the tail", "side", 0.5, sets=("part:tail",), after=("tail_start",)),
+        _m("ear_root_l", "where the LEFT ear grows from the head", "front", 0.5, pair="ear_root_r",
+           sets=("part:ear_l",), ask_if=("PARTS_MATCH", "LABEL_MARGIN")),
+        _m("wing_root_l", "where the LEFT wing grows from the body", "auto", 0.5, pair="wing_root_r",
+           sets=("part:wing_l",), ask_if=("PARTS_MATCH", "LABEL_MARGIN")),
         _m("part_start", "where this part starts", "auto", "entry",
            sets=("part:<id>",), ask_if=("PARTS_MATCH", "add a part Forge missed")),
         _m("part_end", "the end of this part", "auto", "entry", sets=("part:<id>",), after=("part_start",)),
@@ -137,6 +144,11 @@ MARKERS = {
         _m("tail_start", "where the tail starts", "side", "0.5 + push", sets=("part:tail",),
            ask_if=("PARTS_MATCH", "TAIL_ROOT")),
         _m("tail_end", "the end of the tail", "side", 0.5, sets=("part:tail",), after=("tail_start",)),
+        _m("ear_root_l", "where the LEFT ear grows from the head", "side", 0.5, pair="ear_root_r",
+           sets=("part:ear_l",), ask_if=("PARTS_MATCH", "LABEL_MARGIN")),
+        _m("part_start", "where this part starts", "auto", "entry",
+           sets=("part:<id>",), ask_if=("PARTS_MATCH", "add a part Forge missed")),
+        _m("part_end", "the end of this part", "auto", "entry", sets=("part:<id>",), after=("part_start",)),
     ),
 }
 
@@ -145,25 +157,43 @@ MARKERS = {
 QUESTION_ORDER = {
     "biped": ("facing", "chin", "skull_base", "neck_base", "head_top", "shoulder", "wrist", "elbow", "hand_tip",
               "wing_tip", "groin", "hip", "ankle", "knee", "hock", "toe", "spine_bend", "tail_start", "tail_end",
-              "part_start", "part_end", "grip"),
+              "ear_root", "wing_root", "part_start", "part_end", "grip"),
     "quadruped": ("facing", "chin", "skull_base", "withers", "front_wrist", "front_elbow", "front_tip", "hip",
-                  "hock", "stifle", "hind_tip", "tail_start", "tail_end", "part_start", "part_end", "grip"),
+                  "hock", "stifle", "hind_tip", "tail_start", "tail_end", "ear_root", "part_start", "part_end"),
 }
 
-# Only these points can become click questions (spec 7.2). Ear and wing roots are asked with
-# part_start. Everything else (clavicle, spine middles, finger middles, heel) shows as a dot only.
+# Only these points can become click questions (spec 7.2). Everything else (clavicle, spine
+# middles, finger middles, heel) shows as a dot only.
 CRITICAL = ("chin", "skull_base", "neck_base", "groin", "shoulder", "elbow", "wrist", "hip", "knee", "hock",
-            "ankle", "tail_start", "part_start", "grip", "withers", "front_elbow", "front_wrist", "stifle")
+            "ankle", "tail_start", "ear_root", "wing_root", "part_start", "grip", "withers", "front_elbow",
+            "front_wrist", "stifle")
+# a mark id can name what it belongs to: 'grip:<prop>' is that prop's grip point, 'part:<id>' that
+# part's start and end (spec 4.3)
+MARK_KINDS = {"grip": "grip", "part": "part_start"}
+# only the arm points of the two-legged set come once per extra arm pair ('shoulder_l_2')
+ARM_ROW_STEMS = ("shoulder", "elbow", "wrist", "hand_tip")
 
 _ORDINALS = ("", "", "second", "third", "fourth", "fifth", "sixth")
 
 
-def stem(marker_id: str) -> str:
-    """The marker's name without its side or arm row: 'wrist_l' -> 'wrist', 'shoulder_r_2' -> 'shoulder'."""
-    s = str(marker_id)
-    head, _, tail = s.rpartition("_")
+def _split(marker_id: str) -> tuple:
+    """(marker id without its arm row, arm row or None, what it belongs to or None).
+    'shoulder_l_2' -> ('shoulder_l', 2, None); 'grip:sword_2' -> ('grip', None, 'sword_2'):
+    nothing after a ':' is read as an arm row."""
+    mid = str(marker_id)
+    kind, colon, owner = mid.partition(":")
+    if colon:
+        return MARK_KINDS.get(kind, kind), None, owner
+    head, _, tail = mid.rpartition("_")
     if head and tail.isdigit():                    # an extra arm row
-        s = head
+        return head, int(tail), None
+    return mid, None, None
+
+
+def stem(marker_id: str) -> str:
+    """The marker's name without its side or arm row: 'wrist_l' -> 'wrist', 'shoulder_r_2' -> 'shoulder',
+    'grip:sword' -> 'grip', 'part:tail' -> 'part_start'."""
+    s = _split(marker_id)[0]
     for side in ("_l", "_r"):
         if s.endswith(side):
             return s[: -len(side)]
@@ -176,12 +206,11 @@ def is_critical(marker_id: str) -> bool:
 
 def marker(marker_id: str, markers: str = "biped") -> dict | None:
     """The marker's row. A right-side point is its left twin with the words turned round;
-    'shoulder_l_2' is the shoulder of the second arm pair (more than two arms)."""
-    mid = str(marker_id)
-    row_n = None
-    head, _, tail = mid.rpartition("_")
-    if head and tail.isdigit():
-        mid, row_n = head, int(tail)
+    'shoulder_l_2' is the shoulder of the second arm pair (more than two arms; arm points of the
+    two-legged set only); 'grip:sword' is the grip row for that prop."""
+    mid, row_n, owner = _split(marker_id)
+    if row_n is not None and (markers != "biped" or stem(mid) not in ARM_ROW_STEMS):
+        return None                                # no such point: only arms come in rows
     right = mid.endswith("_r")
     left_id = mid[:-2] + "_l" if right else mid
     row = next((dict(m) for m in MARKERS[markers] if m["id"] == left_id), None)
@@ -195,6 +224,8 @@ def marker(marker_id: str, markers: str = "biped") -> dict | None:
         nth = _ORDINALS[row_n] if row_n < len(_ORDINALS) else f"no. {row_n}"
         row.update(id=f"{row['id']}_{row_n}", words=f"{row['words']}, on the {nth} pair of arms",
                    after=tuple(f"{a}_{row_n}" if a.endswith(("_l", "_r")) else a for a in row["after"]))
+    if owner is not None:
+        row.update(id=str(marker_id), owner=owner)
     return row
 
 
@@ -202,8 +233,7 @@ def order_key(marker_id: str, markers: str = "biped") -> tuple:
     """Sort key for the question list: the dependency order, then the arm row, then the name."""
     order = QUESTION_ORDER[markers]
     s = stem(marker_id)
-    head, _, tail = str(marker_id).rpartition("_")
-    row_n = int(tail) if head and tail.isdigit() else 1
+    row_n = _split(marker_id)[1] or 1
     return (order.index(s) if s in order else len(order), row_n, str(marker_id))
 
 
@@ -233,7 +263,7 @@ TEMPLATES = {
     "upright_animal": _t(
         words="Animal standing on two legs", short="Animal on two legs",
         preset="human", estimator="biped_v2", export="HUMANOID",
-        markers="biped", marker_ids=_BIPED_IDS + ("hock_l",), required=BIPED_REQUIRED,
+        markers="biped", marker_ids=_BIPED_IDS + ("hock_l", "ear_root_l"), required=BIPED_REQUIRED,
         ratio_ranges=BIPED_RATIOS, rom="biped", expected_parts={"ear": 2, "tail": 1},
         defaults={"arm_pairs": 1, "leg_pairs": 1, "hands": "fingers", "feet": "flat", "stance": "t",
                   "height_to": "head_top"},
@@ -258,8 +288,8 @@ TEMPLATES = {
         # Auto-Rig Pro swaps "bird" for its own Blender 4.4 file itself; Forge always asks for "bird"
         preset="bird", estimator="guided", export="UNIVERSAL",
         markers="biped",
-        marker_ids=("chin", "skull_base", "neck_base", "shoulder_l", "wrist_l", "wing_tip_l", "groin", "hip_l",
-                    "ankle_l", "knee_l", "toe_l", "tail_start", "tail_end", "part_start", "part_end"),
+        marker_ids=("chin", "skull_base", "neck_base", "shoulder_l", "wrist_l", "wing_tip_l", "wing_root_l", "groin",
+                    "hip_l", "ankle_l", "knee_l", "toe_l", "tail_start", "tail_end", "part_start", "part_end"),
         required=BIPED_REQUIRED, ratio_ranges={}, rom="bird", expected_parts={"beak": 1, "tail": 1},
         defaults={"arm_pairs": 1, "leg_pairs": 1, "hands": "none", "feet": "toes", "stance": "other",
                   "height_to": "head_top"},
@@ -303,20 +333,87 @@ for _name in ORDER:
     _tm["critical"] = tuple(m for m in _tm["marker_ids"] if is_critical(m))
 
 
+# A ratio this close to a boundary counts as on it, so rounding in the sizes (a body built 100
+# times as big) never moves a count across the boundary.
+EPS = 1e-9
+HORSE_NECK = 1.5          # a neck longer than this many times its thickness takes the horse rig
+
+
 def choose_preset(name: str, hands: str = "", feet: str = "", neck_ratio=None, bird_ok=None) -> tuple:
     """(Auto-Rig Pro rig to start from, plain-words note). Four legs: the horse rig for hooves or a
     neck longer than 1.5 times its thickness, else the dog rig. A bird gets "bird" (never Auto-Rig
-    Pro's own Blender 4.4 file name); when the probe showed the bird rig crashing this Blender, the
-    human rig instead."""
+    Pro's own Blender 4.4 file name) only when the probe showed the bird rig working in this
+    Blender (bird_ok True); when it crashed, or nobody has checked yet, the human rig instead."""
     if name == "quadruped":
         if "hooves" in (hands, feet):
             return "horse", "hooves: the horse rig"
-        if neck_ratio is not None and neck_ratio > 1.5:
+        if neck_ratio is not None and neck_ratio > HORSE_NECK + EPS:
             return "horse", "a long neck: the horse rig"
         return "dog", "paws and a short neck: the dog rig"
-    if name == "bird" and bird_ok is False:
-        return "human", "the bird rig crashes this Blender: built on the human rig"
+    if name == "bird" and bird_ok is not True:
+        if bird_ok is False:
+            return "human", "the bird rig crashes this Blender: built on the human rig"
+        return "human", "the bird rig is not checked on this Blender yet: built on the human rig"
     return TEMPLATES[name]["preset"], ""
+
+
+# ----------------------------------------------------------------------------- the part descriptor
+
+# Step 4's part map describes every piece that grows out of the trunk (U10-U12 measure it, WP3
+# hands it to the brief as parts[].desc). This is the one place its words are defined. Every key
+# is optional: a part without a descriptor counts for nothing in match(). Keys not listed here
+# pass through untouched.
+DESC_SHAPES = ("tube", "sheet", "blob", "shell")        # shell: a hollow sheet round the core (skirt, robe)
+DESC_ATTACH = ("root", "slot", "along", "contact")      # root: grows out of its host; slot: a sheet set in a
+#                                                          slit (fin, wing); along: lies on it with no root
+#                                                          (pad, strap); contact: only touches it
+DESC_SYM = ("matched", "add-on", "differs", "posed", "off-centre")   # how it compares with the other side
+DESC_FACES = ("down", "side", "back", "up", "front")    # which way it leaves its host, in the body's frame
+DESC_ZONES = ("high", "mid", "low")                     # which third of the core's height its root is in:
+#                                                          high = the top third (shoulders), low = the bottom
+DESC_SIDES = ("l", "r", "c", "x")                       # c and x both mean the centre line
+DESC_KEYS = {
+    "shape": DESC_SHAPES, "attach": DESC_ATTACH, "sym": DESC_SYM, "face": DESC_FACES, "zone": DESC_ZONES,
+    "side": DESC_SIDES,
+    "host": "'core', 'head', or the id of the part it grows from (spikes on a tail)",
+    "ground": "True when it reaches the ground",
+    "twin": "the id of its twin across the middle",
+    "tips": "how many tips it has (an antler branches: 2 or more), at least 1",
+    "taper": "tip radius over root radius; a cone is under 0.45",
+    "reach": "how far its tip stands off its host, over the host's width",
+}
+CONE_TAPER = 0.45         # a tube that narrows below this share of its root radius is a cone (U12)
+EAR_REACH = 0.25          # an ear that stands off the head by this share of the head's width sticks out
+
+
+def clean_desc(desc) -> tuple:
+    """(descriptor, [(key, value) left out]): the known keys checked against DESC_KEYS, other keys
+    kept as they are. A value that is not one of a key's words, or not a sensible number, is left
+    out, so a producer's mistake shows instead of quietly deciding a body plan."""
+    if not isinstance(desc, dict):
+        return {}, ([("desc", desc)] if desc is not None else [])
+    out, bad = {}, []
+    for k in sorted(desc, key=str):
+        v = desc[k]
+        words = DESC_KEYS.get(k)
+        if isinstance(words, tuple):
+            ok = v in words
+        elif k == "host" or k == "twin":
+            ok = isinstance(v, str) and bool(v)
+        elif k == "ground":
+            ok = isinstance(v, bool) or v in (0, 1)
+            v = bool(v) if ok else v
+        elif k == "tips":
+            ok = isinstance(v, int) and not isinstance(v, bool) and v >= 1
+        elif k in ("taper", "reach"):
+            ok = isinstance(v, (int, float)) and not isinstance(v, bool) and math.isfinite(v) and v >= 0
+        else:
+            ok = True                              # not ours: kept as it is
+        if ok:
+            out[k] = v
+        else:
+            bad.append((k, v))
+    return out, bad
 
 
 # ----------------------------------------------------------------------------- match
@@ -325,6 +422,9 @@ TWIN_SYMS = ("matched", "posed", "differs")       # a part with a twin across th
 MISS = 0.15                                       # score kept per count off by one
 LONG_CORE = 6.0                                   # a trunk this many times longer than thick is a long body
 CUES = ("tail", "horns", "muzzle", "ears")
+# How much each animal-like extra leans a two-legged body towards 'animal'. A tail or a muzzle
+# is rare on a person; horns less so (helmets, costumes); ears that stick out least (elves).
+CUE_WEIGHTS = {"tail": 1.0, "muzzle": 1.0, "horns": 0.75, "ears": 0.5}
 
 
 def _desc(p: dict) -> dict:
@@ -336,22 +436,28 @@ def _side(p: dict) -> str:
     return {"x": "c", "": "c"}.get(s, s)
 
 
-def _role(p: dict) -> str:
-    """What a measured part is from its descriptor alone: leg, arm, wing, tail, ground_body, or
-    head (any part on the head), or "" for anything else."""
+def role(p: dict) -> str:
+    """What a measured part is from its descriptor alone: leg, arm, wing, tail, ground_body,
+    hidden_legs (a hollow sheet reaching the ground, such as a robe), or head (any part on the
+    head), or "" for anything else. A part that lies along its host or only touches it is never a
+    limb."""
     d = _desc(p)
     shape, host, face = d.get("shape"), d.get("host", "core"), d.get("face")
     ground = bool(d.get("ground"))
+    if d.get("attach") in ("along", "contact"):
+        return ""                                 # a pad, a strap, a tail resting on the back
     if host == "head":
         return "head"
     if host not in ("core", None):
         return ""                                 # a part on a part (spikes on a tail)
+    if shape == "shell" and ground:
+        return "hidden_legs"
     if shape == "tube" and ground and face in ("down", None):
         return "ground_body" if _side(p) == "c" else "leg"
     if shape == "tube" and ground:                # a long body coming down behind and lying on the ground
         return "ground_body" if _side(p) == "c" else ""
-    if shape == "tube" and (face == "side" or (face == "down" and d.get("zone") == "high")):
-        return "arm"
+    if shape == "tube" and (face == "side" or (face == "down" and d.get("zone") in ("high", "mid"))):
+        return "arm"                              # out to the side, or hanging from the upper two thirds
     if shape == "sheet" and face in ("side", "back", "up") and d.get("zone", "high") == "high" \
             and d.get("sym") in TWIN_SYMS:
         return "wing"
@@ -380,30 +486,53 @@ def _pairs(items: list) -> float:
     return pairs + 0.5 * singles
 
 
+def _horn_like(head: list) -> bool:
+    """Horns from descriptors: one or two cones on the head (taper under 0.45, or a branching
+    antler), either a matched pair or one on the centre line with matched sides. Many cones are
+    hair spikes; a lone cone off to one side is a ponytail or a lock of hair."""
+    cones = [p for p in head if _desc(p).get("shape") == "tube"
+             and (_desc(p).get("tips", 1) >= 2 or _desc(p).get("taper", 1.0) < CONE_TAPER)]
+    if len(cones) == 2:
+        return _pairs(cones) >= 1 and all(_desc(p).get("sym") in TWIN_SYMS for p in cones)
+    if len(cones) == 1:
+        return _side(cones[0]) == "c" and _desc(cones[0]).get("sym") == "matched"
+    return False
+
+
+def _ear_like(head: list) -> bool:
+    """Ears from descriptors: a pair of sheets on the head that stand off it by at least a quarter
+    of the head's width. Modelled human ears lie close to the head and do not count."""
+    sheets = [p for p in head if _desc(p).get("shape") == "sheet" and _desc(p).get("reach", 0.0) >= EAR_REACH]
+    return _pairs(sheets) >= 1
+
+
 def features(parts: list, body: dict | None = None) -> dict:
     """Counts match() compares: leg, arm and wing pairs, long bodies, and the animal-like extras
-    (a tail, horns, a muzzle, ears that stick out). Parts the director called 'not a part' are
-    left out."""
+    (a tail, horns, a muzzle, ears that stick out) with their summed weight. Parts the director
+    called 'not a part' are left out. A robe or long skirt reaching the ground hides the legs: it
+    counts as one pair when no legs are seen."""
     parts = [p for p in parts if p.get("motion") != "not_part"]
     by_role: dict = {}
     for p in parts:
-        by_role.setdefault(_role(p), []).append(p)
+        by_role.setdefault(role(p), []).append(p)
     kinds = [str(p.get("kind") or "") for p in parts]
     head = by_role.get("head", [])
     cues = {
         "tail": bool(by_role.get("tail")) or "tail" in kinds,
-        "horns": any(k in ("horn", "antler") for k in kinds)
-        or any(_desc(p).get("shape") == "tube" and (_desc(p).get("tips", 1) >= 2 or _desc(p).get("taper", 1.0) < 0.45)
-               for p in head),
+        "horns": any(k in ("horn", "antler") for k in kinds) or _horn_like(head),
         "muzzle": any(k in ("muzzle", "snout", "beak") for k in kinds)
         or any(_desc(p).get("shape") == "blob" and _desc(p).get("face") == "front" for p in head),
-        "ears": "ear" in kinds or _pairs([p for p in head if _desc(p).get("shape") == "sheet"]) >= 1,
+        "ears": "ear" in kinds or _ear_like(head),
     }
     long_core = 1 if (body or {}).get("core_aspect", 0.0) >= LONG_CORE else 0
-    return {"leg_pairs": _pairs(by_role.get("leg", [])), "arm_pairs": _pairs(by_role.get("arm", [])),
+    legs = _pairs(by_role.get("leg", []))
+    if legs == 0 and by_role.get("hidden_legs"):
+        legs = 1.0
+    names = [c for c in CUES if cues[c]]
+    return {"leg_pairs": legs, "arm_pairs": _pairs(by_role.get("arm", [])),
             "wing_pairs": _pairs(by_role.get("wing", [])),
             "long_body": len(by_role.get("ground_body", [])) + long_core,
-            "cues": sum(1 for c in CUES if cues[c]), "cue_names": [c for c in CUES if cues[c]]}
+            "cues": round(sum(CUE_WEIGHTS[c] for c in names), 6), "cue_names": names}
 
 
 def _agree(rule: tuple, found: float) -> float:
@@ -420,10 +549,19 @@ _WHY = {"person": "two arms and two legs", "upright_animal": "two arms and two l
 
 def match(parts: list, body: dict | None = None) -> list:
     """Every template scored 0..1 against the measured parts, best first:
-    [{"plan", "score", "why"}]. A count off by one keeps MISS of the score; animal-like extras
-    lean a two-legged body towards 'animal' (each one halves the 'person' score). 'Something
-    else' scores what the best other template leaves, halved, so it wins only when nothing fits.
-    Ties keep the card's order."""
+    [{"plan", "score", "why"}].
+
+    Each part is read from its descriptor (DESC_KEYS): shape, attach, host, face, zone, ground,
+    sym, twin, and for head parts tips, taper and reach. Legs are tube twins on the core that
+    reach the ground; arms are tube twins that leave its sides, or hang from its upper two thirds,
+    without reaching the ground; wings are sheet twins high on the core; a tail is a tube leaving
+    the back. A part attached 'along' or by 'contact' is never a limb. body: {"core_aspect": the
+    trunk's length over its thickness} when known.
+
+    A count off by one keeps MISS of the score. Animal-like extras lean a two-legged body towards
+    'animal' by their weight (CUE_WEIGHTS): 'person' keeps 0.5 to the power of the summed
+    weights. 'Something else' scores what the best other template leaves, halved, so it wins
+    only when nothing fits. Ties keep the card's order."""
     f = features(parts, body)
     scores = {}
     for name in ORDER:
