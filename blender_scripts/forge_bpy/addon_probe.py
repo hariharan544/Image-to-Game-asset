@@ -23,6 +23,11 @@ ADDONS = {
                      "ops_ns": ("uvpackmaster", "uvpm"),
                      "props": ("uvpm", "uvpackmaster"),
                      "focus": ("pack", "engine", "group", "align", "scale", "texel")},
+    "smart_remesh": {"names": ("smart remesh", "smart_remesh", "smartremesh"),
+                     "ops_ns": (),                 # unknown: found by the add-on's own module below
+                     "props": ("smart_remesh", "smartremesh", "srm", "sremesh"),
+                     "focus": ("",),               # every operator with its parameters
+                     "by_module": True, "files": True},
     "auto_rig_pro": {"names": ("auto-rig pro", "auto_rig_pro", "autorigpro", "auto rig pro"),
                      "ops_ns": ("arp",),
                      "props": ("arp",),
@@ -131,5 +136,72 @@ def run(args: dict) -> dict:
             for attr in dir(owner_type):
                 if any(n in attr.lower() for n in spec["props"]):
                     props[f"{owner_name}.{attr}"] = _group_fields(owner, attr)
+        if spec.get("by_module") and found:
+            _by_module(found, spec, ops, props)
         report["addons"][key] = {"found": found, "operators": ops, "settings": props}
     return report
+
+
+def _subclasses(cls):
+    out = []
+    for c in cls.__subclasses__():
+        out.append(c)
+        out += _subclasses(c)
+    return out
+
+
+def _by_module(found: list, spec: dict, ops: dict, props: dict) -> None:
+    """An add-on whose operator namespace is not known: every registered operator, panel and
+    settings group defined in its own module (and, for adapters, its source files and
+    manifest: version and the Blender versions it declares)."""
+    import os
+    import sys
+    mods = tuple(f["module"] for f in found)
+    for cls in _subclasses(bpy.types.Operator):
+        if not getattr(cls, "__module__", "").startswith(mods):
+            continue
+        idname = getattr(cls, "bl_idname", "")
+        if "." not in idname:
+            continue
+        ns, name = idname.split(".", 1)
+        op = getattr(getattr(bpy.ops, ns), name)
+        entry = {"params": _op_params(op), "class": cls.__name__, "label": getattr(cls, "bl_label", ""),
+                 "module": cls.__module__, "modal": hasattr(cls, "modal"), "invoke": hasattr(cls, "invoke")}
+        try:
+            entry["description"] = op.get_rna_type().description[:300]
+        except Exception:
+            pass
+        ops[idname] = entry
+    panels = []
+    for cls in _subclasses(bpy.types.Panel):
+        if getattr(cls, "__module__", "").startswith(mods):
+            panels.append({"class": cls.__name__, "label": getattr(cls, "bl_label", ""),
+                           "category": getattr(cls, "bl_category", ""), "space": getattr(cls, "bl_space_type", "")})
+    props["_panels"] = panels
+    groups = {}
+    for owner_name, owner_type, owner in (("Scene", bpy.types.Scene, bpy.context.scene),
+                                          ("WindowManager", bpy.types.WindowManager, bpy.context.window_manager),
+                                          ("Object", bpy.types.Object, bpy.context.object)):
+        if owner is None:
+            continue
+        for attr in dir(owner_type):
+            try:
+                val = getattr(owner, attr)
+            except Exception:
+                continue
+            if hasattr(val, "bl_rna") and type(val).__module__.startswith(mods):
+                groups[f"{owner_name}.{attr}"] = _group_fields(owner, attr)
+    props.update(groups)
+    if spec.get("files"):
+        for f in found:
+            m = sys.modules.get(f["module"])
+            root = os.path.dirname(getattr(m, "__file__", "") or "")
+            files = []
+            for dp, _dn, fn in os.walk(root):
+                for n in fn:
+                    pth = os.path.join(dp, n)
+                    files.append({"path": os.path.relpath(pth, root), "bytes": os.path.getsize(pth)})
+            f["files"] = sorted(files, key=lambda x: x["path"])[:400]
+            man = os.path.join(root, "blender_manifest.toml")
+            if os.path.exists(man):
+                f["manifest"] = open(man, encoding="utf-8", errors="ignore").read()[:3000]

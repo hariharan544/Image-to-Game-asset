@@ -16,6 +16,7 @@ KNOWN_ADDONS = {   # matched against "module name + display name", lower-case
     "quad_remesher": ("quad remesher", "quad_remesh", "quadremesh", "qremesh"),
     "auto_rig_pro": ("auto-rig pro", "auto_rig_pro", "auto-rig-pro", "autorigpro"),
     "uvpackmaster": ("uvpackmaster", "uvpm"),
+    "smart_remesh": ("smart remesh", "smart_remesh", "smartremesh"),
 }
 
 

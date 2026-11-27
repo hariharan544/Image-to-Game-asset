@@ -207,8 +207,10 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
         say("[!] No GPU found for Cycles - baking will run on the CPU (slower). Update the NVIDIA driver,\n"
             "  then in Blender: Edit > Preferences > System > Cycles Render Devices > OptiX.")
     for name, label in (("quad_remesher", "Quad Remesher"), ("auto_rig_pro", "Auto-Rig Pro"),
-                        ("uvpackmaster", "UVPackmaster")):
-        a = info["addons"][name]
+                        ("uvpackmaster", "UVPackmaster"), ("smart_remesh", "Smart Remesh")):
+        a = info["addons"].get(name)
+        if a is None:
+            continue
         state = "enabled" if a["enabled"] else ("installed, NOT enabled" if a["installed"] else "not installed")
         say(f"{'[OK]' if a['enabled'] else '[--]'} {label}: {state}")
 
