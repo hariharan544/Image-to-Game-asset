@@ -145,6 +145,56 @@ def test_horn_root_keeps_body_density_and_horns_follow_their_curve():
         bpy.ops.wm.read_homefile(use_empty=True)
 
 
+def test_horn_plan_follows_the_budget_and_says_only_what_was_tested():
+    """The horns' curve limit depends on the face size the budget gives: when the budget changes
+    after the plan was made, the horn factors are made again (unless the director painted over
+    them). 'Too curved' is said only when the curve test ran and raised the factor - not when no
+    budget is known, nor when the detail map already had the horn light."""
+    import importlib
+
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    from forge_bpy import density
+    body = _creature()
+    col = bpy.data.collections.new("Forge Parts")
+    bpy.context.scene.collection.children.link(col)
+    for c in list(body.users_collection):
+        c.objects.unlink(body)
+    col.objects.link(body)
+    body["forge_kind"] = "body"
+    S = importlib.import_module("forge_send.steps")
+    try:
+        me = body.data
+        S.ensure_detail_maps(0.8)
+        before = density.vertex_factors(me)
+        S.plan_parts(recompute=True)
+        horn = density.vertex_factors(me) < before - 0.02
+        assert horn.any()
+        # the detail map already holds the horns light (0.6): nothing to raise, nothing tested
+        S.ensure_detail_maps(0.8, recompute=True)
+        density.boost(me, horn, rings=0, edge_factor=0.6)
+        plan = S.plan_parts(recompute=True)
+        assert plan.get("horn_l") == "rigid, fewer quads", plan
+        # a game budget: the curve keeps the horns dense, and the plan says why
+        S.ensure_detail_maps(0.8, recompute=True)
+        plan = S.plan_parts(recompute=True, budget=8000)
+        assert plan.get("horn_l") == "rigid, but too curved for fewer quads", plan
+        assert density.vertex_factors(me)[horn].min() > 0.72
+        # the director raises the budget afterwards (no fresh plan): the horns follow it
+        plan = S.plan_parts(budget=2_000_000)
+        assert np.median(density.vertex_factors(me)[horn]) < 0.72, np.median(density.vertex_factors(me)[horn])
+        assert plan.get("horn_l") == "rigid, fewer quads" and body["forge_plan"]["horn_l"] == "rigid, fewer quads"
+        # ... and back: dense again
+        S.plan_parts(budget=8000)
+        assert density.vertex_factors(me)[horn].min() > 0.72
+        # painted over by the director: a budget change leaves the paint alone
+        density.boost(me, horn, rings=0, edge_factor=2.0)
+        S.plan_parts(budget=2_000_000)
+        assert np.allclose(density.vertex_factors(me)[horn], 2.0, atol=0.05)
+    finally:
+        bpy.ops.wm.read_homefile(use_empty=True)
+
+
 def test_resample_chain_even_spacing():
     from forge_bpy.arp_rig import _resample
     pts = _resample([(0, 0, 0), (1, 0, 0), (1, 3, 0)], 4)

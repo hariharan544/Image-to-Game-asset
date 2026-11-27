@@ -197,21 +197,46 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
 RIGID_EDGE_FACTOR = 0.7     # rigid parts (horns): edges up to 1.4x longer, about half the quads
 
 
-def _rigid_factors(p, me, co_w, regions, budget: int) -> "np.ndarray":
-    """Edge factor per vertex for rigid parts (horns): fewer quads, as they never bend - but
-    never so few that a face cuts the part's curve by more than half the bake cage's margin.
-    A face of edge e on a curve of radius r sits e^2 / (8 r) inside it (the sagitta); past
-    half the margin the bake rays start inside the original (dark stains at horn roots).
-    The detail map's own value is never raised. Without a budget the edge length is unknown:
-    the plain rigid factor."""
+def _horn_radius(co_w, regions) -> tuple:
+    """Per vertex: the distance to its horn's axis (inf off the horns) and which horn it is on
+    (-1 = none). Returns (radius, horn id, horn names)."""
     import numpy as np
-    have = _mod("density").vertex_factors(me)
+    r = np.full(len(co_w), np.inf)
+    hid = np.full(len(co_w), -1, np.int32)
+    names = []
+    for a, m in regions:
+        if a["kind"] != "horn" or not m.any():
+            continue
+        chain = np.asarray(a["chain"], np.float64)
+        pts = co_w[m]
+        rr = np.full(len(pts), np.inf)
+        for c0, c1 in zip(chain[:-1], chain[1:]):           # distance to the part's axis
+            d = c1 - c0
+            t = np.clip(((pts - c0) @ d) / max(float(d @ d), 1e-12), 0.0, 1.0)
+            rr = np.minimum(rr, np.linalg.norm(pts - (c0 + t[:, None] * d), axis=1))
+        r[m] = np.minimum(r[m], rr)
+        hid[m] = len(names)
+        names.append(a["name"])
+    return r, hid, names
+
+
+def _rigid_factors(p, me, have, r, budget: int) -> tuple:
+    """Edge factor per vertex for rigid parts (horns, where r is finite): fewer quads, as they
+    never bend - but never so few that a face cuts the part's curve by more than half the bake
+    cage's margin. A face of edge e on a curve of radius r sits e^2 / (8 r) inside it (the
+    sagitta); past half the margin the bake rays start inside the original (dark stains at horn
+    roots). The detail map's own value `have` is never raised. Without a budget the edge length
+    is unknown: the plain rigid factor. Returns (factor, raised): raised marks the vertices
+    where the curve kept the factor above the plain rigid factor."""
+    import numpy as np
     fac = np.minimum(have, RIGID_EDGE_FACTOR)
-    if budget <= 0:
-        return fac
+    raised = np.zeros(len(have), bool)
+    horn = np.isfinite(r)
+    if budget <= 0 or not horn.any():
+        return fac, raised
     # the edge length Quad Remesher aims for at factor 1 on this part: its share of the budget
     # spread over its surface, weighted by the detail map (factor f = f^2 the quads)
-    nf, nl = len(me.polygons), len(me.loops)
+    nv, nf, nl = len(me.vertices), len(me.polygons), len(me.loops)
     farea = np.empty(nf, np.float32)
     me.polygons.foreach_get("area", farea)
     sc = float(np.prod(np.abs(np.array(p.matrix_world.to_scale()))) ** (2.0 / 3.0))
@@ -219,7 +244,7 @@ def _rigid_factors(p, me, co_w, regions, budget: int) -> "np.ndarray":
     me.loops.foreach_get("vertex_index", lv)
     lt = np.empty(nf, np.int32)
     me.polygons.foreach_get("loop_total", lt)
-    varea = np.bincount(lv, weights=np.repeat(farea * sc / np.maximum(lt, 1), lt), minlength=len(me.vertices))
+    varea = np.bincount(lv, weights=np.repeat(farea * sc / np.maximum(lt, 1), lt), minlength=nv)
     areas = {}
     for q in parts():
         qa = np.empty(len(q.data.polygons), np.float32)
@@ -228,21 +253,65 @@ def _rigid_factors(p, me, co_w, regions, budget: int) -> "np.ndarray":
     own = max(float(varea.sum()), 1e-12)
     tris = max(budget * own / max(sum(areas.values()), own), MIN_TRIS_PER_PART)
     edge = float(np.sqrt(2.0 * float((varea * have ** 2).sum()) / tris))
+    co = np.empty(nv * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    mw = np.array(p.matrix_world)
+    co_w = co.reshape(-1, 3) @ mw[:3, :3].T + mw[:3, 3]
     diag = float(np.linalg.norm(co_w.max(axis=0) - co_w.min(axis=0)))
     sag = 0.5 * _mod("bake").CAGE_FLOOR_REL * diag            # half the cage's margin
-    for a, m in regions:
-        if a["kind"] != "horn" or not m.any():
-            continue
-        chain = np.asarray(a["chain"], np.float64)
-        pts = co_w[m]
-        r = np.full(len(pts), np.inf)
-        for c0, c1 in zip(chain[:-1], chain[1:]):           # distance to the part's axis
-            d = c1 - c0
-            t = np.clip(((pts - c0) @ d) / max(float(d @ d), 1e-12), 0.0, 1.0)
-            r = np.minimum(r, np.linalg.norm(pts - (c0 + t[:, None] * d), axis=1))
-        longest = 2.0 * np.sqrt(np.maximum(r, 1e-9) * sag)  # edge whose sagitta is `sag`
-        fac[m] = np.minimum(have[m], np.maximum(RIGID_EDGE_FACTOR, edge / longest))
-    return fac
+    longest = 2.0 * np.sqrt(np.maximum(r[horn], 1e-9) * sag)  # edge whose sagitta is `sag`
+    capped = np.minimum(have[horn], np.maximum(RIGID_EDGE_FACTOR, edge / longest))
+    raised[horn] = capped > fac[horn] + 1e-6
+    fac[horn] = capped
+    return fac, raised
+
+
+def _horn_label(raised, budget: int) -> str:
+    """The plan's words for a horn: 'too curved' only when the curve test ran (a budget is
+    known) and actually kept most of the horn above the plain rigid factor."""
+    if budget > 0 and len(raised) and raised.mean() > 0.5:
+        return "rigid, but too curved for fewer quads"
+    return "rigid, fewer quads"
+
+
+def _paint_horns(p, me, have, r, hid, names, budget: int, plan: dict) -> None:
+    """Paint the horns' factors on the detail map, label them in the plan, and remember what was
+    painted for which budget (so a later budget can redo the curve limit, _replan_horns)."""
+    import numpy as np
+    dens = _mod("density")
+    fac, raised = _rigid_factors(p, me, have, r, budget)
+    horn = hid >= 0
+    dens.boost(me, horn, rings=0, edge_factor=fac)
+    idx = np.nonzero(horn)[0]
+    for i, name in enumerate(names):
+        plan[name] = _horn_label(raised[hid == i], budget)
+    me["forge_horn_plan"] = {"nv": len(me.vertices), "budget": int(budget), "names": list(names),
+                             "idx": idx.tolist(), "hid": hid[idx].tolist(), "r": r[idx].tolist(),
+                             "base": have[idx].tolist(), "fac": fac[idx].tolist()}
+
+
+def _replan_horns(p, me, budget: int, plan: dict) -> bool:
+    """The horns' curve limit depends on the face size the budget gives; when the budget has
+    changed since the plan was made, the horn factors are made again for it - unless the
+    director has painted over the horns since (their paint wins). True when repainted."""
+    import numpy as np
+    hp = me.get("forge_horn_plan")
+    if (budget <= 0 or hp is None or int(hp.get("budget", 0)) == int(budget)
+            or int(hp.get("nv", -1)) != len(me.vertices) or not len(hp.get("idx", []))):
+        return False
+    dens = _mod("density")
+    idx = np.asarray(hp["idx"], np.int64)
+    now = dens.vertex_factors(me)
+    if np.abs(now[idx] - np.asarray(hp["fac"], np.float64)).max() > 0.05:
+        return False                                  # painted over since: left as it is
+    have = now.copy()
+    have[idx] = np.asarray(hp["base"], np.float64)
+    r = np.full(len(have), np.inf)
+    r[idx] = np.asarray(hp["r"], np.float64)
+    hid = np.full(len(have), -1, np.int32)
+    hid[idx] = np.asarray(hp["hid"], np.int32)
+    _paint_horns(p, me, have, r, hid, list(hp["names"]), budget, plan)
+    return True
 
 
 def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budget: int = 0) -> dict:
@@ -265,7 +334,10 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budg
         mirror = side in ("left", "right")
         if (not recompute and dens.SPLIT_ATTR in me.attributes and "forge_plan" in p
                 and bool(me.get("forge_plan_mirror", False)) == mirror):
-            return dict(p["forge_plan"])         # (an EMPTY plan is a plan too)
+            plan = dict(p["forge_plan"])         # (an EMPTY plan is a plan too)
+            if _replan_horns(p, me, budget, plan):
+                p["forge_plan"] = plan
+            return plan
         first_plan = "forge_plan_mirror" not in me
         J = _mod("joints").estimate(p)
         apps = _mod("appendages").from_object(p, J)
@@ -341,12 +413,8 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budg
             # only the horn itself: its root ring keeps the body's density (a coarse root makes
             # the bake rays start inside the original there). Only on a fresh map: re-planning
             # for another side must not wipe the director's paint
-            before = dens.vertex_factors(me)
-            fac = _rigid_factors(p, me, arr.co, regions, budget)
-            dens.boost(me, horn, rings=0, edge_factor=fac)
-            for a, m in regions:
-                if a["kind"] == "horn" and m.any() and not (fac[m] < before[m] - 0.02).mean() > 0.5:
-                    out[a["name"]] = "rigid, but too curved for fewer quads"
+            r, hid, names = _horn_radius(arr.co, regions)
+            _paint_horns(p, me, dens.vertex_factors(me), r, hid, names, budget, out)
         # face creases are carved on the FACE only: ear, horn and tail roots are not creases
         sa = me.attributes.get(dens.STRICT_ATTR)
         if sa is not None and app_all.any() and (paint or first_plan):
@@ -698,13 +766,13 @@ def run_bake(texture_size: int, samples: int = 16, device: str = "GPU"):
     # the welded solid is the visible shape: the cage fits it, and the colour pass uses it to
     # leave out the original's buried pieces
     args["solid_meshes"] = {name: me.name for name, me in swapped.items()}
-    rep1 = yield from bake.run_iter({**args, "maps": list(DETAIL_MAPS)})
-    for name in swapped:                                  # colour from the original texture
-        h = bpy.data.objects[name]
-        h.data = bpy.data.meshes[h[G.BACKUP]]
     try:
+        rep1 = yield from bake.run_iter({**args, "maps": list(DETAIL_MAPS)})
+        for name in swapped:                              # colour from the original texture
+            h = bpy.data.objects[name]
+            h.data = bpy.data.meshes[h[G.BACKUP]]
         rep2 = yield from bake.run_iter({**args, "maps": list(COLOUR_MAPS)})
-    finally:
+    finally:                                   # also when a pass fails or Stop closes the job
         for name, mesh in swapped.items():
             bpy.data.objects[name].data = mesh
         hide_highs()
@@ -741,6 +809,8 @@ def finish_bake(*reports) -> dict:
             for k, v in (r.get("invalid_kinds") or {}).items():
                 kinds = e.setdefault("invalid_kinds", {})
                 kinds[k] = max(kinds.get(k, 0.0), v)
+            if "both_ways" in r:                # texels the check could not judge front / back
+                e["both_ways"] = max(e.get("both_ways", 0.0), r["both_ways"])
             if "cage" in r:                     # the same fit serves both passes
                 old = e.get("cage", {})
                 e["cage"] = {**r["cage"], "unenclosed": max(int(old.get("unenclosed", 0)),

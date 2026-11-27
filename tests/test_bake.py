@@ -441,19 +441,405 @@ def test_colour_never_comes_from_buried_pieces(tmp_path, monkeypatch):
 
 
 def test_panel_says_how_much_had_no_clean_hit():
-    """The Step 6 rows: the share measured before the fill decides the colour, in plain words;
-    spots the cage could not wrap point back to Step 4."""
+    """The Step 6 rows: the share measured before the patch decides the colour, in plain words;
+    places the new mesh is too coarse for point back to Step 4; 'cleanly' is claimed only when
+    the check could judge every texel (not on open, paper-thin pieces of the original)."""
     import importlib
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
     L = importlib.import_module("forge_send.stages_late")
     rep = {"parts": {"Body": {"maps": dict.fromkeys(("basecolor", "normal", "roughness", "metallic", "ao"), "x"),
                               "invalid_texels": {"normal": 0.034, "basecolor": 0.012}, "invalid_texels_max": 0.034,
                               "bake_miss_ratio": 0.034, "cage": {"unenclosed": 5}},
-                     "Sword": {"maps": {"basecolor": "x"}, "invalid_texels_max": 0.0, "bake_miss_ratio": 0.0}}}
+                     "Sword": {"maps": {"basecolor": "x"}, "invalid_texels_max": 0.0, "bake_miss_ratio": 0.0},
+                     "Cape": {"maps": {"basecolor": "x"}, "invalid_texels_max": 0.0, "bake_miss_ratio": 0.0,
+                              "both_ways": 0.4}}}
     rows = L._bake_rows(rep)
     text = [t for _i, t in rows]
     assert (L.WARN, "Body: 5 maps") in rows
-    assert "    3.4% of the texture had no clean hit (filled from neighbours)" in text
+    assert "    3.4% of the texture could not be baked cleanly" in text and "    and was patched from nearby" in text
     joined = " ".join(text)
-    assert "could not wrap 5 spots" in joined and "Step 4" in joined
-    assert (L.GOOD, "Sword: 1 map") in rows and "    every texel found its surface cleanly" in text
+    assert "5 places where the new mesh is too coarse or folded" in joined and "Step 4" in joined
+    assert (L.GOOD, "Sword: 1 map") in rows and "    the whole texture baked cleanly" in text
+    cape = text[text.index("Cape: 1 map") + 1:]
+    assert cape[0].startswith("    40.0% comes from open, paper-thin pieces") and "Weld into one solid" in " ".join(cape)
+    assert text.count("    the whole texture baked cleanly") == 1          # not said for the cape
+    for t in text:                                  # plain words: no bake jargon on the panel
+        assert not any(w in t.lower() for w in ("texel", "cage", " hit", "ray"))
+
+
+def _hand(gap=0.003, r=0.008):
+    """Two 8 mm 'fingers' `gap` apart on a palm (red / blue / green), as ONE welded piece."""
+    import bmesh
+    from mathutils import Matrix
+    pieces = []
+    for name, x, rgb in (("A", r + gap / 2, (0.8, 0.05, 0.05)), ("B", -(r + gap / 2), (0.05, 0.05, 0.8))):
+        bm = bmesh.new()
+        _capsule(bm, x, r, 0.09)
+        o = _link(name, bm)
+        o.data.materials.append(_material(name, rgb))
+        pieces.append(o)
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=48, v_segments=24, radius=1.0,
+                              matrix=Matrix.Translation((0, 0, -0.01)) @ Matrix.Diagonal((0.045, 0.02, 0.03, 1)))
+    palm = _link("P", bm)
+    palm.data.materials.append(_material("P", (0.05, 0.6, 0.05)))
+    return _join(pieces + [palm], "Hand")
+
+
+def _coarse_low(src, name, voxel=0.0015, ratio=0.02):
+    low = _voxel_copy(src, voxel)
+    dec = low.modifiers.new("d", "DECIMATE")
+    dec.ratio = ratio
+    dg = bpy.context.evaluated_depsgraph_get()
+    dg.update()
+    low.data = bpy.data.meshes.new_from_object(low.evaluated_get(dg))
+    low.modifiers.clear()
+    low.data.materials.clear()
+    low.name = name
+    _unwrap(low)
+    for p in low.data.polygons:
+        p.use_smooth = True
+    return low
+
+
+def test_one_missing_face_keeps_the_crevice_check(tmp_path):
+    """The welded hand with ONE face missing at the bottom of the palm, far from the fingers. A
+    hole anywhere used to make the whole piece count both ways: the cage then reached into the
+    other finger and the check passed the flipped normals as clean. Only the faces around the
+    opening may count both ways."""
+    import bmesh
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    orig = _hand()
+    solid = _voxel_copy(orig, 0.0008)
+    bm = bmesh.new()
+    bm.from_mesh(solid.data)
+    bm.faces.ensure_lookup_table()
+    bmesh.ops.delete(bm, geom=[min(bm.faces, key=lambda f: f.calc_center_median().z)], context="FACES")
+    bm.to_mesh(solid.data)
+    bm.free()
+    two, _rec = bake._orientation(solid.data)
+    assert 0 < two.sum() < 0.01 * len(two)                    # only the rim of the opening
+    solid.name = "Hand_high"
+    low = _coarse_low(orig, "Hand_low")
+    _roles(low, solid, "Hand")
+    orig.hide_render = True
+    bake.clear_fit_cache()
+    S = 256
+    args = {**PANEL, "texture_size": S, "texture_dir": str(tmp_path), "solid_meshes": {solid.name: solid.data.name}}
+    r1 = bake.run({**args, "maps": ["normal"]})["parts"]["Hand"]
+    solid_me = solid.data
+    solid.data = orig.data                                     # colour from the original, as run_bake
+    r2 = bake.run({**args, "maps": ["basecolor"]})["parts"]["Hand"]
+    solid.data = solid_me
+    ys, xs, P = _texel_points(low, S)
+    nz = _pixels(r1["maps"]["normal"], S)[ys, xs, 2]
+    assert int((nz < 0.5).sum()) == 0, int((nz < 0.5).sum())      # (about 1,000 before)
+    tree = BVHTree.FromObject(orig, bpy.context.evaluated_depsgraph_get())
+    mi = np.array([p.material_index for p in orig.data.polygons])
+    names = [m.name for m in orig.data.materials]
+    truth = np.array([names[mi[tree.find_nearest(Vector(p))[2]]] for p in P])
+    col = _pixels(r2["maps"]["basecolor"], S)[ys, xs, :3]
+    finger = np.isin(truth, ["A", "B"])
+    got = np.where(col[:, 0] > col[:, 2], "A", "B")
+    wrong = finger & (np.abs(col[:, 0] - col[:, 2]) > 0.3) & (got != truth)
+    assert finger.sum() > 2000 and wrong.sum() == 0, (int(finger.sum()), int(wrong.sum()))
+
+
+def _ear_with_hole(hole: bool):
+    """A ball and a thin ear-like box (60 x 40 x 4 mm): top red, bottom blue; optionally a 10 mm
+    hole in the ear's top skin. The low: a cube on the ball (it makes the bake reach long, as
+    horns do on a full body) and the ear box. Returns (original, low)."""
+    import bmesh
+    from mathutils import Matrix, Vector
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=48, v_segments=24, radius=0.03, matrix=Matrix.Translation((-0.1, 0, 0)))
+    ball = _link("Ball", bm)
+    ball.data.materials.append(_material("grey", (0.5, 0.5, 0.5)))
+    bm = bmesh.new()
+    box = Matrix.Translation((0.05, 0, 0)) @ Matrix.Diagonal((0.06, 0.04, 0.004, 1))
+    bmesh.ops.create_cube(bm, size=1.0, matrix=box)
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=15, use_grid_fill=True)
+    if hole:
+        dead = [f for f in bm.faces if f.calc_center_median().z > 0.0019
+                and (f.calc_center_median().xy - Vector((0.05, 0))).length < 0.005]
+        bmesh.ops.delete(bm, geom=dead, context="FACES")
+    ear = _link("Ear", bm)
+    ear.data.materials.append(_material("top", (0.8, 0.05, 0.05)))
+    ear.data.materials.append(_material("bottom", (0.05, 0.05, 0.8)))
+    for p in ear.data.polygons:
+        p.material_index = 0 if p.center.z > -0.001 else 1
+    orig = _join([ball, ear], "Body")
+    _unwrap(orig)
+    bm = bmesh.new()
+    h = 0.03 / 3 ** 0.5
+    bmesh.ops.create_cube(bm, size=2 * h, matrix=Matrix.Translation((-0.1, 0, 0)))
+    bmesh.ops.create_cube(bm, size=1.0, matrix=box)
+    bmesh.ops.subdivide_edges(bm, edges=[e for e in bm.edges if (e.verts[0].co - e.verts[1].co).length > 0.005
+                                         and e.verts[0].co.x > -0.05], cuts=3, use_grid_fill=True)
+    low = _link("Body_low", bm)
+    _unwrap(low)
+    for p in low.data.polygons:
+        p.use_smooth = False
+    _roles(low, orig, "Body")
+    return orig, low
+
+
+@pytest.mark.parametrize("welded", [True, False])
+def test_colour_never_comes_through_a_hole_in_the_original(tmp_path, welded):
+    """Step 3 keeps the raw original (with its holes) for the colour. Over a hole in the ear's
+    top skin a ray passes through and meets the bottom skin from inside: blue on the top. With
+    the welded solid known, the hit lies under the solid's surface; without it, it is the back
+    of a face that has an inside. Either way it is marked and patched from the red around."""
+    import numpy as np
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    solid_me = None
+    if welded:                                     # the welded solid: made before the hole
+        closed, closed_low = _ear_with_hole(False)
+        solid = _voxel_copy(closed, 0.0008)
+        solid_me = solid.data
+        for o in (solid, closed, closed_low):
+            bpy.data.objects.remove(o)
+    orig, low = _ear_with_hole(True)
+    S = 256
+    args = {**PANEL, "texture_size": S, "texture_dir": str(tmp_path), "maps": ["basecolor"]}
+    bake.clear_fit_cache()
+    rep = bake.run({**args, "solid_meshes": {orig.name: solid_me.name}} if welded else args)
+    r = rep["parts"]["Body"]
+    ys, xs, P = _texel_points(low, S)
+    px = _pixels(r["maps"]["basecolor"], S)[ys, xs, :3]
+    over = (P[:, 2] > 0.0015) & (np.hypot(P[:, 0] - 0.05, P[:, 1]) < 0.005)
+    assert over.sum() > 50
+    assert int((px[over, 2] > px[over, 0]).sum()) == 0, int((px[over, 2] > px[over, 0]).sum())
+    kind = "buried" if welded else "back_face"
+    assert r["invalid_kinds"][kind] > 0.5 * over.sum() / len(ys), r["invalid_kinds"]
+
+
+def test_gutter_is_regrown_from_repaired_texels(tmp_path, monkeypatch):
+    """Blender's margin grows the gutter from the island's border texels BEFORE the check marks
+    some of them bad. The slab case with the cage forced inside on one half, and a gutter round
+    the island: after the repair no gutter texel next to the bad half may keep a flipped normal
+    (mipmaps and filtering pull the gutter into the seams)."""
+    import bmesh
+    import numpy as np
+    from mathutils import Matrix
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    low = _plane("Slab_low", 0.0, cuts=8)
+    _unwrap(low)
+    for d in low.data.uv_layers.active.data:            # leave room for a 16 px gutter
+        d.uv = (0.15 + 0.7 * d.uv[0], 0.15 + 0.7 * d.uv[1])
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0, matrix=Matrix.Diagonal((2.2, 2.2, 0.02, 1)))
+    high = _link("Slab", bm)
+    _roles(low, high, "Slab")
+    real = bake.fit_cage
+
+    def forced(low_, *a, **k):
+        fit = real(low_, *a, **k)
+        xs = np.array([v.co.x for v in low_.data.vertices])
+        fit["push"] = np.where(xs < -0.01, 0.002, fit["push"])
+        return fit
+    monkeypatch.setattr(bake, "fit_cage", forced)
+    bake.clear_fit_cache()
+    S = 128
+    r = bake.run({**PANEL, "texture_size": S, "texture_dir": str(tmp_path), "maps": ["normal"]})["parts"]["Slab"]
+    assert r["invalid_kinds"]["back_face"] > 0.2 and r.get("gutter_redone", {}).get("normal", 0) > 0, r
+    nz = _pixels(r["maps"]["normal"], S)[..., 2]
+    tri, _b, _i = bake._raster(low, S)
+    cov = tri >= 0
+    ring = bake._grow(cov, 16) & ~cov                  # the gutter Blender's margin fills
+    assert ring.sum() > 1000
+    assert int((nz[ring] < 0.5).sum()) == 0, int((nz[ring] < 0.5).sum())    # (2,960 before)
+
+
+def test_island_rim_texels_are_checked_at_full_size():
+    """At 2K and 4K the rays are checked on a 1024 grid. An island's rim at full size (texels
+    whose centre is inside the island although the coarse texel's is not) must be repaired too
+    when it lies next to a bad texel, not left as baked."""
+    import numpy as np
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    n, k = 8, 2
+    img = bpy.data.images.new("rim", n, n, alpha=False, float_buffer=True)
+    covered = np.zeros((n // k, n // k), bool)
+    covered[:3] = True                                 # coarse rows 0-2 inside the island
+    invalid = np.zeros_like(covered)
+    invalid[2, 1] = True                               # one bad coarse texel: full rows 4-5, cols 2-3
+    island = np.full((n, n), -1, np.int32)
+    island[:7] = 0                                     # full size: row 6 is the island's rim
+    px = np.zeros((n, n, 4), np.float32)
+    px[..., 2] = px[..., 3] = 1.0                      # blue: a clean bake
+    for y, x in ((4, 2), (4, 3), (5, 2), (5, 3), (6, 2), (6, 3)):
+        px[y, x] = (1, 0, 0, 1)                        # red: what the bad rays baked, rim included
+    img.pixels.foreach_set(px.ravel())
+    val = {"invalid": invalid, "covered": covered, "share": 1 / covered.sum()}
+    out = bake._apply_validation(img, val, island, "basecolor", margin=2)
+    res = np.empty(n * n * 4, np.float32)
+    img.pixels.foreach_get(res)
+    res = res.reshape(n, n, 4)
+    red = res[..., 0] > res[..., 2]
+    assert not red[island >= 0].any(), np.argwhere(red)
+    assert not red.any() and out["filled"] >= 6, out
+    bpy.data.images.remove(img)
+
+
+def test_a_surface_facing_away_never_bakes(tmp_path):
+    """Blender bakes a face's normal as it is, even when the ray meets it from behind: an open,
+    paper-thin piece of the original seen from its back comes out as a flipped normal. Half the
+    sheet above the new mesh faces down: those texels are marked and patched from the half that
+    faces up; colour does not care which side it sees."""
+    import bmesh
+    from mathutils import Matrix
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    low = _plane("Sheet_low", 0.0)
+    _unwrap(low)
+    bm = bmesh.new()
+    for x, flip in ((-0.5, True), (0.5, False)):     # two open halves, 1 mm apart
+        res = bmesh.ops.create_grid(bm, x_segments=8, y_segments=16, size=0.5,
+                                    matrix=Matrix.Translation((x * 1.002, 0, 0.008)) @ Matrix.Diagonal((0.999, 2.0, 1, 1)))
+        if flip:
+            bmesh.ops.reverse_faces(bm, faces=list({f for v in res["verts"] for f in v.link_faces}))
+    high = _link("Sheet", bm)
+    high.data.materials.append(_material("skin", (0.8, 0.1, 0.1)))
+    _roles(low, high, "Sheet")
+    bake.clear_fit_cache()
+    S = 64
+    rep = bake.run({**PANEL, "texture_size": S, "texture_dir": str(tmp_path), "maps": ["normal"]})
+    r = rep["parts"]["Sheet"]
+    assert r["invalid_kinds"]["faces_away"] > 0.3, r["invalid_kinds"]
+    ys, xs, _P = _texel_points(low, S)
+    nz = _pixels(r["maps"]["normal"], S)[ys, xs, 2]
+    assert (nz >= 0.5).all(), int((nz < 0.5).sum())
+    bake.clear_fit_cache()
+    rep = bake.run({**PANEL, "texture_size": S, "texture_dir": str(tmp_path), "maps": ["basecolor"]})
+    r = rep["parts"]["Sheet"]
+    assert r["invalid_texels"]["basecolor"] < 0.01 and r["both_ways"] > 0.3, r   # seen, but not checkable
+
+
+def test_buried_test_keeps_one_voxel_cells_on_a_big_solid():
+    """The 'buried in the welded solid' test skips points next to the solid's surface with a
+    grid of one-voxel cells. On a big or fine solid a dense grid had to be coarsened (a cap on
+    its size), so points a few voxels deep were skipped as 'next to the surface'. The cells are
+    now a sparse set: no cap."""
+    import bmesh
+    import numpy as np
+    from mathutils import Matrix
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=320, v_segments=160, radius=0.05)          # ~1 mm edges
+    bmesh.ops.create_cube(bm, size=0.01, matrix=Matrix.Translation((3.0, 3.0, 3.0)))    # far away
+    solid = _link("Solid", bm)
+    co = np.array([v.co[:] for v in solid.data.vertices])
+    surf = bake._surface_of(solid)
+    S = bake._Surface(surf.tree, surf.two_sided, co)
+    rng = np.random.default_rng(1)
+    d = rng.normal(size=(200, 3))
+    d /= np.linalg.norm(d, axis=1, keepdims=True)
+    deep = d * (0.05 - 0.006)                       # 6 mm (6 voxels) under the surface
+    shallow = d * (0.05 - 0.0005)                   # half a voxel under it
+    out = bake._deep_mask(S, np.concatenate([deep, shallow]), depth=0.002, cell=0.001)
+    assert out[:200].all() and not out[200:].any(), (int(out[:200].sum()), int(out[200:].sum()))
+
+
+def test_caches_see_flipped_faces_and_new_corners():
+    """The ray tree and the texel map are cached between the passes. Flipped faces with the same
+    coordinates are a different surface (which way the faces point decides the check), and the
+    same UVs on other corners are other islands."""
+    import bmesh
+    import numpy as np
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=8, radius=0.1)
+    o = _link("S", bm)
+    bake.clear_fit_cache()
+    a = bake._surface_cached(o)
+    assert bake._surface_cached(o) is a
+    o.data.flip_normals()
+    assert bake._surface_cached(o) is not a
+    low = _plane("L", 0.0, cuts=4)
+    _unwrap(low)
+    r1 = bake._raster(low, 32)
+    me = low.data
+    lv = np.array([lp.vertex_index for lp in me.loops])
+    uv = np.array([d.uv[:] for d in me.uv_layers.active.data])
+    # the same corners' UVs, but one corner moved onto another vertex: other islands may follow
+    me.loops[0].vertex_index = int(lv[1])
+    me.uv_layers.active.data.foreach_set("uv", uv.ravel())
+    assert bake._raster(low, 32) is not r1
+
+
+def test_a_failed_or_stopped_bake_frees_the_ray_trees(tmp_path, monkeypatch):
+    """The ray trees of multi-million-face originals are cached during a bake. When a pass fails
+    or Stop closes the job, run_bake must still free them (and put the welded solids back)."""
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    S = importlib.import_module("forge_send.steps")
+    B = S._mod("bake")
+    bpy.ops.wm.read_homefile(use_empty=True)
+    monkeypatch.setattr(S, "work_dir", lambda: tmp_path)
+
+    def detail_pass(args):
+        B._SURF["tree"] = object()
+        B._FIT["fit"] = {}
+        B._RASTER["map"] = ()
+        yield 0.1
+        raise RuntimeError("detail pass failed")
+    monkeypatch.setattr(B, "run_iter", detail_pass)
+    gen = S.run_bake(64, samples=1, device="CPU")
+    with pytest.raises(RuntimeError):
+        for _ in gen:
+            pass
+    assert not B._SURF and not B._FIT and not B._RASTER
+    gen = S.run_bake(64, samples=1, device="CPU")          # Stop during the detail pass
+    next(gen)
+    assert B._SURF
+    gen.close()
+    assert not B._SURF and not B._FIT and not B._RASTER
+
+
+def test_a_flipped_normal_in_the_result_is_patched_whatever_the_check_said():
+    """Where Blender's ray and the re-cast one part ways (long grazing rays at a coarse part), the
+    check can pass a texel that comes out with its normal pointing INTO the new surface. That is
+    never a correct bake (an engine rebuilds z as positive): the normal map is read back, those
+    texels are patched and counted, and the same texels are patched in AO (same rays)."""
+    import numpy as np
+
+    from forge_bpy import bake
+    bpy.ops.wm.read_homefile(use_empty=True)
+    n = 8
+    island = np.zeros((n, n), np.int32)
+    val = {"invalid": np.zeros((n, n), bool), "covered": np.ones((n, n), bool), "share": 0.0}
+    nm = bpy.data.images.new("nm", n, n, alpha=False, float_buffer=True)
+    px = np.zeros((n, n, 4), np.float32)
+    px[...] = (0.5, 0.5, 1.0, 1.0)                    # straight up
+    px[3:5, 3:5] = (0.5, 0.9, 0.2, 1.0)               # pointing into the surface (z = -0.6)
+    nm.pixels.foreach_set(px.ravel())
+    out = bake._apply_validation(nm, val, island, "normal", margin=2)
+    res = np.empty(n * n * 4, np.float32)
+    nm.pixels.foreach_get(res)
+    assert (res.reshape(n, n, 4)[..., 2] > 0.99).all()
+    assert abs(out["share"] - 4 / 64) < 1e-6 and int(out["flipped"].sum()) == 4, out["share"]
+    ao = bpy.data.images.new("ao", n, n, alpha=False, float_buffer=True)
+    px[...] = (1.0, 1.0, 1.0, 1.0)
+    px[3:5, 3:5] = (0.0, 0.0, 0.0, 1.0)              # the same bad rays: black
+    ao.pixels.foreach_set(px.ravel())
+    out = bake._apply_validation(ao, val, island, "ao", margin=2, extra=out["flipped"])
+    ao.pixels.foreach_get(res)
+    assert (res.reshape(n, n, 4)[..., 0] > 0.99).all() and abs(out["share"] - 4 / 64) < 1e-6
+    bpy.data.images.remove(nm)
+    bpy.data.images.remove(ao)

@@ -115,9 +115,10 @@ class _ChannelAsEmission:
 CAGE_FLOOR_REL = 0.0015       # the cage's margin over the original: at most 0.15% of the part
 CAGE_MAX_REL = 0.02           # how far above the new surface the fit looks for the original
 VERIFY_ROUNDS = 3             # bounded repair of the cage where a check still starts inside
-_FIT: dict = {}               # fit cache: key (coordinates of the low and of the surface) -> fit
+_FIT: dict = {}               # fit cache: key (coordinates and faces of the low and the surface) -> fit
 _SURF: dict = {}              # the last surface built (its BVH serves the fit and the ray check)
-_RASTER: dict = {}            # the last texel map of a low (both passes use the same one)
+_RASTER: dict = {}            # the last texel maps of a low (both passes use the same ones)
+_FLIPPED: dict = {}           # texels whose normal map came out flipped (same rays: the colour pass)
 # skewed directions for inside/outside votes (axis-aligned rays graze voxel-remesh faces)
 _DIRS = ((0.267, 0.535, 0.802), (-0.816, 0.408, -0.408), (0.371, -0.928, 0.0))
 
@@ -128,6 +129,7 @@ def clear_fit_cache() -> None:
     _FIT.clear()
     _SURF.clear()
     _RASTER.clear()
+    _FLIPPED.clear()
 
 
 def _arr(coll, attr: str, n: int, dtype) -> np.ndarray:
@@ -144,50 +146,102 @@ def _components(n: int, a: np.ndarray, b: np.ndarray) -> np.ndarray:
 
 class _Surface:
     """What the rays meet, as a BVH tree in the high object's local space, with per-face flags:
-    two_sided - faces of open pieces (a boundary edge somewhere): no inside/outside to trust;
-    partly_deep - faces with a corner buried in the welded solid (only the colour source)."""
+    two_sided - faces with no inside/outside to trust (see _orientation): they count both ways;
+    verts - the vertices (only for the welded solid: the 'next to the surface' test)."""
 
-    def __init__(self, tree, two_sided: np.ndarray, verts=None, partly_deep=None):
-        self.tree, self.two_sided, self.verts, self.partly_deep = tree, two_sided, verts, partly_deep
+    def __init__(self, tree, two_sided: np.ndarray, verts=None):
+        self.tree, self.two_sided, self.verts = tree, two_sided, verts
 
 
-def _orientation(me) -> tuple:
-    """(two_sided per face, needs_recalc): faces of pieces with an open boundary are two-sided;
-    a closed piece needs its normals recalculated when its winding is inconsistent or it is
-    inside out (negative volume)."""
+OPEN_SHARE_MAX = 0.25   # a piece whose openings add up to less than this share of its surface has an inside
+RIM_RINGS = 2           # faces this many rings around an opening count both ways
+
+
+def _hole_area(co, lv, le, ps, lt, cnt, lab, nv) -> np.ndarray:
+    """Area of the openings of each connected piece (by its label): every loop of open edges is
+    measured by a fan of triangles from its centre (unsigned: the faces' winding may still be
+    inconsistent here)."""
+    nl = len(lv)
+    out = np.zeros(nv)
+    bl = np.nonzero(cnt[le] == 1)[0]
+    if not len(bl):
+        return out
+    pol = np.repeat(np.arange(len(ps)), lt)
+    nxt = np.arange(nl) + 1
+    last = nxt == (ps + lt)[pol]
+    nxt[last] = ps[pol[last]]
+    a, b = lv[bl], lv[nxt[bl]]
+    loop = _components(nv, a, b)[a]               # which opening each open edge belongs to
+    n = np.bincount(loop, minlength=nv).astype(np.float64)
+    cen = np.stack([np.bincount(loop, weights=co[a, i], minlength=nv) for i in range(3)], 1) / np.maximum(n, 1)[:, None]
+    fan = 0.5 * np.linalg.norm(np.cross(co[a] - cen[loop], co[b] - cen[loop]), axis=1)
+    np.add.at(out, lab[a], fan)
+    return out
+
+
+def _orientation(me, rings: int = RIM_RINGS) -> tuple:
+    """(two_sided per face, needs_recalc).
+    - A closed piece has an inside: its faces count one way (a ray meeting one from behind
+      started inside the original).
+    - A piece with openings that are small next to its surface (a hole in a skin, a crack, a
+      missing face) still has an inside: only the faces within `rings` rings of an open edge count
+      both ways, as rays can pass the opening there.
+    - A piece that is mostly open (a sheet, a bowl, a flap: openings of more than
+      OPEN_SHARE_MAX of its surface) has no inside to trust: all its faces count both ways.
+    A piece with an inside needs its normals recalculated when its winding is inconsistent or
+    it encloses a negative volume."""
     nf, nv, ne, nl = len(me.polygons), len(me.vertices), len(me.edges), len(me.loops)
     if not nf:
         return np.zeros(0, bool), False
     lv = _arr(me.loops, "vertex_index", nl, np.int32)
     le = _arr(me.loops, "edge_index", nl, np.int32)
     ps = _arr(me.polygons, "loop_start", nf, np.int32)
+    lt = _arr(me.polygons, "loop_total", nf, np.int32)
     ev = _arr(me.edges, "vertices", ne * 2, np.int32).reshape(-1, 2)
+    co = _arr(me.vertices, "co", nv * 3, np.float32).reshape(-1, 3).astype(np.float64)
     cnt = np.bincount(le, minlength=ne)
     lab = _components(nv, ev[:, 0], ev[:, 1])
     face_lab = lab[lv[ps]]
-    open_lab = np.zeros(nv, bool)
-    open_lab[lab[ev[cnt == 1, 0]]] = True
-    two = open_lab[face_lab]
+    farea = _arr(me.polygons, "area", nf, np.float32).astype(np.float64)
+    area = np.bincount(face_lab, weights=farea, minlength=nv)
+    holes = _hole_area(co, lv, le, ps, lt, cnt, lab, nv)
+    sheet = holes > OPEN_SHARE_MAX * np.maximum(area, 1e-30)
+    # the rim of every opening (and of edges shared by 3+ faces): `rings` rings of faces
+    vm = np.zeros(nv, bool)
+    vm[ev[(cnt == 1) | (cnt > 2)].ravel()] = True
+    rim = np.zeros(nf, bool)
+    for r in range(max(rings, 0)):
+        if not vm.any():
+            break
+        f = np.maximum.reduceat(vm[lv].astype(np.int8), ps).astype(bool)
+        rim |= f
+        if r + 1 < rings:
+            vm[lv[np.repeat(f, lt)]] = True
+    two = sheet[face_lab] | rim
     if two.all():
         return two, False
+    inside = ~sheet                                # pieces with an inside (by label)
     # consistent winding: the two corners on a shared edge start at its two different ends
     order = np.argsort(le, kind="stable")
     start = np.concatenate([[0], np.cumsum(cnt)[:-1]])
     m2 = np.nonzero(cnt == 2)[0]
     l1, l2 = order[start[m2]], order[start[m2] + 1]
-    if ((lv[l1] == lv[l2]) & ~open_lab[lab[ev[m2, 0]]]).any():
+    if ((lv[l1] == lv[l2]) & inside[lab[ev[m2, 0]]]).any():
         return two, True
-    # outward: every closed piece encloses a positive volume
+    # outward: every piece with an inside encloses a positive volume (measured from its own
+    # centre, so that a small opening hardly counts)
     me.calc_loop_triangles()
     nt = len(me.loop_triangles)
     tv = _arr(me.loop_triangles, "vertices", nt * 3, np.int32).reshape(-1, 3)
     tp = _arr(me.loop_triangles, "polygon_index", nt, np.int32)
-    co = _arr(me.vertices, "co", nv * 3, np.float32).reshape(-1, 3).astype(np.float64)
-    a, b, c = co[tv[:, 0]], co[tv[:, 1]], co[tv[:, 2]]
+    nvp = np.maximum(np.bincount(lab, minlength=nv), 1)
+    ref = np.stack([np.bincount(lab, weights=co[:, i], minlength=nv) for i in range(3)], 1) / nvp[:, None]
+    tl_ = face_lab[tp]
+    a, b, c = co[tv[:, 0]] - ref[tl_], co[tv[:, 1]] - ref[tl_], co[tv[:, 2]] - ref[tl_]
     vol = np.einsum("ij,ij->i", a, np.cross(b, c))
-    per = np.bincount(face_lab[tp], weights=vol, minlength=nv)
-    closed = np.unique(face_lab[~two])
-    return two, bool((per[closed] < 0).any())
+    per = np.bincount(tl_, weights=vol, minlength=nv)
+    checked = np.unique(face_lab[inside[face_lab]])
+    return two, bool((per[checked] < 0).any())
 
 
 def _recalc_normals(me) -> None:
@@ -246,12 +300,14 @@ def _coords(me) -> np.ndarray:
 
 
 def _surface_cached(target, co=None) -> _Surface:
-    """_surface_of, remembered for the last mesh (by its coordinates): the fit and the ray check
-    of a pass meet the same surface, and a multi-million-face tree takes a while to build."""
+    """_surface_of, remembered for the last mesh (by its coordinates and the order of every
+    face's corners, i.e. its winding): the fit and the ray check of a pass meet the same
+    surface, and a multi-million-face tree takes a while to build."""
     evaluated = isinstance(target, bpy.types.Object) and len(target.modifiers) > 0
     me = target.data if isinstance(target, bpy.types.Object) else target
     co = _coords(me) if co is None else co
-    key = _hash(co, np.array([len(me.polygons), len(me.loops), evaluated]))
+    lv = _arr(me.loops, "vertex_index", len(me.loops), np.int32)     # the winding of every face
+    key = _hash(co, lv, np.array([len(me.polygons), len(me.loops), evaluated]))
     surf = _SURF.get(key)
     if surf is None:
         _SURF.clear()
@@ -322,7 +378,8 @@ def fit_cage(low, surf: _Surface, high_mw, size: int = 1024, max_rel: float = CA
       thin or curved original (ear rim, horn tip) bulges past a cage made from vertex pushes.
     - Only the surface a point stands for counts: going out along the normal, the first surface
       must be met from the INSIDE (an exit). A surface met from outside is another wall: it never
-      pushes the cage, it limits it (room). Faces of open pieces count both ways.
+      pushes the cage, it limits it (room). Faces around an opening of the original, and
+      open sheets, count both ways (_orientation).
     - The cage's margin is at most half the room to that other wall; enclosure keeps priority.
     - Then the ACTUAL cage is checked where Blender starts the rays (the interpolated cage point,
       running towards the low point) and repaired in at most VERIFY_ROUNDS bounded rounds.
@@ -469,7 +526,10 @@ def _fit_for(low, high, solid, size: int, max_rel: float, min_rel: float, smooth
     co = _coords(me)
     target = solid if solid is not None else high.data
     tco = _coords(target)
-    key = _hash(co, np.array(low.matrix_world), np.array(high.matrix_world), tco,
+    # the corners of every face (winding: which way each face points) of both meshes count too
+    lvl = _arr(me.loops, "vertex_index", len(me.loops), np.int32)
+    lvt = _arr(target.loops, "vertex_index", len(target.loops), np.int32)
+    key = _hash(co, lvl, np.array(low.matrix_world), np.array(high.matrix_world), tco, lvt,
                 np.array([len(me.polygons), len(target.polygons), size, max_rel, min_rel, smooth], np.float64))
     fit = _FIT.get(key)
     if fit is None:
@@ -517,23 +577,36 @@ def _bake_res(size: int) -> int:
 def _raster(low, res: int):
     """Which low triangle each texel centre of a res x res bake falls in (row 0 = v 0), where in
     it (barycentrics), and its UV island: (tri (-1 = none), bary, island (-1 = none))."""
+    return _raster_cached(low, res, True)
+
+
+def _islands(low, res: int) -> np.ndarray:
+    """The UV island of each texel centre of a res x res map (-1 = outside every island): the
+    full-size coverage when the rays were checked on a smaller grid."""
+    return _raster_cached(low, res, False)[2]
+
+
+def _raster_cached(low, res: int, with_bary: bool):
+    me = low.data
     _tv, tl, _co, _vn, uv = _low_arrays(low)
-    key = _hash(tl, uv if uv is not None else np.zeros(0), np.array([res]))
+    lv = _arr(me.loops, "vertex_index", len(me.loops), np.int32)     # (island labels follow it)
+    key = _hash(tl, lv, uv if uv is not None else np.zeros(0), np.array([res, int(with_bary)]))
     if key in _RASTER:
         return _RASTER[key]
-    out = _raster_build(low, res, tl, uv)
-    _RASTER.clear()
+    out = _raster_build(low, res, tl, uv, lv, with_bary)
+    if not with_bary:
+        out = (None, None, out[2])                 # only the islands are kept
+    if len(_RASTER) >= 4:
+        _RASTER.clear()
     _RASTER[key] = out
     return out
 
 
-def _raster_build(low, res: int, tl, uv):
+def _raster_build(low, res: int, tl, uv, lv, with_bary: bool = True):
     tri = np.full((res, res), -1, np.int32)
-    bary = np.zeros((res, res, 3), np.float32)
+    bary = np.zeros((res, res, 3), np.float32) if with_bary else None
     if uv is None or not len(tl):
         return tri, bary, np.full((res, res), -1, np.int32)
-    me = low.data
-    lv = _arr(me.loops, "vertex_index", len(me.loops), np.int32)
     key = np.stack([lv, np.round(uv[:, 0] * 2 ** 20), np.round(uv[:, 1] * 2 ** 20)], 1).astype(np.int64)
     _u, inv = np.unique(key, axis=0, return_inverse=True)
     inv = inv.ravel()
@@ -559,8 +632,9 @@ def _raster_build(low, res: int, tl, uv):
         if not m.any():
             continue
         sub[m] = t
-        bsub = bary[y0:y1 + 1, x0:x1 + 1]
-        bsub[m] = np.stack([w0[m], w1[m], w2[m]], 1)
+        if bary is not None:
+            bsub = bary[y0:y1 + 1, x0:x1 + 1]
+            bsub[m] = np.stack([w0[m], w1[m], w2[m]], 1)
     island = np.where(tri >= 0, tri_island[np.maximum(tri, 0)], -1).astype(np.int32)
     return tri, bary, island
 
@@ -577,33 +651,32 @@ def _inside(tree, p) -> bool:
 
 def _deep_mask(solid: _Surface, pts: np.ndarray, depth: float, cell: float) -> np.ndarray:
     """True where a point lies inside the welded solid by more than `depth`. Points next to the
-    solid's surface (a coarse grid around its vertices) are skipped; the rest are tested exactly."""
+    solid's surface (within one cell of a cell holding one of its vertices) are skipped; the rest
+    are tested exactly. The occupied cells are kept as a sorted set of keys, so the cell stays
+    one voxel however big the solid is."""
     out = np.zeros(len(pts), bool)
     if not len(pts) or solid.verts is None or not len(solid.verts):
         return out
     S = solid.verts
     g = max(cell, 1e-9)
     lo = S.min(axis=0) - 3 * g
-    dims = np.ceil((S.max(axis=0) + 3 * g - lo) / g).astype(np.int64) + 1
-    while int(np.prod(dims)) > 24_000_000:            # memory: a coarser grid only trims less
-        g *= 1.26
-        dims = np.ceil((S.max(axis=0) + 3 * g - lo) / g).astype(np.int64) + 1
-    occ = np.zeros(tuple(dims), bool)
-    ij = np.clip(((S - lo) / g).astype(np.int64), 0, dims - 1)
-    occ[ij[:, 0], ij[:, 1], ij[:, 2]] = True
-    for ax in range(3):                         # grow by one cell: "next to the surface"
-        grown = occ.copy()
-        sl_a = [slice(None)] * 3
-        sl_b = [slice(None)] * 3
-        sl_a[ax], sl_b[ax] = slice(1, None), slice(None, -1)
-        grown[tuple(sl_a)] |= occ[tuple(sl_b)]
-        grown[tuple(sl_b)] |= occ[tuple(sl_a)]
-        occ = grown
-    pij = ((pts - lo) / g).astype(np.int64)
-    inb = ((pij >= 0) & (pij < dims)).all(axis=1)
+    dims = np.ceil((S.max(axis=0) + 3 * g - lo) / g).astype(np.int64) + 2
+
+    def keys(ij):
+        return (ij[:, 0] * dims[1] + ij[:, 1]) * dims[2] + ij[:, 2]
+    occ = np.unique(keys(np.floor((S - lo) / g).astype(np.int64)))
+    pij = np.floor((pts - lo) / g).astype(np.int64)
+    inb = ((pij >= 1) & (pij < dims - 1)).all(axis=1)     # the 27 cells around stay in the box
+    q = keys(pij[inb])
+    near = np.zeros(len(q), bool)
+    for dx in (-1, 0, 1):
+        for dy in (-1, 0, 1):
+            for dz in (-1, 0, 1):
+                kk = q + (dx * dims[1] + dy) * dims[2] + dz
+                pos = np.minimum(np.searchsorted(occ, kk), len(occ) - 1)
+                near |= occ[pos] == kk
     nearby = np.zeros(len(pts), bool)
-    q = pij[inb]
-    nearby[inb] = occ[q[:, 0], q[:, 1], q[:, 2]]
+    nearby[inb] = near
     tree = solid.tree
     for i in np.nonzero(~nearby)[0].tolist():
         p = pts[i].tolist()
@@ -640,14 +713,11 @@ def _visible_colour_source(high, solid: _Surface, depth: float, cell: float):
     deep_v = _deep_mask(solid, co, depth, cell)
     lv = _arr(me.loops, "vertex_index", nl, np.int32)
     ps = _arr(me.polygons, "loop_start", nf, np.int32)
-    dl = deep_v[lv].astype(np.int8)
-    all_deep = np.minimum.reduceat(dl, ps).astype(bool) if nf else np.zeros(0, bool)
-    any_deep = np.maximum.reduceat(dl, ps).astype(bool) if nf else np.zeros(0, bool)
+    all_deep = np.minimum.reduceat(deep_v[lv].astype(np.int8), ps).astype(bool) if nf else np.zeros(0, bool)
     removed = int(all_deep.sum())
     if removed:
-        for name, vals in (("forge_two_sided", two), ("forge_partly_deep", any_deep)):
-            at = me.attributes.new(name, "INT", "FACE")
-            at.data.foreach_set("value", vals.astype(np.int32))
+        at = me.attributes.new("forge_two_sided", "INT", "FACE")
+        at.data.foreach_set("value", two.astype(np.int32))
         bm = bmesh.new()
         bm.from_mesh(me)
         bm.faces.ensure_lookup_table()
@@ -655,33 +725,58 @@ def _visible_colour_source(high, solid: _Surface, depth: float, cell: float):
         bm.to_mesh(me)
         bm.free()
         me.update()
-        nf = len(me.polygons)
-        two = _arr(me.attributes["forge_two_sided"].data, "value", nf, np.int32).astype(bool)
-        any_deep = _arr(me.attributes["forge_partly_deep"].data, "value", nf, np.int32).astype(bool)
-        for name in ("forge_two_sided", "forge_partly_deep"):
-            me.attributes.remove(me.attributes[name])
+        two = _arr(me.attributes["forge_two_sided"].data, "value", len(me.polygons), np.int32).astype(bool)
+        me.attributes.remove(me.attributes["forge_two_sided"])
     obj = bpy.data.objects.new(me.name, me)
     obj.matrix_world = high.matrix_world.copy()
     bpy.context.scene.collection.objects.link(obj)
     obj["forge_colour_source"] = True
-    return obj, _Surface(_tree(obj), two, None, any_deep), removed
+    return obj, _Surface(_tree(obj), two), removed
 
 
-def _validate_hits(low, high_mw, cage, surf: _Surface, max_ray: float, raster, solid=None,
-                   depth: float = 0.0) -> dict:
+HIT_DEPTH_VOXELS = 1.5      # colour: a hit this far under the welded solid's surface is hidden texture
+KINDS = ("miss", "back_face", "buried", "faces_away")
+
+
+def _corner_normals(low) -> np.ndarray:
+    """The low's shading normal per face corner (what its tangent space is built on)."""
+    me = low.data
+    nl = len(me.loops)
+    try:
+        return _arr(me.corner_normals, "vector", nl * 3, np.float32).reshape(-1, 3).astype(np.float64)
+    except AttributeError:                      # Blender before 4.1
+        me.calc_normals_split()
+        return _arr(me.loops, "normal", nl * 3, np.float32).reshape(-1, 3).astype(np.float64)
+
+
+def _validate_hits(low, high_mw, cage, surf: _Surface, max_ray: float, raster, visible=None,
+                   tol: float = 0.0, colour: bool = False) -> dict:
     """Re-cast every covered texel's ray as Cycles does (from the interpolated cage point towards
-    the low point, first hit within max_ray, both sides of a face) and mark the ones that cannot
-    be trusted: no hit, a hit on the BACK of a face (the ray started inside the original), or
-    (colour from an original with buried pieces) a hit deeper than `depth` inside the welded
-    solid. Cycles cannot skip back faces itself (Marmoset / Substance 'ignore backfaces')."""
+    the low point; the first hit, on either side of a face, within max_ray) and mark the texels
+    whose result cannot be trusted:
+      miss       - no hit;
+      back_face  - the ray meets the BACK of a face that has an inside: it started inside the
+                   original (when the welded solid is known: inside the solid);
+      buried     - (colour, welded solid known) the hit lies more than `tol` under the place
+                   where the ray meets the solid: buried AI texture, or texture seen through a
+                   hole or crack of the original;
+      faces_away - the surface met faces away from the new surface (from the low's own shading
+                   normal): the normal map would come out flipped (Blender bakes a face's normal
+                   as it is, even met from behind), the colour from a wall this texel does not
+                   stand for.
+    With the welded solid known, facing is judged on it: it is closed and points outward, the
+    colour original may not. Faces that count both ways (see _orientation) are never back faces;
+    the share of texels accepted only for that reason is returned as both_ways (the check could
+    not tell front from back there). Cycles cannot skip back faces itself (Marmoset / Substance
+    'ignore backfaces')."""
     tri, bary, _island = raster
     ys, xs = np.nonzero(tri >= 0)
     invalid = np.zeros(tri.shape, bool)
-    kinds = {"miss": 0, "back_face": 0, "buried": 0}
     if not len(ys):
-        return {"invalid": invalid, "covered": tri >= 0, "kinds": kinds, "share": 0.0}
+        return {"invalid": invalid, "covered": tri >= 0, "kinds": dict.fromkeys(KINDS, 0),
+                "share": 0.0, "both_ways": 0.0}
     R, T, s_h, _s_l = _to_high(low, high_mw)
-    tv, _tl, co, _vn, _uv = _low_arrays(low)
+    tv, tl, co, _vn, _uv = _low_arrays(low)
     cme = cage.data
     cco = _arr(cme.vertices, "co", len(cme.vertices) * 3, np.float32).reshape(-1, 3).astype(np.float64)
     co_h, cg_h = co @ R.T + T, cco @ R.T + T
@@ -692,27 +787,125 @@ def _validate_hits(low, high_mw, cage, surf: _Surface, max_ray: float, raster, s
     V = Lp - Cp
     dist = np.linalg.norm(V, axis=1)
     D = V / np.maximum(dist, 1e-12)[:, None]
+    # the low's shading normal at each texel, in the high's space (normals: inverse transpose)
+    Nl = np.einsum("sk,skd->sd", b, _corner_normals(low)[tl[f]]) @ np.linalg.inv(R)
+    Nl /= np.maximum(np.linalg.norm(Nl, axis=1, keepdims=True), 1e-12)
     reach = max_ray / s_h
-    rc, two, pdeep = surf.tree.ray_cast, surf.two_sided, surf.partly_deep
+    rc, two = surf.tree.ray_cast, surf.two_sided
+    vrc = visible.tree.ray_cast if visible is not None else None
+    vtwo = visible.two_sided if visible is not None else None
     bad = np.zeros(len(ys), np.int8)
-    for k, (c, d) in enumerate(zip(Cp.tolist(), D.tolist())):
+    both = 0
+    for k, (c, d, nl) in enumerate(zip(Cp.tolist(), D.tolist(), Nl.tolist())):
         h = rc(c, d, reach)
         if h[0] is None:
             bad[k] = 1
-        elif not two[h[2]] and (h[1][0] * d[0] + h[1][1] * d[1] + h[1][2] * d[2]) > 0:
+            continue
+        if vrc is not None:
+            hv = vrc(c, d)
+            if hv[0] is not None:
+                cv = hv[1].dot(d)
+                if cv > 0 and not vtwo[hv[2]]:
+                    bad[k] = 2                       # starts inside the visible shape
+                    continue
+                gap = (h[3] - hv[3]) * max(abs(cv), 0.2)   # depth under the solid's surface
+                if gap > tol:
+                    bad[k] = 3
+                    continue
+                if gap >= -tol:                      # the colour comes from the visible surface
+                    if (hv[1].dot(nl) < 0) != (cv > 0):
+                        bad[k] = 4
+                    continue
+                # a piece of the original in front of the solid: judged on its own below
+        n, f_ = h[1], h[2]
+        dn = n.dot(d)
+        if dn > 0 and not two[f_]:
             bad[k] = 2
-        elif solid is not None and pdeep is not None and pdeep[h[2]]:
-            p = h[0]
-            if solid.tree.find_nearest(p, depth)[0] is None and _inside(solid.tree, p):
-                bad[k] = 3
+            continue
+        away = n.dot(nl) < 0
+        if colour and dn > 0:                         # colour: a face counting both ways shows
+            away = not away                           # the side the ray meets
+        if away:
+            bad[k] = 4
+        elif dn > 0:
+            both += 1
     invalid[ys, xs] = bad > 0
-    kinds = {"miss": int((bad == 1).sum()), "back_face": int((bad == 2).sum()), "buried": int((bad == 3).sum())}
+    kinds = {name: int((bad == i + 1).sum()) for i, name in enumerate(KINDS)}
     return {"invalid": invalid, "covered": tri >= 0, "kinds": kinds,
-            "share": float((bad > 0).sum()) / len(ys)}
+            "share": float((bad > 0).sum()) / len(ys), "both_ways": both / len(ys)}
 
 
 def _upsample(a: np.ndarray, k: int) -> np.ndarray:
     return np.kron(a, np.ones((k, k), a.dtype)) if k > 1 else a
+
+
+def _grow(mask: np.ndarray, r: int) -> np.ndarray:
+    """Square dilation by r texels (running sums: the cost does not depend on r)."""
+    if r <= 0:
+        return mask.copy()
+    out = mask.astype(np.int32)
+    for ax in (0, 1):
+        pad = [(0, 0), (0, 0)]
+        pad[ax] = (r + 1, r)
+        cs = np.cumsum(np.pad(out, pad), axis=ax)
+        hi = [slice(None), slice(None)]
+        lo = [slice(None), slice(None)]
+        hi[ax], lo[ax] = slice(2 * r + 1, None), slice(None, -(2 * r + 1))
+        out = cs[tuple(hi)] - cs[tuple(lo)]
+    return out > 0
+
+
+def _dilate4(mask: np.ndarray) -> np.ndarray:
+    g = mask.copy()
+    g[1:] |= mask[:-1]
+    g[:-1] |= mask[1:]
+    g[:, 1:] |= mask[:, :-1]
+    g[:, :-1] |= mask[:, 1:]
+    return g
+
+
+_NB8 = ((1, 0), (-1, 0), (0, 1), (0, -1), (1, 1), (1, -1), (-1, 1), (-1, -1))
+
+
+def _extend(rgb: np.ndarray, known: np.ndarray, island: np.ndarray, rings: int) -> tuple:
+    """Grow the known texels outward ring by ring, as Blender's 'extend' margin does: each new
+    texel takes the mean of its known neighbours (8 around), all from ONE island, so two
+    islands never blend in the gutter. Returns (a copy of rgb with the grown values, reached)."""
+    h, w = known.shape
+    val = rgb.copy()
+    kn = known.copy()
+    lab = np.where(kn, island, -1)
+    for _ in range(rings):
+        cand = _dilate4(kn)
+        cand[1:, 1:] |= kn[:-1, :-1]
+        cand[1:, :-1] |= kn[:-1, 1:]
+        cand[:-1, 1:] |= kn[1:, :-1]
+        cand[:-1, :-1] |= kn[1:, 1:]
+        cand &= ~kn
+        ys, xs = np.nonzero(cand)
+        if not len(ys):
+            break
+        nbrs = []
+        best = np.full(len(ys), -1, np.int64)
+        for dy, dx in _NB8:
+            yy, xx = ys + dy, xs + dx
+            inb = (yy >= 0) & (yy < h) & (xx >= 0) & (xx < w)
+            yy, xx = np.where(inb, yy, 0), np.where(inb, xx, 0)
+            ok = inb & kn[yy, xx]
+            lb = np.where(ok, lab[yy, xx], -1)
+            nbrs.append((yy, xx, lb))
+            best = np.maximum(best, lb)
+        acc = np.zeros((len(ys), val.shape[2]), np.float64)
+        cnt = np.zeros(len(ys), np.int32)
+        for yy, xx, lb in nbrs:
+            m = (lb == best) & (lb >= 0)
+            acc[m] += val[yy[m], xx[m]]
+            cnt[m] += 1
+        got = cnt > 0
+        val[ys[got], xs[got]] = acc[got] / cnt[got][:, None]
+        lab[ys[got], xs[got]] = best[got]
+        kn[ys[got], xs[got]] = True
+    return val, kn
 
 
 def _inpaint(rgb: np.ndarray, holes: np.ndarray, sources: np.ndarray, island: np.ndarray,
@@ -747,40 +940,64 @@ def _inpaint(rgb: np.ndarray, holes: np.ndarray, sources: np.ndarray, island: np
     return left
 
 
-def _apply_validation(img, val: dict, raster, mtype: str) -> float:
-    """After a map's bake (Blender's margin keeps the gutter): the texels whose ray was invalid
-    become holes, filled from valid texels of the same UV island. Returns the share of the
-    island texels that had no clean hit, measured BEFORE the fill."""
+FLIPPED_Z = -0.01     # a normal-map texel whose normal points this far into the new surface
+
+
+def _apply_validation(img, val: dict, island: np.ndarray, mtype: str, margin: int = 0,
+                      extra=None) -> dict:
+    """After a map's bake: the texels whose ray was invalid become holes, filled from valid
+    texels of the same UV island; then the gutter next to them, which Blender's margin grew from
+    the bad values before they were repaired, is grown again from the repaired island (up to the
+    margin). `island` is the full-size island map (_islands).
+    The normal map is also read back: a texel whose normal points INTO the new surface (tangent
+    z < 0) is never a correct bake (an engine rebuilds z as positive), whatever the check of
+    the rays said - where Blender's ray and the re-cast one part ways (long grazing rays at a
+    coarse part), only the result shows it. `extra`: such texels found earlier with the same
+    rays (the normal map, for AO and the colour maps).
+    Returns {"share": the share of the island texels without a clean bake, measured BEFORE the
+    fill, "filled": texels repaired, "gutter": gutter texels redone, "flipped": the full-size
+    mask of texels found wrong in the result itself}."""
     w, h = img.size
     px = np.empty(w * h * 4, dtype=np.float32)
     img.pixels.foreach_get(px)
     px = px.reshape(h, w, 4)
     res = val["invalid"].shape[0]
-    k = h // res if (h % res == 0 and w == h) else 1
-    cov = _upsample(val["covered"], k)
+    if island.shape != (h, w) or w != h or h % res:          # odd sizes: no texel-level check
+        return {"share": _resolve_sentinel(img, np.ones((h, w), bool), mtype), "filled": 0, "gutter": 0,
+                "flipped": None}
+    k = h // res
+    cov = island >= 0
     bad = _upsample(val["invalid"], k)
-    isl = _upsample(raster[2], k)
-    if cov.shape != (h, w):                       # odd sizes: no texel-level check possible
-        return _resolve_sentinel(img, np.ones((h, w), bool), mtype)
-    if k > 1:                                     # the coarse check's edge texels too
-        grow = bad.copy()
-        grow[1:] |= bad[:-1]
-        grow[:-1] |= bad[1:]
-        grow[:, 1:] |= bad[:, :-1]
-        grow[:, :-1] |= bad[:, 1:]
-        bad = grow & cov
+    if k > 1:
+        # the check saw each k x k block at its centre: the texels next to a bad block are
+        # suspect too, and so is the rim of each island the coarse grid never saw (within a block)
+        checked = _upsample(val["covered"], k)
+        bad = (_dilate4(bad) & checked) | (_grow(bad, k) & cov & ~checked)
     sent = (px[..., 0] > 0.99) & (px[..., 1] < 0.01) & (px[..., 2] > 0.99)
-    holes = (bad | sent) & cov
-    extra = sent & cov & ~bad                    # rays Blender left unbaked that the check passed
-    share = val["share"] + float(extra.sum()) / max(int(cov.sum()), 1)
+    wrong = np.zeros((h, w), bool) if extra is None or extra.shape != (h, w) else extra & cov
+    if mtype == "normal":
+        wrong |= cov & ~sent & (px[..., 2] * 2.0 - 1.0 < FLIPPED_Z)
+    holes = (bad | sent | wrong) & cov
+    more = (sent | wrong) & cov & ~bad           # wrong in the result although the check passed
+    share = val["share"] + float(more.sum()) / max(int(cov.sum()), 1)
     rgb = px[..., :3]
+    redone = np.zeros((h, w), bool)
     if holes.any():
-        left = _inpaint(rgb, holes, cov & ~holes, isl)
+        left = _inpaint(rgb, holes, cov & ~holes, island)
         if len(left):                            # a whole island without one clean texel
             miss = np.zeros(holes.shape, bool)
             miss.ravel()[left] = True
             rgb[miss] = _fill_colours(rgb, cov & ~miss, miss, 64)
-    outside = sent & ~cov
+        if margin > 0:
+            near = _grow(holes, margin) & ~cov
+            if near.any():
+                ys, xs = np.nonzero(_grow(near, margin + 1))
+                y0, y1, x0, x1 = ys.min(), ys.max() + 1, xs.min(), xs.max() + 1
+                grown, reached = _extend(rgb[y0:y1, x0:x1], cov[y0:y1, x0:x1], island[y0:y1, x0:x1], margin)
+                sub = near[y0:y1, x0:x1] & reached
+                rgb[y0:y1, x0:x1][sub] = grown[sub]
+                redone[y0:y1, x0:x1] = sub
+    outside = sent & ~cov & ~redone
     if outside.any():
         good = cov & ~holes
         neutral = NEUTRAL.get(mtype) or (rgb[good].mean(axis=0, dtype=np.float64) if good.any() else (0.5, 0.5, 0.5))
@@ -788,7 +1005,7 @@ def _apply_validation(img, val: dict, raster, mtype: str) -> float:
     px[..., :3] = rgb
     px[..., 3] = 1.0
     img.pixels.foreach_set(px.ravel())
-    return share
+    return {"share": share, "filled": int(holes.sum()), "gutter": int(redone.sum()), "flipped": wrong}
 
 
 _CAGE: dict = {"name": None}
@@ -1040,13 +1257,15 @@ def run_iter(args: dict):
     """Generator: yields after each map so a UI stays responsive (progress, Stop).
 
     args (besides sizes and paths): fitted_cage (fit a cage per part), validate_hits (re-cast
-    every texel's ray and repair the ones without a clean hit; on with the fitted cage),
-    solid_meshes {high object name: welded solid mesh name} (the visible shape of parts welded
-    solid; colour then comes from the original without its buried pieces), despeckle (off)."""
+    every texel's ray and repair the ones without a clean hit, and the gutter next to them; on
+    with the fitted cage), solid_meshes {high object name: welded solid mesh name} (the visible
+    shape of parts welded solid; colour then comes from the original without its buried pieces,
+    and every colour hit is judged against the solid), despeckle (off)."""
     size = int(args.get("texture_size", 2048))
     out_dir = os.path.abspath(args["texture_dir"])
     os.makedirs(out_dir, exist_ok=True)
     maps_wanted = [m for m in args.get("maps", MAP_TYPES) if m in MAP_TYPES]
+    maps_wanted.sort(key=lambda m: m != "normal")          # the normal map first: it shows bad rays
     extrusion_ratio = float(args.get("cage_extrusion_ratio", 0.01))
     margin = int(args.get("margin_px", 8))
     fitted = bool(args.get("fitted_cage", False))
@@ -1075,13 +1294,14 @@ def run_iter(args: dict):
         cage = None
         src = high                                         # what the rays meet
         temps = []
-        val = raster = None
+        val = raster = island = flipped = None
         entry = {}
         solid_me = bpy.data.meshes.get(solids.get(high.name, "")) if solids.get(high.name) else None
         mat = None
         baked = {}
         misses = {}
         refilled = {}
+        gutter = {}
         try:
             if fitted:                                     # step-by-step panel turns it on
                 STATUS["text"] = f"{part}: fitting the bake cage"
@@ -1095,24 +1315,33 @@ def run_iter(args: dict):
             if validate:
                 STATUS["text"] = f"{part}: checking every bake ray"
                 yield 0.05
-                solid = None
-                depth = 0.0
+                visible, tol = None, 0.0
                 if solid_me is not None and solid_me != high.data:
-                    # colour from the original: without the pieces buried in the welded solid
+                    # colour from the original: without the pieces buried in the welded solid,
+                    # and every hit judged against the solid (the visible shape: closed, outward)
                     sco = _coords(solid_me)
                     base = _surface_cached(solid_me, sco)
-                    solid = _Surface(base.tree, base.two_sided, sco.astype(np.float64))
+                    visible = _Surface(base.tree, base.two_sided, sco.astype(np.float64))
                     voxel = _voxel_size(solid_me)
-                    depth = 2.0 * voxel
-                    src, surf, removed = _visible_colour_source(high, solid, depth, voxel)
+                    src, surf, removed = _visible_colour_source(high, visible, 2.0 * voxel, voxel)
                     temps.append(src)
                     entry["buried_faces_removed"] = removed
+                    tol = HIT_DEPTH_VOXELS * voxel
                 else:
                     surf = _surface_cached(high)
                 raster = _raster(low, _bake_res(size))
-                val = _validate_hits(low, high.matrix_world, cage, surf, max_ray, raster, solid, depth)
-                entry["invalid_kinds"] = {k: round(v / max(int(val["covered"].sum()), 1), 5)
-                                          for k, v in val["kinds"].items()}
+                island = raster[2] if raster[2].shape[0] == size else _islands(low, size)
+                # colour maps take a face met from behind as it is; normal and AO come out flipped
+                colour_only = not any(m in ("normal", "ao") for m in maps_wanted)
+                val = _validate_hits(low, high.matrix_world, cage, surf, max_ray, raster, visible, tol,
+                                     colour=colour_only)
+                ncov = max(int(val["covered"].sum()), 1)
+                entry["invalid_kinds"] = {k: round(v / ncov, 5) for k, v in val["kinds"].items()}
+                entry["both_ways"] = round(val["both_ways"], 5)
+                # the same rays: texels whose normal came out flipped in this part's normal map
+                fkey = _hash(_coords(low.data), _arr(low.data.loops, "vertex_index", len(low.data.loops), np.int32),
+                             _coords(solid_me if solid_me is not None else high.data), np.array([size]))
+                flipped = None if "normal" in maps_wanted else _FLIPPED.get(fkey)
             mat = _bake_material(low)
             cov = _uv_coverage(low, size) if val is None else None
             for mi, mtype in enumerate(maps_wanted):
@@ -1128,8 +1357,19 @@ def run_iter(args: dict):
                 else:
                     _bake(mtype, extrusion, max_ray, margin)
                 if val is not None:
-                    # texels whose ray had no clean hit: filled from their own UV island
-                    misses[mtype] = _apply_validation(img, val, raster, mtype)
+                    # texels whose ray had no clean hit: filled from their own UV island, and
+                    # the gutter Blender grew from them grown again from the repaired texels
+                    fix = _apply_validation(img, val, island, mtype, margin, flipped)
+                    if mtype == "normal" and fix["flipped"] is not None:
+                        flipped = fix["flipped"]
+                        _FLIPPED.clear()
+                        _FLIPPED[fkey] = flipped
+                        entry["invalid_kinds"]["flipped_normal"] = round(
+                            float((flipped & ~_upsample(val["invalid"], size // val["invalid"].shape[0])).sum())
+                            / max(int((island >= 0).sum()), 1), 5)
+                    misses[mtype] = fix["share"]
+                    if fix["gutter"]:
+                        gutter[mtype] = fix["gutter"]
                 else:
                     if cage is not None:
                         refilled[mtype] = _refill_misses(img, src, low, mat, mtype, size, non_color,
@@ -1160,6 +1400,8 @@ def run_iter(args: dict):
             entry["specks_removed"] = specks[part]
         if refilled:
             entry["cage_refilled"] = refilled
+        if gutter:
+            entry["gutter_redone"] = gutter
         if val is not None:
             # share of the island texels without a clean hit, counted BEFORE they were filled
             entry["invalid_texels"] = {k: round(v, 4) for k, v in misses.items()}

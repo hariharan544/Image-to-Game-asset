@@ -751,24 +751,33 @@ def _bake_rows(rep):
         if inv is None:                         # a report from before the rays were checked
             miss = r.get("bake_miss_ratio", 0)
             icon = GOOD if miss <= 0.02 else (WARN if miss <= 0.10 else BAD)
-            out.append((icon, f"{part}: {len(r.get('maps', {}))} maps, {miss:.1%} filled"))
+            out.append((icon, f"{part}: {len(r.get('maps', {}))} maps, {miss:.1%} patched"))
         else:
-            # measured BEFORE the fill: rays that hit nothing, the back of a surface, or a
-            # buried piece of the original
+            # measured BEFORE the patch: spots where the bake found nothing, the inside of the
+            # original, hidden texture, or a surface facing away from the new mesh
             icon = GOOD if inv <= 0.02 else (WARN if inv <= 0.10 else BAD)
             n = len(r.get("maps", {}))
             out.append((icon, f"{part}: {n} map{'' if n == 1 else 's'}"))
-            if inv < 0.0005:
-                out.append(("BLANK1", "    every texel found its surface cleanly"))
-            else:
-                out.append(("BLANK1", f"    {inv:.1%} of the texture had no clean hit (filled from neighbours)"))
+            # parts of the original that are open, paper-thin pieces have no inside: there the
+            # check cannot tell whether the bake saw their front or their back
+            both = float(r.get("both_ways", 0.0))
+            if inv >= 0.0005:
+                out.append(("BLANK1", f"    {inv:.1%} of the texture could not be baked cleanly"))
+                out.append(("BLANK1", "    and was patched from nearby"))
+            elif both < 0.0005:
+                out.append(("BLANK1", "    the whole texture baked cleanly"))
+            if both >= 0.0005:
+                out.append(("BLANK1", f"    {both:.1%} comes from open, paper-thin pieces of the original:"))
+                out.append(("BLANK1", "    there the bake cannot be checked (Step 3: Weld into one solid,"))
+                out.append(("BLANK1", "    then bake again)"))
         spots = int((r.get("cage") or {}).get("unenclosed", 0))
-        if spots:
-            out.append((WARN, f"    the cage could not wrap {spots:,} spots: the new mesh is"))
-            out.append(("BLANK1", "    too coarse or folded there (Step 4: more triangles, then bake again)"))
+        if spots:                               # a warning only when the patching is not small
+            sev = "INFO" if inv is not None and inv <= 0.02 else WARN
+            out.append((sev, f"    {spots:,} places where the new mesh is too coarse or folded"))
+            out.append(("BLANK1", "    to bake cleanly (Step 4: more triangles there, then bake again)"))
         sp = sum((r.get("specks_removed") or {}).values())
         if sp:
-            out.append(("BLANK1", f"    {sp:,} speck texels cleaned"))
+            out.append(("BLANK1", f"    {sp:,} specks cleaned"))
     return out
 
 
