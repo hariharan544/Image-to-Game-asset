@@ -42,6 +42,22 @@ When Quad Remesher, UVPackmaster or Auto-Rig Pro are installed, `forge setup-ble
 its settings, as they exist in *your* Blender. Forge's add-on adapters are written against this
 file, so send it over after the first setup run.
 
+## Auto-Rig Pro check for Step 8 (`forge arp-probe`)
+
+The new Step 8 relies on how *your* Auto-Rig Pro behaves (its rig presets, limb options, IK
+poles, binding and export). Run this once, in PowerShell in the Forge folder:
+
+```powershell
+.venv\Scripts\forge.exe arp-probe
+```
+
+Small Blender windows open and close by themselves for about 5 minutes; don't click in them or
+close them. A window may close suddenly at the bird step: that is a result too, and the check
+carries on. Nothing in your files or Blender settings is changed: every step uses an empty
+throwaway scene and nothing is saved. The result is `docs\research\arp_3_79_probe.json`: send
+that file back, with any lines that start with `[X]` or `[!]`. Logs and test exports are in
+`jobs\_setup\arp_probe`.
+
 ## UVPackmaster engine
 
 UVPackmaster 4 packs with a separate **engine** program that ships with your purchase and is

@@ -6,6 +6,7 @@
   forge review   jobs/knight --checkpoint final --reject --notes "cape clips" --redo-from retopo
   forge review   jobs/knight --reject --notes "mobile textures too blurry" --redo-from bake@unity
   forge setup-blender [--blender PATH]                    find + verify Blender, GPU, add-ons, smoke test
+  forge arp-probe     [--blender PATH]                    record how your Auto-Rig Pro behaves (Step 8)
   forge check                                             verify Blender, Tripo key, AI supervisor
 """
 
@@ -163,6 +164,19 @@ def cmd_setup_blender(a) -> int:
                addon_trial2=a.addon_trial2)
 
 
+def cmd_arp_probe(a) -> int:
+    from .arp_probe import run
+    from .setup_blender import _remember_blender
+    blender = None
+    if a.blender:
+        if not Path(a.blender).exists():
+            print(f"[X] {a.blender} does not exist")
+            return 1
+        _remember_blender(a.blender, Path.cwd() / ".env")
+        blender = [a.blender]
+    return run(blender, a.jobs, Path(a.out) if a.out else None)
+
+
 def cmd_report(a) -> int:
     """A short, paste-able text summary of a job (instead of sending files)."""
     job = Job.load(a.job)
@@ -305,6 +319,12 @@ def main(argv=None) -> int:
     b.add_argument("--addon-trial2", action="store_true",
                    help="Auto-Rig Pro full flow (rig, bind, engine export) + a real UVPackmaster pack")
     b.set_defaults(fn=cmd_setup_blender)
+
+    ap = sub.add_parser("arp-probe", help="check how your Auto-Rig Pro behaves (for Step 8) and write "
+                                          "docs/research/arp_3_79_probe.json to send back")
+    ap.add_argument("--blender", help="path to blender.exe (saved to .env as FORGE_BLENDER)")
+    ap.add_argument("--out", help="where to write the result (default: docs/research/arp_3_79_probe.json)")
+    ap.set_defaults(fn=cmd_arp_probe)
 
     rp = sub.add_parser("report", help="short text summary of a job, to paste into a chat")
     rp.add_argument("job", help="job folder, e.g. jobs\\bull")
