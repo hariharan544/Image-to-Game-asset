@@ -693,16 +693,17 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         ok = yield from _qr_part(obj, target, args, timeout)
         used = "quadremesher"
         got = C.tri_count(obj) if ok else 0
-        low = 0.7
+        # what counts: the body's triangles alone, or - with cut-off parts - the body and its
+        # parts at the body's quad size where each sits (known now: what a part reserved and
+        # will not use is the body's, and a re-run scales body and parts together, one quad
+        # size across each joint)
+        have, aim, low = got, share, 0.7
         if ok and split_pieces:
-            # the parts' real need is known now: what they reserved and will not use is the
-            # body's (aim at it again when that leaves the body well short of its share)
-            share = 2 * (whole - sum(settle())) / headroom
-            low = 0.85
-        if ok and (got > share * 1.05 or got < share * low):
+            have, aim, low = got + 2 * sum(settle()), 2 * whole / headroom, 0.85
+        if ok and (have > aim * 1.05 or have < aim * low):
             # QR's count is a target, not a cap (and a density map can make it undershoot):
-            # one corrected re-run before any decimation - towards the body's OWN share
-            target = target * (share / max(got, 1)) * (0.95 if got > share else 1.0)
+            # one corrected re-run before any decimation
+            target = target * (aim / max(have, 1)) * (0.95 if have > aim else 1.0)
             _replace_mesh(obj, backup.copy())
             STATUS["text"] = f"{_short(obj.name)}: Quad Remesher again (triangle count)"
             ok = yield from _qr_part(obj, target, args, timeout)
@@ -826,6 +827,9 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         if ok and not fit["fitted"] and args.get("carve", True):
             from .density import carve, source_tree       # rescued / unfitted result: carve only
             fit["carve"] = carve(obj.data, backup, fit["tree"] or source_tree(backup))
+        if ok and split_pieces:
+            # the body's own share: the budget minus what its parts take at its quad size
+            share = 2 * (whole - sum(settle())) / headroom
         if ok and split_pieces and C.tri_count(obj) > share * 1.05:
             # the body alone is over its share: reduce the body alone, now. Once a part is
             # joined to it nothing is decimated (a collapse there crumples the joint)

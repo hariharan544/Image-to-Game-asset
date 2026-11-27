@@ -783,7 +783,9 @@ def _stand_in_qr(calls=None):
         bm.to_mesh(obj.data)
         bm.free()
         obj.data.update()
-        return retopo._quadriflow(obj, max(int(quads * 2), 200), {"symmetry_x": False})
+        # (QuadriFlow's "preserve sharp" can loop for ever on some inputs - measured: a body
+        # it remeshes in 6 s without it never finished with it; Quad Remesher does not hang)
+        return retopo._quadriflow(obj, max(int(quads * 2), 200), {"symmetry_x": False, "preserve_hard_edges": False})
     return qr
 
 
