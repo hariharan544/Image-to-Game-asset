@@ -869,6 +869,11 @@ def place_joints() -> dict:
         apps = []
         report["extras_error"] = str(exc)
     report["extras"] = _mod("arp_rig").add_extras(rig, apps, {})
+    # each rigged appendage's surface, for the bind: its bones must not move the body around it
+    try:
+        report["extras"]["regions"] = _mod("arp_rig").store_regions(body, apps, report["extras"].get("chains", []))
+    except Exception as exc:                          # noqa: BLE001
+        report["extras"].setdefault("errors", []).append(f"appendage surfaces: {exc}")
     rig["forge_ref_rig"] = True
     report["ref_rig"] = rig.name
     return report
@@ -1362,8 +1367,8 @@ def export_engine(engine: str, bake_report: dict, unity_budget: int = 0) -> dict
             from importlib import import_module
             skin = import_module(f"{fb().__name__}.skin")
             for o in lows():
-                if o.vertex_groups:
-                    skin._cleanup_weights(o, ENGINE_INFLUENCES[engine], 0.01, deform)
+                if o.vertex_groups:            # (continuous: no tear where the 4th/5th bones swap)
+                    skin._cleanup_weights(o, ENGINE_INFLUENCES[engine], 0.01, deform, continuous=True)
         _clear("lod")
         lods = fin.lods({"lod_ratios": ENGINE_LODS[engine]})
         files = fin.export({"engine": engine, "asset_name": asset_name(), "export_dir": str(out_dir),

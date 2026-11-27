@@ -764,6 +764,11 @@ def _rig_rows(rep):
         out.append(("INFO", f"{k}: {why}"))
     for e in (ex.get("errors") or [])[:3]:
         out.append((BAD, e[:60]))
+    if not rep.get("chain_parents"):              # (placed, not built yet)
+        for chain, h in (ex.get("parents") or {}).items():
+            if isinstance(h, dict) and h.get("ref_parent"):
+                out.append(("BLANK1", f"  {_app_words(chain)} will hang from "
+                                      f"{_bone_words(h['ref_parent'].replace('_ref', ''))}"))
     if rep.get("bones"):
         out.append((GOOD, f"{rep['bones']} bones ({rep.get('deform_bones', 0)} deform)"))
     for part, w in rep.get("weights", {}).items():
@@ -774,6 +779,65 @@ def _rig_rows(rep):
         out.append((GOOD if un < 0.5 else BAD, f"{part}: {un:.1f}% unweighted"))
     for part, bone in rep.get("props", {}).items():
         out.append(("BONE_DATA", f"{part} > {bone}"))
+    out += _chain_rows(rep)
+    return out
+
+
+def _bone_words(name) -> str:
+    """'spine_01.x' -> 'spine 01', 'c_ear_01.l' -> 'left ear 01' (for the panel)."""
+    if not name:
+        return "?"
+    base, _, side = str(name).rpartition(".")
+    if not base:
+        base, side = str(name), ""
+    if base.startswith("c_"):
+        base = base[2:]
+    return ({"l": "left ", "r": "right "}.get(side, "") + base.replace("_", " ")).strip()
+
+
+def _app_words(app) -> str:
+    """'ear_l' -> 'left ear', 'tail' -> 'tail'."""
+    base, _, side = str(app).rpartition("_")
+    if side in ("l", "r") and base:
+        return f"{'left' if side == 'l' else 'right'} {base.replace('_', ' ')}"
+    return str(app).replace("_", " ")
+
+
+def _chain_rows(rep):
+    """Tail / ears after the build: what they hang from, and whether that bone owns the skin
+    round their root (if another bone does, the root tears when that bone moves)."""
+    out = []
+    if (rep.get("skinning") or {}).get("preserve_volume_found"):
+        out.append(("INFO", "Preserve Volume turned off (engines blend"))
+        out.append(("BLANK1", "  bones linearly: now the viewport matches)"))
+    differs = set()
+    for chain, cp in (rep.get("chain_parents") or {}).items():
+        if isinstance(cp, dict) and cp.get("ok") is False:
+            differs.add(chain)
+            out.append((WARN, f"{_app_words(chain)} hangs from {_bone_words(cp.get('parent'))},"))
+            out.append(("BLANK1", f"  not {_bone_words(cp.get('wanted'))} (Auto-Rig Pro differs:"))
+            out.append(("BLANK1", "  tell Forge, the root may tear)"))
+    for app, a in (rep.get("appendages") or {}).items():
+        if not isinstance(a, dict):
+            continue
+        name = _app_words(app)
+        if a.get("error") or a.get("skipped"):
+            out.append(("INFO", f"{name}: root weights not checked"))
+            out.append(("BLANK1", f"  ({str(a.get('error') or a.get('skipped'))[:40]})"))
+            continue
+        share, parent, owner = a.get("root_share", 0.0), a.get("parent"), a.get("root_owner")
+        if a.get("root_ok", share >= 0.5):
+            out.append((GOOD, f"{name} hangs from {_bone_words(parent)}"))
+            out.append(("BLANK1", f"  which moves {share:.0%} of the skin round its root"))
+        else:
+            out.append((WARN, f"{name}: the skin round its root moves"))
+            out.append(("BLANK1", f"  with {_bone_words(owner)}, not {_bone_words(parent)}"))
+            out.append(("BLANK1", f"  ({share:.0%}): it can tear when {_bone_words(owner)} moves."))
+            if app not in differs:
+                out.append(("BLANK1", "  Check the joints near it, build again"))
+        if a.get("moved_points"):
+            out.append(("BLANK1", f"  {a['moved_points']:,} body points it pulled"))
+            out.append(("BLANK1", f"  now follow {_bone_words(parent)}"))
     return out
 
 

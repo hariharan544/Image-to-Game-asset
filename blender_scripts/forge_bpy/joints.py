@@ -162,15 +162,55 @@ def estimate_points(V: np.ndarray) -> dict:
         sel = V[np.abs(V[:, 2] - z) < 0.02 * H]
         widths.append(np.percentile(np.abs(sel[:, 0]), 98) if len(sel) else np.inf)
     widths = np.array(widths)
-    neck_z = float(zs[int(np.argmin(widths))]) if widths.min() < 0.8 * torso_w else arm_z + 0.2 * (head_top - arm_z)
+    narrow = bool(widths.min() < 0.8 * torso_w)
+    neck_z = float(zs[int(np.argmin(widths))]) if narrow else arm_z + 0.2 * (head_top - arm_z)
     neck_z = max(neck_z, arm_z + 0.02 * H)
     head_z = neck_z + 0.3 * (head_top - neck_z)
+    skull_z = skull_base_z(V, neck_z, head_top, H) if narrow else neck_z
     pelvis = Vector((0.0, mid_y(hip_z), hip_z))
     neck = Vector((0.0, mid_y(neck_z), neck_z))
     head = Vector((0.0, mid_y(head_z), head_z))
     J["pelvis"] = (pelvis, pelvis.lerp(neck, 0.15))
     J["neck"] = (neck, head.copy())
     J["head"] = (head, Vector((head.x, head.y, head_top)))
+    # where the head pivots (arp_rig.ref_targets puts the head bone's start there)
+    J["_skull_base"] = neck.copy() if skull_z <= neck_z + 1e-9 else Vector((0.0, mid_y(skull_z), skull_z))
     J["_spine"] = []
     J["_front"] = front
     return J
+
+
+def skull_base_z(V: np.ndarray, neck_z: float, head_top: float, H: float, tol: float = 0.1) -> float:
+    """Height of the skull base: where the head pivots on the neck.
+
+    Around the narrowest section (neck_z) the band of heights whose section stays as narrow
+    (within `tol`) is the neck. A neck tube is at least as long as its own radius and widens
+    into the head at its top: the skull base is the top of the tube. A neckless body (a head
+    sitting on the trunk) has no such band - or the narrow part is the head itself and never
+    widens again - and its skull base is the narrowest section, the crease between trunk and
+    head."""
+    step, half = 0.01 * H, 0.015 * H
+
+    def width(z):
+        sel = V[np.abs(V[:, 2] - z) < half]
+        return float(np.percentile(np.abs(sel[:, 0]), 98)) if len(sel) >= 3 else None
+
+    w_n = width(neck_z)
+    if not w_n:
+        return neck_z
+    limit = (1.0 + tol) * w_n
+
+    def walk(direction, stop):
+        edge, z = neck_z, neck_z + direction * step
+        while (z - stop) * direction <= 0:
+            w = width(z)
+            if w is not None and w > limit:
+                return edge, True
+            edge, z = z, z + direction * step
+        return edge, False
+
+    top, widened = walk(1.0, neck_z + 0.6 * (head_top - neck_z))     # leave the head a head
+    bottom, _ = walk(-1.0, neck_z - 0.5 * (head_top - neck_z))
+    if widened and top - bottom >= w_n:                 # a tube at least as long as its radius
+        return top
+    return neck_z
