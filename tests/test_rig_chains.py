@@ -400,6 +400,53 @@ def test_bull_tail_root_and_head_turn_hold_over_the_range_of_motion(bull_rigged)
     assert whole < 2.45, whole
 
 
+def test_bull_animation_check_reads_each_place_once(bull_rigged):
+    """Step 8's automatic check on the bull over the whole range of motion, as the panel runs it.
+    Before: one pooled 'left forearm thins to 24%' (the elbow crease), 'right arm offset' for the
+    upper-arm twist, 8367x stretch on a sliver edge and 209 faces 'passing through' that were the
+    elbow crease. Now: each elbow is named, its inner side is contact (information) and its outer
+    side keeps what linear blending keeps at 120 degrees; the forearm-into-ear touch in 'arms up'
+    is a warning; Unity's 4-bone cut is measured, not counted."""
+    from forge_bpy import motion_check as M
+    S, arm, body = bull_rigged["S"], bull_rigged["arm"], bull_rigged["body"]
+    L = importlib.import_module("forge_send.stages_late")
+    n = S.CLIP_LENGTH["rom"]
+    frames = sorted(set(range(1, n + 1, max(1, n // 48))) | {f for f, _ in S.clip_peaks("rom")})
+    gen = M.check(arm, [body], frames)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    S._attach_poses(rep, "rom")
+    joints = {e["where"]: e for e in rep["checks"]["joints"]["regions"]}
+    for side in ("left", "right"):
+        e = joints[f"{side} elbow"]
+        assert e["pose"]["name"] == "elbows" and e["part"] == "outer side" and e["normal"], e
+        assert 0.5 <= e["value"] < 0.7 and e["grade"] == "warn", e                  # (measured 0.58)
+        assert e["contact"]["value"] < 0.4 and e["contact"]["faces"] > 20, e       # (0.19, ~100 faces)
+        assert f"{side} upper arm twist" in joints and joints[f"{side} upper arm twist"]["grade"] == "pass"
+    assert rep["checks"]["joints"]["grade"] == "warn"                    # nothing collapses
+    cross = rep["checks"]["crossing"]["regions"]
+    kinds = {(x["kind"], x["where"]) for x in cross}
+    assert {("contact", "left elbow"), ("contact", "right elbow")} <= kinds, kinds
+    for side in ("left", "right"):                                       # the crease is contact
+        crease = {f"{side} forearm", f"{side} upper arm"}
+        assert not [x for x in cross if set(x["where"].split(" touches ")) == crease], cross
+    ear = next(x for x in cross if x["where"] == "left ear touches left upper arm")
+    assert ear["kind"] == "touch" and ear["grade"] == "warn" and ear["pose"]["name"] == "arms up", ear
+    # no sliver blows the stretch up; the worst places are named, each once
+    assert rep["checks"]["skin"]["stretch"] < 3.0
+    names = [r["where"] for r in rep["regions"]]
+    assert len(names) == len(set(names)) and {"left elbow", "right elbow", "left ear root"} <= set(names)
+    u = rep["checks"]["weights"]["unity"]
+    assert u["shift_mm"] > 0 and u["frame"] and u["pose"]["name"] and u["measured_on"] == "full mesh"
+    rows = L._anim_rows(rep)
+    assert max(len(t) for _i, t in rows) <= 60
+    text = " ".join(t.strip() for _i, t in rows)
+    assert "left elbow, pose 'elbows' (bent 120°" in text and "normal for game skinning" in text, text
+
+
 # ----------------------------------------------------------------------------- Step 8, end to end
 
 @pytest.fixture

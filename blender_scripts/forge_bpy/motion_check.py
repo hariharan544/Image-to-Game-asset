@@ -51,6 +51,7 @@ INNER = 0.5                        # cos to the bend direction: inner side above
 MIN_AREA = 0.01                    # triangles under this share of the median rest area: not measured
 UNITY_SHIFT = 0.5                  # Unity's limit moving skin more than this many median edges: warn
 LBS_MARGIN = 0.05                  # thinning within this of linear blending's own loss is the method's
+SEPARATE = 0.25                    # the two bones of a joint this far apart at it (x its radius): shear
 ORDER = ("pass", "warn", "fail")
 
 # Auto-Rig Pro's deform bones by role (its arm and leg bone tables, ear and tail chains): the
@@ -545,13 +546,21 @@ class _Layout:
         rd = np.linalg.norm(rad, axis=1)
         return rad / np.maximum(rd, 1e-12)[:, None], along, rd
 
-    def measure(self, J, co, R, H, T):
+    def measure(self, J, co, R, H, T, mats=None):
         """One joint at one frame: its bend, twist, the thickness kept on each side of the bend,
-        and its contact zone (indices of points). None when it neither bends nor twists."""
+        and its contact zone (indices of points). None when it neither bends nor twists, or when
+        its two bones no longer meet at the joint (mats given): a parent turning about a far
+        point drags its side away (the lower back in a spine twist, against the thigh) - that
+        is skin shearing, which the skin check judges, not a joint closing."""
         Rrel = R[J.p].T @ R[J.c]
         theta, tw, total, bdir = _swing_twist(Rrel, J.axis)
         if theta < MIN_TURN and abs(tw) < MIN_TURN:
             return None
+        if mats is not None:
+            at_p = mats[J.p, :3, :3] @ J.pivot + mats[J.p, :3, 3]
+            at_c = mats[J.c, :3, :3] @ J.pivot + mats[J.c, :3, 3]
+            if np.linalg.norm(at_p - at_c) > SEPARATE * max(J.r, 1e-9):
+                return None
         ratio = _dist_union(co[J.idx], H, T, J.union) / np.maximum(J.rest, 1e-12)
         use = J.use
         if theta >= MIN_TURN:
@@ -749,7 +758,7 @@ def _run(arm, objs, frames, deform, rests, sizes):
         # ---- joints
         zone_of = np.full(len(rest), -1, np.int64)
         for ji, J in enumerate(L.joints):
-            res = L.measure(J, co, R, H, T)
+            res = L.measure(J, co, R, H, T, mats)
             if res is None:
                 continue
             zone_of[res["zone"]] = ji
