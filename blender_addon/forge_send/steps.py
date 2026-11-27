@@ -317,7 +317,7 @@ def _replan_horns(p, me, budget: int, plan: dict) -> bool:
 def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budget: int = 0) -> dict:
     """The parts plan, made ONCE and used by the run (what the director sees is what runs):
     - thin parts without a twin (tail, antenna, trunk) are cut at their neck and remeshed on
-      their own, then attached;
+      their own, then joined back (welded into one skin where the joint comes out clean);
     - when a side is chosen for mirroring, parts that mirroring would copy or delete (a tail
       curling to one side) are cut the same way; pairs in another pose are not parts;
     - thick rigid parts (horns) get fewer quads, as far as their curve allows (the root keeps
@@ -344,6 +344,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budg
         arr = parts_mod.MeshArrays(me)
         arr.to_world(np.array(p.matrix_world))   # the same space the parts were measured in
         ids = np.zeros(len(me.vertices), np.int32)
+        names: dict = {}                         # part id -> its name (the panel names it so)
         k = 0
         regions = []
         blocked: list = []
@@ -362,6 +363,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budg
             elif a.get("thin") and not twin and a["kind"] not in ("ear", "horn"):
                 k += 1
                 ids[m & (ids == 0)] = k
+                names[str(k)] = a["name"]
                 out[a["name"]] = "separate (cut at its root)"
             elif a["kind"] == "horn":
                 out[a["name"]] = "rigid, fewer quads"
@@ -375,6 +377,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budg
                 name = next((a["name"] for a, am in regions if (am & m).sum() > 0.3 * m.sum()), f"part_{kk}")
                 out[name] = "separate: one-sided, kept as it is when mirroring"
                 ids[m & (ids == 0)] = kk
+                names[str(kk)] = name
             for kind, c, why in rep:
                 where = "left" if c[0] > 0 else "right"
                 if kind == "pair":
@@ -402,6 +405,7 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budg
         elif "forge_mirror_blocked" in me:
             del me["forge_mirror_blocked"]
         dens.write_split(me, ids)
+        me["forge_split_names"] = names
         # rigid horns: half the quads (they never deform, only their shape matters)
         horn = np.zeros(len(me.vertices), bool)
         app_all = np.zeros(len(me.vertices), bool)

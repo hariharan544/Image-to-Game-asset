@@ -189,18 +189,27 @@ def _split_ngons(obj) -> int:
     return len(ngons)
 
 
-def _finish_part(obj, part_budget: int, used: str, before: int, report: dict, quad_method: bool) -> None:
+def _finish_part(obj, part_budget: int, used: str, before: int, report: dict, quad_method: bool,
+                 joined: bool = False) -> None:
     split = _split_ngons(obj)
     after = C.tri_count(obj)
-    # never exceed budget: final safety decimate (QR re-runs smaller first, see _qr_part)
+    over = 0
+    # never exceed budget: final safety decimate (QR re-runs smaller first, see _qr_part).
+    # Not on a mesh that already holds parts remeshed on their own and joined to it: each
+    # part was held to its own share, and a collapse here crumples the joints - reported
     if after > part_budget * 1.05:
-        _decimate(obj, part_budget)
-        after = C.tri_count(obj)
-        used += "+decimate"
+        if joined:
+            over = after - part_budget
+        else:
+            _decimate(obj, part_budget)
+            after = C.tri_count(obj)
+            used += "+decimate"
     for p in obj.data.polygons:
         p.use_smooth = True
     report[obj.get(C.PART_PROP)] = {"budget": part_budget, "tris_before": before,
                                     "tris_after": after, "method": used, "ngons_split": split}
+    if over:
+        report[obj.get(C.PART_PROP)]["over_budget"] = int(over)
 
 
 def _opts(args: dict) -> dict:
@@ -585,7 +594,8 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
     try:
         before = C.tri_count(obj)
         backup = keep_tmp(obj.data.copy())
-        target = budget * float(args.get("carve_headroom", 0.94)) / 2   # quads; room left for carving
+        headroom = float(args.get("carve_headroom", 0.94))
+        target = budget * headroom / 2              # quads; room left for carving
         # ---- plan before remeshing: split off thin one-sided parts (tail...), make the body
         # symmetric from the chosen side. The remesher then gets a clean symmetric body and
         # nothing has to be rescued afterwards.
@@ -640,16 +650,33 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         if side == "none" or (side in ("left", "right") and not mirror):
             obj["forge_symmetry_x"] = False
         piece_quads: list = []
+        whole = target                              # quads for the body AND its cut-off parts
         if split_pieces:
             # a cut-off part gets the SAME quad size as the body (one quad size across the
             # joint), never too coarse to stay round. Its share comes out of the body's
-            # budget: reserved now from the body's average quad size, settled after the
-            # body is done from the quad size the body really has where the part sits
+            # budget: reserved now from the body's average quad size, settled once the body
+            # is remeshed from the quad size the body really has where the part sits (what a
+            # part does not use goes back to the body). Parts never take more than half: then
+            # each gives up the same share of its reserve, so body + parts stay in the budget
             import math
             e_avg = math.sqrt(max(_rescue.area(full_backup), 1e-12) / max(target, 1.0))
             piece_quads = [int(1.1 * _quads_for(_rescue.area(pm), _piece_edge(e_avg, p)))
                            for _k, pm, p in split_pieces]
-            target = max(target - sum(piece_quads), target * 0.5)
+            if sum(piece_quads) > 0.5 * whole:
+                piece_quads = [max(MIN_PIECE_QUADS, int(q * 0.5 * whole / sum(piece_quads))) for q in piece_quads]
+            target = max(whole - sum(piece_quads), whole * 0.5)
+
+        def settle() -> list:
+            """Each part's quads from the body's quad size where it sits (at most its reserve)."""
+            asks = []
+            for (_k, pm, plug), reserved in zip(split_pieces, piece_quads):
+                edge = _local_edge(obj.data, plug)       # the body's quad size where it sits
+                asks.append(min(reserved, _quads_for(_rescue.area(pm), _piece_edge(edge, plug)))
+                            if edge else reserved)
+            return asks
+        # the body's own share of the triangles: the whole budget minus what the cut-off parts
+        # reserved (each part's share is enforced where it is set)
+        share = 2 * target / headroom
         fit = {"tree": None, "fitted": False, "carve": {}}
 
         def _fit():
@@ -666,10 +693,17 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         ok = yield from _qr_part(obj, target, args, timeout)
         used = "quadremesher"
         got = C.tri_count(obj) if ok else 0
-        if ok and (got > budget * 1.05 or got < budget * 0.7):
+        # what counts: the body's triangles alone, or - with cut-off parts - the body and its
+        # parts at the body's quad size where each sits (known now: what a part reserved and
+        # will not use is the body's, and a re-run scales body and parts together, one quad
+        # size across each joint)
+        have, aim, low = got, share, 0.7
+        if ok and split_pieces:
+            have, aim, low = got + 2 * sum(settle()), 2 * whole / headroom, 0.85
+        if ok and (have > aim * 1.05 or have < aim * low):
             # QR's count is a target, not a cap (and a density map can make it undershoot):
             # one corrected re-run before any decimation
-            target = target * (budget / max(got, 1)) * (0.95 if got > budget else 1.0)
+            target = target * (aim / max(have, 1)) * (0.95 if have > aim else 1.0)
             _replace_mesh(obj, backup.copy())
             STATUS["text"] = f"{_short(obj.name)}: Quad Remesher again (triangle count)"
             ok = yield from _qr_part(obj, target, args, timeout)
@@ -789,12 +823,24 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
             obj["forge_symmetry_x"] = False       # (the original is not the mirrored body)
             used = "quadremesher-failed>" + _retopo_part(obj, budget, "quadremesher", _opts(args))
         piece_fallbacks: list = []
+        joints: list = []
+        if ok and not fit["fitted"] and args.get("carve", True):
+            from .density import carve, source_tree       # rescued / unfitted result: carve only
+            fit["carve"] = carve(obj.data, backup, fit["tree"] or source_tree(backup))
+        if ok and split_pieces:
+            # the body's own share: the budget minus what its parts take at its quad size
+            share = 2 * (whole - sum(settle())) / headroom
+        if ok and split_pieces and C.tri_count(obj) > share * 1.05:
+            # the body alone is over its share: reduce the body alone, now. Once a part is
+            # joined to it nothing is decimated (a collapse there crumples the joint)
+            _split_ngons(obj)
+            _decimate(obj, int(share))
+            used += "+decimate"
         if ok and split_pieces:
             from .density import conform
-            for (k, pme, plug), reserved in zip(split_pieces, piece_quads):
-                edge = _local_edge(obj.data, plug)       # the body's quad size where it sits
-                quads = (min(reserved, _quads_for(_rescue.area(pme), _piece_edge(edge, plug)))
-                         if edge else reserved)
+            part_names = dict((full_backup or backup).get("forge_split_names") or {})
+            trees: dict = {}                          # (the capped body's tree, once for all parts)
+            for (k, pme, plug), quads in zip(split_pieces, settle()):
                 src = pme.copy()
                 piece = bpy.data.objects.new(f"{obj.name}_part{k}", pme)
                 piece.matrix_world = obj.matrix_world.copy()
@@ -818,7 +864,14 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                                             "decimate": "a reduced copy"}.get(how, "the cut piece as it was"))
                 for a in list(piece.data.color_attributes):   # no detail-map colours on the result
                     piece.data.color_attributes.remove(a)
-                _rescue.attach(obj, piece)
+                STATUS["text"] = f"{_short(obj.name)}: joining thin part {k} to the body"
+                yield 0.05
+                info: dict = {}
+                _rescue.weld(obj, piece, src, backup, full_backup or backup, info, trees)
+                joints.append({"part": k, "joint": info.get("joint", "attached"), "loops": info.get("loops", []),
+                               "name": str(part_names.get(str(k), ""))})
+                if info.get("folds_near"):
+                    joints[-1]["folds_near"] = int(info["folds_near"])
                 names = {piece.data.name, src.name}
                 bpy.data.objects.remove(piece)
                 for n in names:
@@ -826,9 +879,6 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                     if m is not None and m.users == 0:
                         bpy.data.meshes.remove(m)
             used += f"+{len(split_pieces)} part(s) separate"
-        if ok and not fit["fitted"] and args.get("carve", True):
-            from .density import carve, source_tree       # rescued / unfitted result: carve only
-            fit["carve"] = carve(obj.data, backup, fit["tree"] or source_tree(backup))
         crease = {}
         if ok and args.get("carve", True):
             from .density import crease_kept
@@ -840,8 +890,14 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
             from mathutils import Matrix
             obj.data.transform(Matrix.Translation((shift, 0.0, 0.0)))
             obj.data.update()
-        _finish_part(obj, budget, used, before, report, True)
+        _finish_part(obj, budget, used, before, report, True, joined=bool(split_pieces))
         r = report[obj.get(C.PART_PROP)]
+        if joints:
+            r["joints"] = joints
+            bad = [j["joint"] for j in joints if j["joint"] != "welded"]
+            r["joint"] = bad[0] if bad else "welded"
+            if len(joints) == 1:
+                r["joint_loops"] = joints[0]["loops"]
         # final gate: a game mesh must be closed. Small leftovers (doubles on a seam, a stray
         # point, a little hole) are tidied; anything bigger is reported and can be shown
         # (faces lying on each other and doubled points count too: the bake, the skinning

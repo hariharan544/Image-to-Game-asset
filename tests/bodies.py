@@ -119,10 +119,10 @@ def coords(me) -> np.ndarray:
 
 
 def bull(voxel: float = 0.008, tail_side: float = 0.30, leg_x: float = 0.15, leg_r: float = 0.075,
-         ear_z: float = 0.76):
+         ear_z: float = 0.76, tail_r: float = 0.022):
     """A round cartoon bull (fat belly, big neckless head with a muzzle, short legs, T-pose arms
     with hand balls, horns going sideways then up, flat ears under them, thin tail with a tuft
-    curling to +X by tail_side)."""
+    curling to +X by tail_side; tail_r: the tail's radius at its root)."""
     import bmesh
     from mathutils import Matrix, Vector
     bpy.ops.wm.read_homefile(use_empty=True)
@@ -157,7 +157,9 @@ def bull(voxel: float = 0.008, tail_side: float = 0.30, leg_x: float = 0.15, leg
             Matrix.Diagonal((0.09, 0.012, 0.04, 1))
         bmesh.ops.create_uvsphere(bm, u_segments=16, v_segments=12, radius=1.0, matrix=m)
     s = tail_side
-    path([(0, 0.24, 0.30), (0.02, 0.33, 0.20), (s * 0.4, 0.37, 0.11), (s, 0.36, 0.09)], [0.022, 0.018, 0.016, 0.016])
+    k = tail_r / 0.022
+    path([(0, 0.24, 0.30), (0.02, 0.33, 0.20), (s * 0.4, 0.37, 0.11), (s, 0.36, 0.09)],
+         [0.022 * k, 0.018 * k, 0.016 * k, 0.016 * k])
     ball((s + 0.05, 0.36, 0.11), 0.05, (1.3, 0.8, 0.9))
     me = bpy.data.meshes.new("b")
     bm.to_mesh(me)
@@ -174,6 +176,39 @@ def bull(voxel: float = 0.008, tail_side: float = 0.30, leg_x: float = 0.15, leg
     for v in ob.data.vertices:
         v.co.z -= zmin
     return ob
+
+
+def narrow_rump(tail_r: float = 0.06, body_r: float = 0.075, voxel: float = 0.006):
+    """A thick tail leaving a narrow body sideways near its rounded end (lizard-like: the
+    body there is only about 1.25 tail radii wide). Returns (object, split ids: the tail = 1)."""
+    import bmesh
+    from mathutils import Matrix, Vector
+    bpy.ops.wm.read_homefile(use_empty=True)
+    bm = bmesh.new()
+
+    def tube(a, b, r):
+        a, b = Vector(a), Vector(b)
+        d = b - a
+        m = Matrix.Translation((a + b) / 2) @ d.to_track_quat("Z", "Y").to_matrix().to_4x4()
+        bmesh.ops.create_cone(bm, cap_ends=True, segments=16, radius1=r, radius2=r, depth=d.length, matrix=m)
+    tube((0, -0.4, 0.3), (0, 0.10, 0.3), body_r)
+    bmesh.ops.create_uvsphere(bm, u_segments=24, v_segments=16, radius=body_r,
+                              matrix=Matrix.Translation((0, 0.10, 0.3)))
+    tube((0.0, 0.05, 0.3), (0.25, 0.10, 0.3), tail_r)
+    tube((0.25, 0.10, 0.3), (0.40, 0.30, 0.3), tail_r * 0.8)
+    me = bpy.data.meshes.new("b")
+    bm.to_mesh(me)
+    bm.free()
+    ob = bpy.data.objects.new("Body", me)
+    bpy.context.scene.collection.objects.link(ob)
+    mod = ob.modifiers.new("v", "REMESH")
+    mod.mode, mod.voxel_size = "VOXEL", voxel
+    dg = bpy.context.evaluated_depsgraph_get()
+    dg.update()
+    ob.data = bpy.data.meshes.new_from_object(ob.evaluated_get(dg))
+    ob.modifiers.remove(mod)
+    co = coords(ob.data)
+    return ob, (co[:, 0] > body_r * 1.25).astype(np.int32)
 
 
 def ragged(me, ids, k, seed, p=0.35, rings=6):

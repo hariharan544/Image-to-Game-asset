@@ -764,3 +764,316 @@ def test_thick_cut_off_part_matches_the_body_not_a_multiple(monkeypatch):
     except StopIteration:
         pass
     assert 0.75 < seen["got"] / seen["want"] < 1.3, seen
+
+
+def _stand_in_qr(calls=None):
+    """Quad Remesher stand-in: Blender's QuadriFlow (it refuses near-duplicate points)."""
+    import bmesh
+
+    from forge_bpy import retopo
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        if calls is not None:
+            calls.append((obj.name, int(quads)))
+        bm = bmesh.new()
+        bm.from_mesh(obj.data)
+        bmesh.ops.remove_doubles(bm, verts=bm.verts, dist=2.5e-4)
+        bmesh.ops.dissolve_degenerate(bm, dist=2.5e-4, edges=bm.edges)
+        bm.to_mesh(obj.data)
+        bm.free()
+        obj.data.update()
+        # (QuadriFlow's "preserve sharp" can loop for ever on some inputs - measured: a body
+        # it remeshes in 6 s without it never finished with it; Quad Remesher does not hang)
+        return retopo._quadriflow(obj, max(int(quads * 2), 200), {"symmetry_x": False, "preserve_hard_edges": False})
+    return qr
+
+
+def _run(args):
+    from forge_bpy import retopo
+    gen = retopo._run_qr(args)
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        return stop.value
+
+
+def _inside(tree, p, eps=1e-7):
+    from mathutils import Vector
+    votes = 0
+    for d in ((0.37, 0.53, 0.76), (-0.61, 0.29, -0.73), (0.12, -0.95, 0.28)):
+        d = Vector(d).normalized()
+        o, n = Vector(p), 0
+        for k in range(2000):
+            hit = tree.ray_cast(o, d)
+            if hit[0] is None:
+                break
+            n += k == 0 or hit[3] > 2 * eps            # (a re-hit where the last one was: one crossing)
+            o = hit[0] + d * eps
+        votes += n % 2
+    return votes >= 2
+
+
+def _root_faces(fin, orig, root, rad):
+    """What shows at a part's root on the final mesh: the faces within 2.5 radii of the root
+    that are not buried inside another shell -> (count, wrong-facing against the original,
+    p95 distance to the original in radii, shells among them, crossing faces in one shell)."""
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+
+    from forge_bpy.appendages import _components
+    from forge_bpy.rescue import _submesh
+
+    def tree(m):
+        return BVHTree.FromPolygons([v.co.copy() for v in m.vertices], [tuple(p.vertices) for p in m.polygons])
+    ev = np.array([e.vertices[:] for e in fin.edges], np.int64)
+    lab = _components(len(fin.vertices), ev[:, 0], ev[:, 1])
+    flab = np.array([lab[p.vertices[0]] for p in fin.polygons])
+    cen = np.array([p.center[:] for p in fin.polygons])
+    near = np.flatnonzero(np.linalg.norm(cen - np.array(root[:]), axis=1) < 2.5 * rad)
+    shells = sorted(set(flab[near].tolist()))
+    others = {s: tree(_submesh(fin, lab == s)) for s in shells} if len(shells) > 1 else {}
+    vis = [i for i in near if not any(s != flab[i] and _inside(t, cen[i]) for s, t in others.items())]
+    t_orig = tree(orig)
+    wrong, dist = 0, []
+    for i in vis:
+        hit = t_orig.find_nearest(Vector(cen[i]))
+        dist.append(hit[3] / rad)
+        wrong += fin.polygons[i].normal.dot(hit[1]) < 0
+    t_fin = tree(fin)
+    polys = [set(p.vertices) for p in fin.polygons]
+    nset = set(near.tolist())
+    cross = {i for i, j in t_fin.overlap(t_fin) if i != j and flab[i] == flab[j] and not polys[i] & polys[j]
+             and (i in nset or j in nset)}
+    return len(vis), wrong, float(np.percentile(dist, 95)) if dist else 0.0, len(shells), len(cross)
+
+
+@pytest.mark.parametrize("case,budget,defaults,fit", [("curl", 30000, False, 0.1), ("curl", 30000, True, 0.1),
+                                                     ("bull", 12000, True, 0.15)])
+def test_tail_root_is_one_skin_or_a_clean_attach(monkeypatch, case, budget, defaults, fit):
+    """The director's bull: the curled tail's hidden plug showed outside the body as a
+    crumpled, red collar. Now the tail is welded into the body as one skin, or - when the
+    joint would not be clean - attached with its plug hidden. Either way the root is clean:
+    closed, faces the right way, on the original surface, never decimated after joining.
+    Run with fitting/carving and the shape check off, and with the defaults; and on the bull
+    at a coarse budget, where a joint of a few big faces would cut across the sharp fold at
+    the tail's root (measured before: 0.15-0.34 radius off; the tail itself is only about 12
+    quads round there and stands up to 0.2 radius off on its own, hence the wider limit)."""
+    from mathutils import Vector
+
+    import bodies
+    from forge_bpy import density, parts, rescue, retopo
+    ob = bodies.curled_tail(1.0, r=0.035)[0] if case == "curl" else bodies.bull(tail_r=0.035)
+    ob.name = "Body_low"
+    ob["forge_role"], ob["forge_part"] = "low", "Body"
+    me = ob.data
+    density.write_split(me, parts.one_sided_parts(me))
+    me["forge_onesided_planned"] = True
+    orig = me.copy()
+    shift = density.mirror_plane(orig)                     # (the run works in the mirror frame)
+    plugs = []
+    real_extract = rescue.extract
+
+    def extract(*a, **k):
+        out = real_extract(*a, **k)
+        if "forge_plug" in out and out.name.startswith("forge_part"):
+            plugs.append(list(out["forge_plug"]))
+        return out
+    monkeypatch.setattr(rescue, "extract", extract)
+    monkeypatch.setattr(retopo, "_qr_part", _stand_in_qr())
+    args = {"target_tris": budget, "qr_timeout": 5, "symmetry": "left"}
+    if not defaults:
+        args.update(carve=False, shape_check=False)
+    r = _run(args)["parts"]["Body"]
+    fin = ob.data
+    assert rescue.mesh_defects(fin) == (0, 0, 0), r
+    joint = r.get("joint", "")
+    assert joint == "welded" or (joint.startswith("attached:") and "error" not in joint), r
+    assert not r["method"].endswith("+decimate"), r            # never decimated after the joint
+    root = Vector(plugs[-1][0:3]) + Vector((shift, 0.0, 0.0))
+    rad = float(plugs[-1][6])
+    n, wrong, p95, shells, cross = _root_faces(fin, orig, root, rad)
+    assert n > 50 and wrong <= 2 and p95 < fit, (joint, n, wrong, p95)
+    if joint == "welded":
+        assert shells == 1 and cross <= 2, (shells, cross)          # one skin, nothing crossing
+
+
+def test_weld_rolls_back_and_attaches_when_the_bridge_fails(monkeypatch):
+    """The weld works on copies: when a step fails, the body is exactly as it was, the part
+    is attached as its own shell, and the reason is reported."""
+    import bmesh
+    import numpy as np
+
+    import bodies
+    from forge_bpy import parts, rescue
+    ob, _P = bodies.curled_tail(1.0, r=0.035)
+    full = ob.data.copy()
+    cap = ob.data.copy()
+    (_k, src, _plug), = rescue.split_off(cap, parts.one_sided_parts(cap))
+    target = bpy.data.objects.new("Body_low", cap.copy())
+    piece = bpy.data.objects.new("Body_low_part1", src.copy())
+    for o in (target, piece):
+        bpy.context.scene.collection.objects.link(o)
+    body0 = bodies.coords(target.data)
+
+    def broken(*a, **k):
+        raise RuntimeError("no loops")
+    monkeypatch.setattr(bmesh.ops, "bridge_loops", broken)
+    info: dict = {}
+    assert rescue.weld(target, piece, src, cap, full, info) == "attached: bridge"
+    assert info["joint"] == "attached: bridge" and min(info["loops"]) >= 3, info
+    after = bodies.coords(target.data)
+    assert len(after) == len(body0) + len(piece.data.vertices)          # body + the part's shell
+    assert np.array_equal(after[:len(body0)], body0)                     # the body untouched
+    assert rescue.mesh_defects(target.data) == (0, 0, 0)
+
+
+def test_parts_reserve_is_not_spent_by_the_body_rerun(monkeypatch):
+    """The body's triangle re-run aims at the body's OWN share (the budget minus what the
+    cut-off parts reserved), and nothing is decimated once a part is joined to the body: a
+    collapse there crumpled the tail root. A body the remesher overshoots is reduced alone,
+    before the joint; what is still over is reported."""
+    import numpy as np
+
+    from forge_bpy import density, rescue, retopo
+    real_dec, real_weld = retopo._decimate, rescue.weld
+    for factor in (0.5, 1.6):                    # the remesher gives half / 1.6x the count asked
+        o = _body_with_tail()
+        co = np.array([v.co[:] for v in o.data.vertices])
+        density.write_split(o.data, (co[:, 0] > 1.02).astype(np.int32))
+        asked, decimated, joined = [], [], []
+
+        def qr(obj, quads, args, timeout):
+            yield 0.0
+            whole = any(v.co.x < 0.5 for v in obj.data.vertices)
+            if whole:
+                asked.append(quads)
+            return retopo._quadriflow(obj, max(int(quads * 2 * factor), 200), {})
+
+        def dec(obj, target_tris):
+            decimated.append(bool(joined))
+            return real_dec(obj, target_tris)
+
+        def weld(*a, **k):
+            joined.append(1)
+            return real_weld(*a, **k)
+        monkeypatch.setattr(retopo, "_qr_part", qr)
+        monkeypatch.setattr(retopo, "_decimate", dec)
+        monkeypatch.setattr(rescue, "weld", weld)
+        r = _run({"target_tris": 6000, "qr_timeout": 5, "symmetry": "none", "carve": False,
+                  "conform": False, "shape_check": False})["parts"]["Body"]
+        assert joined and not any(decimated), (factor, decimated)     # never after the joint
+        share = 2 * asked[0] / 0.94                                   # the body's own triangles
+        assert len(asked) == 2, asked                                  # one corrected re-run
+        assert asked[1] * 2 * factor <= 1.1 * share, (factor, asked, share)
+        assert r["tris_after"] <= 1.05 * 6000 or r.get("over_budget"), r
+
+
+def test_a_mesh_with_joined_parts_is_never_decimated_its_overrun_is_reported():
+    from forge_bpy import common, retopo
+    o = _body_with_tail()
+    tris = common.tri_count(o)
+    report: dict = {}
+    retopo._finish_part(o, tris // 2, "quadremesher", tris, report, True, joined=True)
+    r = report["Body"]
+    assert common.tri_count(o) == tris and "+decimate" not in r["method"]
+    assert r["over_budget"] == tris - tris // 2
+    retopo._finish_part(o, tris // 2, "quadremesher", tris, report, True)        # (no parts: reduced)
+    assert common.tri_count(o) <= 1.05 * (tris // 2) and "+decimate" in report["Body"]["method"]
+
+
+def test_weld_opening_is_one_loop_islands_and_old_holes_go_with_it():
+    """The cut the weld makes must leave ONE simple opening on each side: kept faces it
+    encloses go with it, an old hole it runs into is taken in, and a cut that would take
+    off a big piece far from the joint is refused."""
+    import math
+
+    import bmesh
+    from mathutils import Vector
+
+    from forge_bpy import rescue
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=24, radius=1.0)
+    pole = Vector((0, 0, 1))
+
+    def ang(f):
+        return math.degrees(f.calc_center_median().normalized().angle(pole))
+    ring = {f for f in bm.faces if 12 < ang(f) < 30}            # an annulus: encloses an island
+    hole = min((f for f in bm.faces if 31 < ang(f) < 40), key=lambda f: f.calc_center_median().x)
+    bmesh.ops.delete(bm, geom=[hole], context="FACES_ONLY")       # an old hole next to the cut
+    island = {f for f in bm.faces if ang(f) <= 12}
+    opening, why = rescue._open_cut(bm, ring, pole, 1.5)
+    assert why is None and rescue._one_loop(opening), why
+    assert not any(f.is_valid for f in island)                    # the island went with the cut
+    assert not [e for e in bm.edges if e.is_boundary and e not in set(opening)]   # hole taken in
+    bm.free()
+    bm = bmesh.new()
+    bmesh.ops.create_uvsphere(bm, u_segments=32, v_segments=24, radius=1.0)
+    band = {f for f in bm.faces if abs(f.calc_center_median().z) < 0.1}   # a belt round the middle
+    assert rescue._open_cut(bm, band, Vector((1, 0, 0)), 0.5)[1] == "island"   # half a sphere: no
+    bm.free()
+
+
+def test_the_joint_ring_sits_on_the_fold_between_body_and_part():
+    """A joint of a few big faces across the sharp fold where a tail meets the body cut the
+    fold as chords (on the coarse bull: face centres 0.3 radius off). The ring across the
+    middle of the joint is seated ON the fold - the point of the original deepest under the
+    straight line between the body side and the part side - and stays put where the
+    original is flat."""
+    import bmesh
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+
+    from forge_bpy import rescue
+    # the original near the root: the body (y = 0) meets the part (x = 0) along the z axis
+    pts = [(0, 0, -1), (2, 0, -1), (2, 0, 1), (0, 0, 1), (0, 2, -1), (0, 2, 1)]
+    t_full = BVHTree.FromPolygons([Vector(p) for p in pts], [(0, 1, 2, 3), (0, 3, 5, 4)])
+    bm = bmesh.new()
+    a, m, b = (bm.verts.new(p) for p in ((1.0, 0.0, 0.2), (0.5, 0.5, 0.2), (0.0, 1.0, 0.2)))
+    bm.edges.new((a, m))
+    bm.edges.new((m, b))
+    assert rescue._seat_on_fold([m], {a}, {b}, t_full) == 1
+    assert (m.co - Vector((0, 0, 0.2))).length < 0.06, m.co          # on the fold
+    flat = BVHTree.FromPolygons([Vector(p) for p in pts[:4]], [(0, 1, 2, 3)])
+    m.co = Vector((0.5, 0.0, 0.2))
+    a.co, b.co = Vector((1.0, 0.0, 0.2)), Vector((0.0, 0.0, 0.2))
+    assert rescue._seat_on_fold([m], {a}, {b}, flat) == 0                # no fold: left alone
+    bm.free()
+
+
+def test_two_cut_off_parts_are_each_joined_and_named(monkeypatch):
+    """Two parts cut off one body (a tail and a trunk): each is remeshed and joined back on
+    its own, and the report names each one as the parts plan does."""
+    import bmesh
+    import numpy as np
+    from mathutils import Matrix
+
+    from forge_bpy import density, retopo
+    bpy.ops.wm.read_homefile(use_empty=True)
+    bm = bmesh.new()
+    bmesh.ops.create_icosphere(bm, subdivisions=6, radius=1.0)
+    for rot, axis in ((1.5708, "Y"), (-1.5708, "X")):            # one along +X, one along +Y
+        res = bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.04, radius2=0.02, depth=1.0,
+                                    matrix=Matrix.Rotation(rot, 4, axis) @ Matrix.Translation((0, 0, 1.45)))
+        vs = set(res["verts"])
+        bmesh.ops.subdivide_edges(bm, edges=[e for e in bm.edges if e.verts[0] in vs and e.verts[1] in vs],
+                                  cuts=10, use_grid_fill=True)
+    me = bpy.data.meshes.new("Body")
+    bm.to_mesh(me)
+    bm.free()
+    o = bpy.data.objects.new("Body_low", me)
+    bpy.context.scene.collection.objects.link(o)
+    o["forge_role"], o["forge_part"] = "low", "Body"
+    co = np.array([v.co[:] for v in me.vertices])
+    density.write_split(me, np.where(co[:, 0] > 1.02, 1, np.where(co[:, 1] > 1.02, 2, 0)).astype(np.int32))
+    me["forge_split_names"] = {"1": "tail", "2": "trunk"}
+    monkeypatch.setattr(retopo, "_qr_part", _stand_in_qr())
+    r = _run({"target_tris": 8000, "qr_timeout": 5, "symmetry": "none", "carve": False,
+              "shape_check": False})["parts"]["Body"]
+    assert r["separate_parts"] == 2, r
+    assert [j["name"] for j in r["joints"]] == ["tail", "trunk"], r["joints"]
+    assert all(j["joint"] == "welded" or j["joint"].startswith("attached:") for j in r["joints"]), r["joints"]
+    from forge_bpy import rescue
+    assert rescue.mesh_defects(o.data) == (0, 0, 0)

@@ -631,3 +631,219 @@ def test_a_part_the_one_sided_cut_takes_does_not_block_the_mirror(monkeypatch):
         assert plan["extra_l"].startswith("separate"), plan
     finally:
         bpy.ops.wm.read_homefile(use_empty=True)
+
+
+def _inside(tree, p, eps=1e-7):
+    """Ray parity in three directions, majority vote."""
+    from mathutils import Vector
+    votes = 0
+    for d in ((0.37, 0.53, 0.76), (-0.61, 0.29, -0.73), (0.12, -0.95, 0.28)):
+        d = Vector(d).normalized()
+        o, n = Vector(p), 0
+        for k in range(2000):
+            hit = tree.ray_cast(o, d)
+            if hit[0] is None:
+                break
+            n += k == 0 or hit[3] > 2 * eps            # (a re-hit where the last one was: one crossing)
+            o = hit[0] + d * eps
+        votes += n % 2
+    return votes >= 2
+
+
+def _tree(me):
+    from mathutils.bvhtree import BVHTree
+    return BVHTree.FromPolygons([v.co.copy() for v in me.vertices], [tuple(p.vertices) for p in me.polygons])
+
+
+def _plug_case(case):
+    """(mesh, split ids) for the plug cases of the review: curled tails on the round rump,
+    ragged cut borders, the bull's thick tail, faces wound inward, a thick tail on a narrow
+    body."""
+    import bmesh
+
+    import bodies
+    from forge_bpy import parts
+    if case.startswith("narrow"):
+        ob, ids = bodies.narrow_rump()
+        return ob.data, ids
+    if case.startswith("bull"):
+        ob = bodies.bull(tail_r=0.022 if case.startswith("bull22") else 0.035)
+    else:
+        ob = bodies.curled_tail(1.0, r=0.022 if case.startswith("curl22") else 0.035)[0]
+    me = ob.data
+    ids = parts.one_sided_parts(me)                 # (found before the faces are turned)
+    if "ragged" in case:
+        ids = bodies.ragged(me, ids, 1, int(case.split("ragged")[1][0]))
+    if case.endswith("inward"):
+        bm = bmesh.new()
+        bm.from_mesh(me)
+        bmesh.ops.reverse_faces(bm, faces=bm.faces)
+        bm.to_mesh(me)
+        bm.free()
+    return me, ids
+
+
+@pytest.mark.parametrize("case", ["curl22", "curl22_ragged1", "curl22_ragged2", "curl35", "curl35_ragged1",
+                                  "curl35_ragged2", "bull22", "bull22_ragged1", "bull22_ragged2", "bull35",
+                                  "bull35_ragged1", "bull35_ragged2", "curl35_inward", "narrow"])
+def test_plug_follows_the_ring_and_stays_inside(case):
+    """The hidden plug of a cut-off part continues the part INTO the body: along the cut
+    ring's own normal (flat or not, faces wound either way), every ring vertex keeping its
+    place, tapering so it stays inside a narrow body, never folded. The piece and the body
+    share the cut: each ring vertex is a body vertex."""
+    import math
+
+    import numpy as np
+    from mathutils import Vector
+    from mathutils.kdtree import KDTree
+
+    import bodies
+    from forge_bpy import rescue
+    me, ids = _plug_case(case)
+    assert ids.max() == 1, case
+    body = me.copy()
+    pieces = rescue.split_off(body, ids)
+    assert len(pieces) == 1, case
+    _k, pme, plug = pieces[0]
+    root, out, rad = Vector(plug[0:3]), Vector(plug[3:6]), float(plug[6])
+
+    def kd(m):
+        co = bodies.coords(m)
+        t = KDTree(len(co))
+        for i, p in enumerate(co):
+            t.insert(p, i)
+        t.balance()
+        return t
+    k_orig, k_body = kd(me), kd(body)
+    pco = bodies.coords(pme)
+    orig = np.array([k_orig.find(p)[2] < 1e-7 for p in pco])
+    # the ring's normal from the piece's own surface (vector area of its open boundary)
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(pme)
+    bm.verts.ensure_lookup_table()
+    ring = [v.index for v in bm.verts if orig[v.index] and any(not orig[e.other_vert(v).index] for e in v.link_edges)]
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if not all(orig[v.index] for v in f.verts)], context="FACES_ONLY")
+    va = Vector()
+    for e in [e for e in bm.edges if e.is_boundary]:
+        lp = e.link_loops[0]
+        va += (lp.vert.co - root).cross(lp.link_loop_next.vert.co - root)
+    bm.free()
+    off = math.degrees(min(out.angle(va), out.angle(-va)))
+    assert off < 5, (case, off)
+    t_body = _tree(body)
+    assert _inside(t_body, root - out * 0.5 * rad), case          # it goes INTO the body
+    assert not _inside(t_body, root + out * 0.5 * rad), case
+    # not folded: no two faces of the piece cross (faces sharing a corner aside)
+    t_piece = _tree(pme)
+    polys = [set(p.vertices) for p in pme.polygons]
+    crossing = [(i, j) for i, j in t_piece.overlap(t_piece) if i < j and not polys[i] & polys[j]]
+    assert not crossing, (case, len(crossing))
+    # hidden: at least 97% of the plug's area inside the capped body
+    plug_area = inside_area = 0.0
+    for p in pme.polygons:
+        if all(orig[i] for i in p.vertices):
+            continue
+        plug_area += p.area
+        if _inside(t_body, p.center):
+            inside_area += p.area
+    assert inside_area >= 0.97 * plug_area, (case, inside_area / plug_area)
+    # one shared cut: every ring vertex of the piece is a vertex of the body
+    assert ring and all(k_body.find(pco[i])[2] < 1e-7 for i in ring), case
+
+
+def test_touching_parts_share_no_faces():
+    """Two cut-off parts whose regions touch: every face of the original goes to exactly one
+    of the body and the two pieces (the cut gives a face touching two parts to one of them)."""
+    import numpy as np
+
+    import bodies
+    from forge_bpy import parts, rescue
+    from forge_bpy.density import _dilate
+    ob = bodies.curled_tail(1.0, r=0.035)[0]
+    me = ob.data
+    ids = parts.one_sided_parts(me)
+    co = bodies.coords(me)
+    nb = _dilate(ids == 1, me, 2) & (ids == 0) & (co[:, 0] < -0.005)
+    ids = ids.copy()
+    ids[nb] = 2
+    body = me.copy()
+    pieces = rescue.split_off(body, ids)
+    assert len(pieces) == 2
+
+    def keys(m):
+        c = np.empty(len(m.vertices) * 3, np.float32)
+        m.vertices.foreach_get("co", c)
+        c = c.reshape(-1, 3)
+        return [tuple(sorted(tuple(c[i]) for i in p.vertices)) for p in m.polygons]
+    every = set(keys(me))
+    seen: dict = {}
+    for m in [body] + [pm for _k, pm, _p in pieces]:
+        for key in keys(m):
+            if key in every:                       # (plug and cap faces are new)
+                seen[key] = seen.get(key, 0) + 1
+    assert max(seen.values()) == 1, sum(1 for n in seen.values() if n > 1)
+    assert set(seen) == every                       # and none is lost
+
+
+def test_an_old_hole_in_a_part_is_closed_never_plugged():
+    """A part the generator left open at its tip (an old hole) is cut off the same as a
+    closed one: its plug follows the cut ring alone - the hole is closed, never extruded into
+    a second plug that pulls the root and the axis away."""
+    import math
+
+    import bmesh
+    import numpy as np
+    from mathutils import Vector
+
+    import bodies
+    from forge_bpy import parts, rescue
+    ob = bodies.curled_tail(1.0, r=0.035)[0]
+    me = ob.data
+    ids = (parts.one_sided_parts(me) == 1).astype(np.int32)
+    ref = rescue.split_off(me.copy(), ids)[0][2]
+    co = bodies.coords(me)
+    d = np.linalg.norm(co - np.array(ref[0:3]), axis=1)
+    d[ids != 1] = -1
+    tip = d > np.percentile(d[ids == 1], 99.5)                 # the faces at the tail's tip go
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    lay = bm.verts.layers.int.new("part")
+    for v in bm.verts:
+        v[lay] = int(ids[v.index])
+    bmesh.ops.delete(bm, geom=[f for f in bm.faces if all(tip[v.index] for v in f.verts)], context="FACES")
+    bm.verts.ensure_lookup_table()
+    ids = np.array([v[lay] for v in bm.verts], np.int32)       # (carried through the deletion)
+    bm.verts.layers.int.remove(lay)
+    bm.to_mesh(me)
+    bm.free()
+    assert rescue.mesh_defects(me)[0] > 0                       # it is open
+    (_k, pme, plug), = rescue.split_off(me.copy(), ids)
+    assert rescue.mesh_defects(pme) == (0, 0, 0)
+    assert abs(plug[6] - ref[6]) < 0.05 * ref[6], (plug[6], ref[6])
+    assert (Vector(plug[0:3]) - Vector(ref[0:3])).length < 0.05 * ref[6]
+    assert math.degrees(Vector(plug[3:6]).angle(Vector(ref[3:6]))) < 2
+
+
+@pytest.mark.parametrize("pose", ["graze", "side"])
+def test_a_part_whose_root_runs_along_the_body_stays_with_it(pose):
+    """A tail lying along the back as it leaves the body (graze), or leaving it sideways along
+    the rump (side): its cut ring runs up and down the body so far that every plug folds back
+    into the tail. It is not cut (kept with the body, and said why) instead of being attached
+    as a crumpled, overlapping root (measured before: 61-104 faces facing the wrong way)."""
+    import numpy as np
+
+    import bodies
+    from forge_bpy import parts, rescue
+    path = {"graze": [(0, 0.0, 0.97), (0, 0.10, 1.0), (0.02, 0.165, 1.10), (0.05, 0.18, 1.2), (0.15, 0.2, 1.25),
+                      (0.3, 0.2, 1.25)],
+            "side": [(0, 0.0, 0.97), (0.04, 0.08, 0.97), (0.15, 0.09, 0.97), (0.3, 0.08, 0.95), (0.4, 0.05, 0.95)]}[pose]
+    ob = bodies.curled_tail(1.0, r=0.035, path=path)[0]
+    me = ob.data
+    ids = (parts.one_sided_parts(me) == 1).astype(np.int32)
+    assert ids.any()
+    body = me.copy()
+    report: list = []
+    assert rescue.split_off(body, ids, report) == []
+    assert report and "runs along the body" in report[0][1], report
+    assert len(body.vertices) == len(me.vertices)               # the body is as it was

@@ -536,3 +536,36 @@ def test_animation_check_runs_on_the_clip_and_reads_in_plain_words():
     if rep["grade"] != "pass":
         assert rep["worst_frame"] and 1 <= rep["worst_frame"] <= S.CLIP_LENGTH["rom"]
     S.pose_test_stop()
+
+
+def test_step4_report_says_how_each_cut_off_part_was_joined():
+    """Plain words: one skin, or its own piece with the reason and what to do; an overrun
+    that was left as it is (a joined mesh is never decimated)."""
+    L = importlib.import_module("forge_send.stages_late")
+    base = {"method": "quadremesher+1 part(s) separate", "tris_before": 90000, "tris_after": 30000,
+            "separate_parts": 1}
+    welded = [t for _i, t in L._retopo_rows({"parts": {"Body": {**base, "joint": "welded",
+                                                                "joints": [{"part": 1, "joint": "welded"}]}}})]
+    assert any("joined into the body as one skin" in t for t in welded), welded
+    kept = [t for _i, t in L._retopo_rows({"parts": {"Body": {
+        **base, "joint": "attached: thin faces", "over_budget": 450,
+        "joints": [{"part": 1, "joint": "attached: thin faces"}]}}})]
+    assert any("kept as its own piece" in t for t in kept), kept
+    assert any("needle-thin faces" in t for t in kept) and any("hidden inside the body" in t for t in kept)
+    assert any("450 tris over the budget" in t for t in kept), kept
+    assert not any("attached:" in t or "thin faces)" == t.strip() for t in kept)       # no codes shown
+    # a part that does not reach into the body is not "hidden inside" it; parts are named as
+    # in the parts plan; a weld with folds left near the root says so
+    two = [t for _i, t in L._retopo_rows({"parts": {"Body": {
+        **base, "separate_parts": 2, "joint": "attached: no overlap",
+        "joints": [{"part": 1, "joint": "attached: no overlap", "name": "tail"},
+                   {"part": 2, "joint": "welded", "name": "antenna_l", "folds_near": 12}]}}})]
+    assert any(t.strip().startswith("the tail: kept as its own piece") for t in two), two
+    assert any("does not reach into the body" in t for t in two) and not any("hidden inside" in t for t in two)
+    assert any("check its root" in t for t in two), two
+    assert any(t.strip().startswith("the left antenna: joined into the body as one skin") for t in two), two
+    assert any("12 folded faces near its root" in t for t in two), two
+    assert not any("part_" in t or "cut-off part 1" in t for t in two), two
+    coarse = [t for _i, t in L._retopo_rows({"parts": {"Body": {**base, "joint": "attached: off the surface",
+                                                                 "joints": [{"part": 1, "joint": "attached: off the surface"}]}}})]
+    assert any("cut across the fold" in t for t in coarse) and any("more triangles" in t for t in coarse), coarse
