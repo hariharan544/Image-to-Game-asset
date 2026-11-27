@@ -67,6 +67,11 @@ class ForgeStageState(bpy.types.PropertyGroup):
     tex_size: EnumProperty(name="Texture size", default="2048",
                            items=[("1024", "1K", ""), ("2048", "2K", ""), ("4096", "4K", "")])
     rig_phase: StringProperty(default="")         # "" | "joints" | "built"
+    anim_clip: EnumProperty(name="Sample animation", default="rom",
+                            items=[("rom", "Range of motion", "Every joint to its limit: look for tearing"),
+                                   ("walk", "Walk cycle", "A plain walk on the spot"),
+                                   ("idle", "Idle (breathing)", "Breathing, a look around, a tail sway"),
+                                   ("tail", "Tail and ears", "A wave down the tail, ear flicks")])
     busy: StringProperty(default="")             # unused since 1.2.1 (kept so old files load)
     error: StringProperty(default="")
     retopo_rep: StringProperty(default="{}")

@@ -20,7 +20,7 @@ this file (the project folder). The guide is written as JSON, which is valid YAM
 bl_info = {
     "name": "Forge - Send to Forge",
     "author": "Forge pipeline",
-    "version": (1, 10, 4),
+    "version": (1, 11, 0),
     "blender": (4, 2, 0),
     "location": "3D Viewport > Sidebar > Forge",
     "description": "Send a model (e.g. from the Tripo DCC Bridge) through the Forge game-asset pipeline",

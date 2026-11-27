@@ -190,6 +190,7 @@ ACTIONS = {
     "rig_build": "Build the Auto-Rig Pro rig, skin the body, attach every prop 100% to its nearest bone",
     "rig_pose": "Play a pose test: arms down/forward, elbows, legs, head and spine. Look for tearing",
     "rig_pose_stop": "Stop the pose test and return to the rest pose",
+    "rig_anim": "Play the chosen sample animation on the rig (made on the rig itself: no files)",
     "export_run": "Make LODs and export Unreal (AAA) and Unity (mobile) files + a GLB preview",
     "export_open": "Open the export folder",
 }
@@ -495,6 +496,15 @@ class FORGE_OT_step(bpy.types.Operator):
 
     def do_rig_pose(self, context, st):
         S.pose_test()
+        try:
+            bpy.ops.screen.animation_play()
+        except RuntimeError:
+            pass
+
+    def do_rig_anim(self, context, st):
+        rep = S.sample_animation(st.anim_clip)
+        self.report({"INFO"}, f"{S.CLIPS[st.anim_clip][0]}: {rep['frames']} frames on "
+                              f"{len(rep['controls'])} controls")
         try:
             bpy.ops.screen.animation_play()
         except RuntimeError:
@@ -859,10 +869,15 @@ def _draw_rig(col, st):
         _btn(col, "rig_place", "Guess joints again", "FILE_REFRESH")
         return
     _rows(col.column(align=True), _rig_rows(rep))
-    row = col.row(align=True)
+    c = col.column(align=True)
+    c.prop(st, "anim_clip", text="")
+    row = c.row(align=True)
     row.scale_y = 1.3
-    row.operator("forge.step", text="Pose test", icon="PLAY").action = "rig_pose"
+    row.operator("forge.step", text="Play", icon="PLAY").action = "rig_anim"
     row.operator("forge.step", text="Stop", icon="PAUSE").action = "rig_pose_stop"
+    col.label(text=S.CLIPS[st.anim_clip][1][:60], icon="INFO")
+    if len(S.CLIPS[st.anim_clip][1]) > 60:
+        col.label(text="  " + S.CLIPS[st.anim_clip][1][60:120])
     col.label(text="Look for tearing, collapsing joints,", icon="INFO")
     col.label(text="props leaving the body.")
     _approve_btn(col, "rig")

@@ -306,3 +306,59 @@ def test_redo_only_the_selected_parts_keeps_the_others():
     assert body_low.data.name == body_mesh and len(body_low.data.polygons) == body_faces
     assert len(S.lows()) == 2 and not S.missing_lows()
     assert S.part_names([body_low]) == ["Body"]
+
+
+def _arp_like_rig():
+    """An armature with Auto-Rig Pro's control names in a T-pose (ARP itself needs a UI)."""
+    bpy.ops.wm.read_homefile(use_empty=True)
+    a = bpy.data.armatures.new("rig")
+    o = bpy.data.objects.new("rig", a)
+    bpy.context.scene.collection.objects.link(o)
+    o["forge_arp"] = True
+    bpy.context.view_layer.objects.active = o
+    bpy.ops.object.mode_set(mode="EDIT")
+    bones = {"c_spine_01.x": ((0, 0, 0.95), (0, 0, 1.15)), "c_spine_02.x": ((0, 0, 1.15), (0, 0, 1.35)),
+             "c_neck.x": ((0, 0, 1.35), (0, 0, 1.45)), "c_head.x": ((0, 0, 1.45), (0, 0, 1.7)),
+             "c_hand_ik.l": ((0.8, 0, 1.4), (0.9, 0, 1.4)), "c_foot_ik.l": ((0.1, -0.1, 0.05), (0.1, -0.2, 0.05))}
+    for s, x in (("l", 1), ("r", -1)):
+        bones[f"c_arm_fk.{s}"] = ((0.2 * x, 0, 1.4), (0.5 * x, 0, 1.4))
+        bones[f"c_forearm_fk.{s}"] = ((0.5 * x, 0, 1.4), (0.8 * x, 0, 1.4))
+        bones[f"c_thigh_fk.{s}"] = ((0.1 * x, 0, 0.9), (0.1 * x, 0, 0.5))
+        bones[f"c_leg_fk.{s}"] = ((0.1 * x, 0, 0.5), (0.1 * x, 0, 0.1))
+        bones[f"c_ear_01.{s}"] = ((0.12 * x, 0, 1.6), (0.25 * x, 0, 1.62))
+    for i in range(3):
+        bones[f"c_tail_0{i}.x"] = ((0, 0.15 + 0.15 * i, 0.9 - 0.1 * i), (0, 0.3 + 0.15 * i, 0.8 - 0.1 * i))
+    for n, (h, t) in bones.items():
+        b = a.edit_bones.new(n)
+        b.head, b.tail = h, t
+    bpy.ops.object.mode_set(mode="OBJECT")
+    o.pose.bones["c_hand_ik.l"]["ik_fk_switch"] = 0.0
+    return o
+
+
+@pytest.mark.parametrize("clip", ["rom", "walk", "idle", "tail"])
+def test_sample_animations_play_on_the_rig_and_stop_cleanly(clip):
+    S = importlib.import_module("forge_send.steps")
+    rig = _arp_like_rig()
+    rep = S.sample_animation(clip)
+    sc = bpy.context.scene
+    assert rep["frames"] == S.CLIP_LENGTH[clip] and sc.frame_end == rep["frames"]
+    assert rig.animation_data.action.name == f"FORGE_pose_{clip}"
+    assert rig.pose.bones["c_hand_ik.l"]["ik_fk_switch"] == 1.0         # FK while it plays
+    if clip in ("walk", "idle", "tail", "rom"):
+        assert any(b.startswith("c_tail_") for b in rep["controls"]), rep["controls"]
+
+    def tail_of(bone, f):
+        sc.frame_set(f)
+        bpy.context.view_layer.update()
+        return rig.matrix_world @ rig.pose.bones[bone].tail
+    first = [tuple(round(x, 4) for x in tail_of(b, 1)) for b in rep["controls"]]
+    last = [tuple(round(x, 4) for x in tail_of(b, rep["frames"] + 1)) for b in rep["controls"]]
+    assert first == last                                                # loops cleanly
+    if clip == "walk":
+        q = rep["frames"] // 4
+        assert tail_of("c_thigh_fk.l", 1 + q).y < -0.05 < 0.05 < tail_of("c_thigh_fk.l", 1 + 3 * q).y
+        assert tail_of("c_arm_fk.l", 1).z < 1.3                         # arms lowered, not T-pose
+    S.pose_test_stop()
+    assert rig.animation_data.action is None and "forge_pose_switches" not in rig
+    assert rig.pose.bones["c_hand_ik.l"]["ik_fk_switch"] == 0.0
