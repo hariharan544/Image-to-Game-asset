@@ -194,13 +194,65 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
     return n
 
 
-def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> dict:
+RIGID_EDGE_FACTOR = 0.7     # rigid parts (horns): edges up to 1.4x longer, about half the quads
+
+
+def _rigid_factors(p, me, co_w, regions, budget: int) -> np.ndarray:
+    """Edge factor per vertex for rigid parts (horns): fewer quads, as they never bend - but
+    never so few that a face cuts the part's curve by more than half the bake cage's margin.
+    A face of edge e on a curve of radius r sits e^2 / (8 r) inside it (the sagitta); past
+    half the margin the bake rays start inside the original (dark stains at horn roots).
+    The detail map's own value is never raised. Without a budget the edge length is unknown:
+    the plain rigid factor."""
+    import numpy as np
+    fac = np.minimum(_mod("density").vertex_factors(me), RIGID_EDGE_FACTOR)
+    if budget <= 0:
+        return fac
+    have = _mod("density").vertex_factors(me)
+    # the edge length Quad Remesher aims for at factor 1 on this part: its share of the budget
+    # spread over its surface, weighted by the detail map (factor f = f^2 the quads)
+    nf, nl = len(me.polygons), len(me.loops)
+    farea = np.empty(nf, np.float32)
+    me.polygons.foreach_get("area", farea)
+    sc = float(np.prod(np.abs(np.array(p.matrix_world.to_scale()))) ** (2.0 / 3.0))
+    lv = np.empty(nl, np.int32)
+    me.loops.foreach_get("vertex_index", lv)
+    lt = np.empty(nf, np.int32)
+    me.polygons.foreach_get("loop_total", lt)
+    varea = np.bincount(lv, weights=np.repeat(farea * sc / np.maximum(lt, 1), lt), minlength=len(me.vertices))
+    areas = {}
+    for q in parts():
+        qa = np.empty(len(q.data.polygons), np.float32)
+        q.data.polygons.foreach_get("area", qa)
+        areas[q.name] = float(qa.sum()) * float(np.prod(np.abs(np.array(q.matrix_world.to_scale()))) ** (2.0 / 3.0))
+    own = max(float(varea.sum()), 1e-12)
+    tris = max(budget * own / max(sum(areas.values()), own), MIN_TRIS_PER_PART)
+    edge = float(np.sqrt(2.0 * float((varea * have ** 2).sum()) / tris))
+    diag = float(np.linalg.norm(co_w.max(axis=0) - co_w.min(axis=0)))
+    sag = 0.5 * _mod("bake").CAGE_FLOOR_REL * diag            # half the cage's margin
+    for a, m in regions:
+        if a["kind"] != "horn" or not m.any():
+            continue
+        chain = np.asarray(a["chain"], np.float64)
+        pts = co_w[m]
+        r = np.full(len(pts), np.inf)
+        for c0, c1 in zip(chain[:-1], chain[1:]):           # distance to the part's axis
+            d = c1 - c0
+            t = np.clip(((pts - c0) @ d) / max(float(d @ d), 1e-12), 0.0, 1.0)
+            r = np.minimum(r, np.linalg.norm(pts - (c0 + t[:, None] * d), axis=1))
+        longest = 2.0 * np.sqrt(np.maximum(r, 1e-9) * sag)  # edge whose sagitta is `sag`
+        fac[m] = np.minimum(have[m], np.maximum(RIGID_EDGE_FACTOR, edge / longest))
+    return fac
+
+
+def plan_parts(recompute: bool = False, side: str = "", paint: bool = True, budget: int = 0) -> dict:
     """The parts plan, made ONCE and used by the run (what the director sees is what runs):
     - thin parts without a twin (tail, antenna, trunk) are cut at their neck and remeshed on
       their own, then attached;
     - when a side is chosen for mirroring, parts that mirroring would copy or delete (a tail
       curling to one side) are cut the same way; pairs in another pose are not parts;
-    - thick rigid parts (horns) get fewer quads; ears stay with the body.
+    - thick rigid parts (horns) get fewer quads, as far as their curve allows (the root keeps
+      the body's density); ears stay with the body.
     Stored on the body mesh (forge_split + forge_plan); the panel lists it in Step 4."""
     import numpy as np
     dens = _mod("density")
@@ -286,9 +338,15 @@ def plan_parts(recompute: bool = False, side: str = "", paint: bool = True) -> d
             if a["kind"] == "horn":
                 horn |= m
         if horn.any() and dens.QR_ATTR in me.color_attributes and (paint or first_plan):
-            # rings=2 reaches the base too, which the head weighting would otherwise paint red.
-            # Only on a fresh map: re-planning for another side must not wipe the director's paint
-            dens.boost(me, horn, rings=2, edge_factor=0.7)      # edges 1.4x longer: half the quads
+            # only the horn itself: its root ring keeps the body's density (a coarse root makes
+            # the bake rays start inside the original there). Only on a fresh map: re-planning
+            # for another side must not wipe the director's paint
+            before = dens.vertex_factors(me)
+            fac = _rigid_factors(p, me, arr.co, regions, budget)
+            dens.boost(me, horn, rings=0, edge_factor=fac)
+            for a, m in regions:
+                if a["kind"] == "horn" and m.any() and not (fac[m] < before[m] - 0.02).mean() > 0.5:
+                    out[a["name"]] = "rigid, but too curved for fewer quads"
         # face creases are carved on the FACE only: ear, horn and tail roots are not creases
         sa = me.attributes.get(dens.STRICT_ATTR)
         if sa is not None and app_all.any() and (paint or first_plan):
@@ -336,7 +394,7 @@ def show_detail_map(on: bool) -> None:
         o.hide_set(on)
 
 
-def prepare_maps(detail: float, recompute: bool = False, side: str = "") -> int:
+def prepare_maps(detail: float, recompute: bool = False, side: str = "", budget: int = 0) -> int:
     """Detail map AND parts plan together, so the map the director sees (Show / Paint) is the
     map Quad Remesher gets: the plan paints the horns lighter on top of the detail map."""
     n = ensure_detail_maps(detail, recompute=recompute) if detail > 0 else 0
@@ -348,7 +406,7 @@ def prepare_maps(detail: float, recompute: bool = False, side: str = "") -> int:
         bpy.context.view_layer.update()
     try:
         fresh = recompute or n > 0
-        plan_parts(recompute=fresh, side=side, paint=fresh)   # a fresh map needs the plan again
+        plan_parts(recompute=fresh, side=side, paint=fresh, budget=budget)   # a fresh map needs the plan again
     except Exception as exc:                          # noqa: BLE001 - remeshing still works without
         print(f"[forge] parts plan failed: {exc}")
         for p in parts():
@@ -372,12 +430,12 @@ def plan_needed(side: str) -> bool:
     return False
 
 
-def prepare_maps_job(detail: float, recompute: bool = False, side: str = ""):
+def prepare_maps_job(detail: float, recompute: bool = False, side: str = "", budget: int = 0):
     """prepare_maps as a job: the panel shows what is going on (on a dense AI mesh finding
     the parts takes a minute or two) and Stop works between the steps."""
     STATUS["text"] = "detail map + finding the extra parts (tail, horns, ears...)"
     yield 0.1
-    n = prepare_maps(detail, recompute=recompute, side=side)
+    n = prepare_maps(detail, recompute=recompute, side=side, budget=budget)
     STATUS["text"] = ""
     return n
 
@@ -440,7 +498,7 @@ def missing_lows() -> list:
 
 def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: str = "auto", only=None):
     if use_qr:
-        prepare_maps(detail, side=symmetry)
+        prepare_maps(detail, side=symmetry, budget=budget)
     for p in parts():                                  # a side preview must not reach the remesher
         show_side(p, "")
     prepare_retopo(only)
@@ -620,17 +678,26 @@ DETAIL_MAPS = ("normal", "ao")
 
 def run_bake(texture_size: int, samples: int = 16, device: str = "GPU"):
     """Normal + AO from the repaired mesh; colour / roughness / metal from the original
-    texture (the pre-repair copy when a part was welded solid, since welding drops UVs)."""
+    texture (the pre-repair copy when a part was welded solid, since welding drops UVs).
+
+    The cage is fitted to the visible shape (the welded solid when there is one) and reused by
+    both passes; every texel's ray is checked and the ones without a clean hit are filled from
+    their own UV island (counted before the fill, for the panel)."""
     checker_off()
     c, bake = C(), _mod("bake")
+    bake.clear_fit_cache()                     # Step 4/5 may have moved the new mesh since
     tex_dir = work_dir() / "textures"
     args = {"texture_size": int(texture_size), "texture_dir": str(tex_dir), "samples": samples,
-            "device": device, "cage_extrusion_ratio": 0.01, "margin_px": 16, "fitted_cage": True}
+            "device": device, "cage_extrusion_ratio": 0.01, "margin_px": 16, "fitted_cage": True,
+            "validate_hits": True}
     swapped = {}
     for h in c.meshes_with_role("high"):
         src = bpy.data.meshes.get(h.get(G.BACKUP, "")) if h.get(G.BACKUP) else None
         if src is not None and not h.data.uv_layers and src.uv_layers:
             swapped[h.name] = h.data
+    # the welded solid is the visible shape: the cage fits it, and the colour pass uses it to
+    # leave out the original's buried pieces
+    args["solid_meshes"] = {name: me.name for name, me in swapped.items()}
     rep1 = yield from bake.run_iter({**args, "maps": list(DETAIL_MAPS)})
     for name in swapped:                                  # colour from the original texture
         h = bpy.data.objects[name]
@@ -641,6 +708,7 @@ def run_bake(texture_size: int, samples: int = 16, device: str = "GPU"):
         for name, mesh in swapped.items():
             bpy.data.objects[name].data = mesh
         hide_highs()
+        bake.clear_fit_cache()                 # frees the originals' ray trees
     return finish_bake(rep1, rep2)
 
 
@@ -665,12 +733,28 @@ def finish_bake(*reports) -> dict:
                 e["metallic_cleanup"] = r["metallic_cleanup"]
             for k, v in (r.get("specks_removed") or {}).items():
                 e.setdefault("specks_removed", {})[k] = v
+            for k, v in (r.get("cage_refilled") or {}).items():
+                e.setdefault("cage_refilled", {})[k] = v
+            # share of texels without a clean hit, per map (measured before the fill)
+            for k, v in (r.get("invalid_texels") or {}).items():
+                e.setdefault("invalid_texels", {})[k] = v
+            for k, v in (r.get("invalid_kinds") or {}).items():
+                kinds = e.setdefault("invalid_kinds", {})
+                kinds[k] = max(kinds.get(k, 0.0), v)
+            if "cage" in r:                     # the same fit serves both passes
+                old = e.get("cage", {})
+                e["cage"] = {**r["cage"], "unenclosed": max(int(old.get("unenclosed", 0)),
+                                                            int(r["cage"].get("unenclosed", 0)))}
+            if "buried_faces_removed" in r:
+                e["buried_faces_removed"] = r["buried_faces_removed"]
     for low in lows():
         part = low.get(C().PART_PROP)
         e = out.get(part)
         if not e or not e["maps"]:
             continue
         e["bake_miss_ratio"] = round(max(e["bake_misses"].values(), default=0.0), 4)
+        if e.get("invalid_texels"):
+            e["invalid_texels_max"] = round(max(e["invalid_texels"].values()), 4)
         imgs = {}
         for k, path in e["maps"].items():
             img = bpy.data.images.get(f"T_{part}_{k}")

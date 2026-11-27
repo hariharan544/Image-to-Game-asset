@@ -100,6 +100,51 @@ def _check_density(S, body):
     assert c[horn_tip, 0].mean() < 0.95
     assert any("horn" in line for line in S.plan_rows()), S.plan_rows()
 
+def test_horn_root_keeps_body_density_and_horns_follow_their_curve():
+    """Rigid horns get fewer quads, but (1) not their root ring: a coarse root makes the bake
+    rays start inside the original there (dark stains); (2) never so few that a face cuts the
+    horn's curve by more than half the bake cage's margin - at a game budget a thin horn keeps
+    the detail map's density, at a huge budget it may be lighter."""
+    import importlib
+
+    import numpy as np
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    from forge_bpy import density
+    body = _creature()
+    col = bpy.data.collections.new("Forge Parts")
+    bpy.context.scene.collection.children.link(col)
+    for c in list(body.users_collection):
+        c.objects.unlink(body)
+    col.objects.link(body)
+    body["forge_kind"] = "body"
+    S = importlib.import_module("forge_send.steps")
+    try:
+        me = body.data
+        S.ensure_detail_maps(0.8)
+        before = density.vertex_factors(me)
+        plan = S.plan_parts(recompute=True)                      # no budget known: plain rigid factor
+        after = density.vertex_factors(me)
+        horn = after < before - 0.02
+        assert horn.any() and plan.get("horn_l") == "rigid, fewer quads", plan
+        ring = density._dilate(horn, me, 2) & ~horn               # the two rings around the horns
+        assert ring.any() and np.allclose(after[ring], before[ring], atol=0.02)
+        # a game budget (8k triangles: edges of about 14 mm here): a 29 mm thick horn needs
+        # edges under about 11 mm to stay within half the cage's margin - it keeps the body's
+        # density or more, never the plain rigid factor
+        S.ensure_detail_maps(0.8, recompute=True)
+        plan = S.plan_parts(recompute=True, budget=8000)
+        after = density.vertex_factors(me)
+        assert np.median(after[horn]) >= 1.0 and after[horn].min() > 0.72, np.percentile(after[horn], [0, 50])
+        # a film-sized budget: edges are short enough everywhere, the plain rigid factor
+        S.ensure_detail_maps(0.8, recompute=True)
+        before = density.vertex_factors(me)
+        plan = S.plan_parts(recompute=True, budget=2_000_000)
+        after = density.vertex_factors(me)
+        assert np.median(after[horn]) < 0.72 and plan.get("horn_l") == "rigid, fewer quads", plan
+    finally:
+        bpy.ops.wm.read_homefile(use_empty=True)
+
+
 def test_resample_chain_even_spacing():
     from forge_bpy.arp_rig import _resample
     pts = _resample([(0, 0, 0), (1, 0, 0), (1, 3, 0)], 4)

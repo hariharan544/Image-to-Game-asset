@@ -367,19 +367,20 @@ class FORGE_OT_step(bpy.types.Operator):
                     sh.color_type = "VERTEX" if on else "MATERIAL"
         if on and (S.plan_needed(st.symmetry) or any(S._mod("density").QR_ATTR not in p.data.color_attributes
                                                      for p in S.parts())):
-            run(st, "detail map + parts plan", lambda: S.prepare_maps_job(st.detail, side=st.symmetry), show)
+            run(st, "detail map + parts plan", lambda: S.prepare_maps_job(st.detail, side=st.symmetry, budget=st.budget), show)
         else:
             show(st)
 
     def do_retopo_map_reset(self, context, st):
         run(st, "detail map + parts plan (again)",
-            lambda: S.prepare_maps_job(st.detail, recompute=True, side=st.symmetry), lambda st, n: None)
+            lambda: S.prepare_maps_job(st.detail, recompute=True, side=st.symmetry, budget=st.budget),
+            lambda st, n: None)
 
     def do_retopo_map_paint(self, context, st):
         o = context.active_object
         if o is None or o not in S.parts():
             o = S.G.body_of(S.parts())
-        S.prepare_maps(st.detail, side=st.symmetry)
+        S.prepare_maps(st.detail, side=st.symmetry, budget=st.budget)
         S.show_detail_map(True)
         st["detail_view"] = True
         S.C().select_only(o)
@@ -746,9 +747,25 @@ def _bake_rows(rep):
         if r.get("skipped"):
             out.append((BAD, f"{part}: {r['skipped']}"))
             continue
-        miss = r.get("bake_miss_ratio", 0)
-        icon = GOOD if miss <= 0.02 else (WARN if miss <= 0.10 else BAD)
-        out.append((icon, f"{part}: {len(r.get('maps', {}))} maps, {miss:.1%} filled"))
+        inv = r.get("invalid_texels_max")
+        if inv is None:                         # a report from before the rays were checked
+            miss = r.get("bake_miss_ratio", 0)
+            icon = GOOD if miss <= 0.02 else (WARN if miss <= 0.10 else BAD)
+            out.append((icon, f"{part}: {len(r.get('maps', {}))} maps, {miss:.1%} filled"))
+        else:
+            # measured BEFORE the fill: rays that hit nothing, the back of a surface, or a
+            # buried piece of the original
+            icon = GOOD if inv <= 0.02 else (WARN if inv <= 0.10 else BAD)
+            n = len(r.get("maps", {}))
+            out.append((icon, f"{part}: {n} map{'' if n == 1 else 's'}"))
+            if inv < 0.0005:
+                out.append(("BLANK1", "    every texel found its surface cleanly"))
+            else:
+                out.append(("BLANK1", f"    {inv:.1%} of the texture had no clean hit (filled from neighbours)"))
+        spots = int((r.get("cage") or {}).get("unenclosed", 0))
+        if spots:
+            out.append((WARN, f"    the cage could not wrap {spots:,} spots: the new mesh is"))
+            out.append(("BLANK1", "    too coarse or folded there (Step 4: more triangles, then bake again)"))
         sp = sum((r.get("specks_removed") or {}).values())
         if sp:
             out.append(("BLANK1", f"    {sp:,} speck texels cleaned"))

@@ -244,9 +244,38 @@ def _dilate(mask: np.ndarray, me, rings: int) -> np.ndarray:
     return m
 
 
-def boost(me, mask: np.ndarray, rings: int = 3, edge_factor: float = 4.0) -> int:
+def qr_factors(col: np.ndarray) -> np.ndarray:
+    """Inverse of qr_colours: Quad Remesher's edge factor from its colour code (rows r, g, b, ...)."""
+    col = np.asarray(col, np.float64)
+    out = np.ones(len(col))
+    up = (col[:, 0] >= 0.999) & ((col[:, 1] < 0.999) | (col[:, 2] < 0.999))
+    out[up] = 1.0 + 3.0 * (1.0 - np.minimum(col[up, 1], col[up, 2]))
+    down = col[:, 0] < 0.999
+    out[down] = 1.0 / (1.0 + 3.0 * (1.0 - col[down, 0]))
+    return out
+
+
+def vertex_factors(me) -> np.ndarray:
+    """Per-vertex edge factor of the detail map (the densest corner), 1 where there is none."""
+    n, nl = len(me.vertices), len(me.loops)
+    attr = me.color_attributes.get(QR_ATTR)
+    out = np.ones(n)
+    if attr is None or not nl:
+        return out
+    col = np.empty(nl * 4, np.float32)
+    attr.data.foreach_get("color_srgb", col)
+    lv = np.empty(nl, np.int32)
+    me.loops.foreach_get("vertex_index", lv)
+    out[:] = 0.0
+    np.maximum.at(out, lv, qr_factors(col.reshape(-1, 4)))
+    out[out <= 0] = 1.0
+    return out
+
+
+def boost(me, mask: np.ndarray, rings: int = 3, edge_factor=4.0) -> int:
     """Paint the masked area (grown by a few rings) denser. edge_factor is Quad Remesher's own
-    scale (edges that many times shorter): 4 = full red = 16x the quads, 2 = 4x the quads."""
+    scale (edges that many times shorter): 4 = full red = 16x the quads, 2 = 4x the quads.
+    A per-vertex array paints each vertex with its own factor."""
     mask = _dilate(mask, me, rings)
     attr = me.color_attributes.get(QR_ATTR)
     nl = len(me.loops)
@@ -259,7 +288,10 @@ def boost(me, mask: np.ndarray, rings: int = 3, edge_factor: float = 4.0) -> int
     lv = np.empty(nl, np.int32)
     me.loops.foreach_get("vertex_index", lv)
     hit = mask[lv]
-    col[hit] = qr_colours(np.array([float(edge_factor)]))[0]
+    if np.ndim(edge_factor):
+        col[hit] = qr_colours(np.asarray(edge_factor, np.float64)[lv[hit]])
+    else:
+        col[hit] = qr_colours(np.array([float(edge_factor)]))[0]
     attr.data.foreach_set("color_srgb", col.ravel())
     return int(mask.sum())
 
