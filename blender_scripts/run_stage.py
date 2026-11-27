@@ -49,6 +49,7 @@ STAGES = {
     "addon_probe": addon_probe.run,
     "addon_trial": addon_trial.run,
     "addon_trial2": addon_trial.run_v2,
+    "arp_probe": addon_trial.run_rig_probe,
     "install_addon": install_addon.run,
 }
 
