@@ -98,3 +98,103 @@ def duplicate(obj: bpy.types.Object, name: str) -> bpy.types.Object:
 def safe_name(text: str) -> str:
     out = "".join(ch if ch.isalnum() or ch in "-_" else "_" for ch in text)
     return out.strip("_") or "part"
+
+
+# (field, values per element, numpy type) to read and write each kind of attribute
+_ATTR_FIELDS = {"FLOAT": ("value", 1, "f4"), "INT": ("value", 1, "i4"), "INT8": ("value", 1, "i4"),
+                "BOOLEAN": ("value", 1, "?"), "FLOAT_VECTOR": ("vector", 3, "f4"),
+                "FLOAT2": ("vector", 2, "f4"), "INT32_2D": ("value", 2, "i4"),
+                "FLOAT_COLOR": ("color", 4, "f4"), "BYTE_COLOR": ("color_srgb", 4, "f4"),
+                "QUATERNION": ("value", 4, "f4")}
+
+
+def canonical_order(me, by_position: bool = False) -> bool:
+    """Rewrite a mesh with its faces in one fixed order: each face starting at its lowest
+    vertex, the faces sorted by their corners; every attribute goes with its element. Some
+    Blender operators (the UV sphere, spin, extrude) make faces and edges in memory-address
+    order, which changes from run to run: the same surface then comes in another order, and
+    a subdivision or a remesher makes a different mesh of it. The vertices keep their order,
+    or with `by_position` are sorted by where they are (x, then y, then z: for a result whose
+    vertex order itself changes from run to run - the exact boolean works in threads; points
+    on the very same spot keep their order, a weld then makes them one). False (left as it
+    is) for a mesh with shape keys or vertex weights."""
+    import numpy as np
+    nf, nl, nv = len(me.polygons), len(me.loops), len(me.vertices)
+    if not nf or me.shape_keys or any(v.groups for v in me.vertices):
+        return False
+    co = np.empty(nv * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    vperm = np.lexsort((co[:, 2], co[:, 1], co[:, 0])) if by_position else np.arange(nv)
+    vnew = np.empty(nv, np.int64)
+    vnew[vperm] = np.arange(nv)                     # old vertex -> its new number
+    lv = np.empty(nl, np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    lv = vnew[lv]
+    ls = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_start", ls)
+    lt = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    lvl = lv.tolist()
+    key, rot = [], []
+    for s, t in zip(ls.tolist(), lt.tolist()):
+        f = lvl[s:s + t]
+        i = f.index(min(f))
+        key.append(f[i:] + f[:i])
+        rot.append(list(range(s + i, s + t)) + list(range(s, s + i)))
+    order = sorted(range(nf), key=key.__getitem__)
+    fperm = np.array(order, np.int64)
+    cperm = np.array([c for k in order for c in rot[k]], np.int64)
+    ev = np.empty(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = vnew[ev].reshape(-1, 2)
+    old_edge = {tuple(sorted(p)): i for i, p in enumerate(ev.tolist())}
+    le = np.empty(nl, np.int64)
+    me.loops.foreach_get("edge_index", le)
+    used = np.zeros(len(ev), bool)
+    used[le] = True
+    loose = sorted(tuple(sorted(p)) for p in ev[~used].tolist())     # (edges no face uses: kept too)
+    saved = []
+    for a in me.attributes:
+        if a.is_internal or a.name == "position" or a.data_type not in _ATTR_FIELDS:
+            continue
+        field, w, dt = _ATTR_FIELDS[a.data_type]
+        buf = np.empty(len(a.data) * w, dt)
+        a.data.foreach_get(field, buf)
+        saved.append((a.name, a.domain, a.data_type, field, buf.reshape(len(a.data), w)))
+    uv_active = me.uv_layers.active.name if me.uv_layers.active else None
+    col_active = me.color_attributes.active_color_name
+    me.clear_geometry()
+    me.vertices.add(nv)
+    me.vertices.foreach_set("co", co[vperm].ravel())
+    me.loops.add(nl)
+    me.loops.foreach_set("vertex_index", lv[cperm].astype(np.int32))
+    me.polygons.add(nf)
+    me.polygons.foreach_set("loop_start", (np.cumsum(lt[fperm]) - lt[fperm]).astype(np.int32))
+    me.update(calc_edges=True)
+    ev = np.empty(len(me.edges) * 2, np.int64)
+    me.edges.foreach_get("vertices", ev)
+    if loose:
+        ev = np.concatenate([ev, np.array(loose, np.int64).ravel()])
+        me.edges.add(len(loose))
+        me.edges.foreach_set("vertices", ev.astype(np.int32))
+    eperm = np.array([old_edge.get(tuple(sorted(p)), -1) for p in ev.reshape(-1, 2).tolist()], np.int64)
+    for name, domain, data_type, field, buf in saved:
+        if domain == "POINT":
+            buf = buf[vperm]
+        elif domain == "FACE":
+            buf = buf[fperm]
+        elif domain == "CORNER":
+            buf = buf[cperm]
+        elif domain == "EDGE":
+            buf = np.where((eperm >= 0)[:, None], buf[np.maximum(eperm, 0)], np.zeros_like(buf[:1]))
+        a = me.attributes.get(name)
+        if a is None:
+            a = me.attributes.new(name, data_type, domain)
+        a.data.foreach_set(field, buf.ravel())
+    if uv_active and uv_active in me.uv_layers:
+        me.uv_layers.active = me.uv_layers[uv_active]
+    if col_active and col_active in me.color_attributes:
+        me.color_attributes.active_color_name = col_active
+    me.update()
+    return True

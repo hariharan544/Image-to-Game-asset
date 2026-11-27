@@ -7,6 +7,17 @@ args: {"out": "<path.glb>", "rigged": true}
 
 import bpy
 
+from .common import canonical_order
+
+
+def _added():
+    """The primitive just added, its faces put in a fixed order: the UV sphere is built in
+    memory-address order, so the fixture (and every test body made from it) would come out
+    a little different on every run."""
+    o = bpy.context.active_object
+    canonical_order(o.data)
+    return o
+
 
 def textured_material(name, color_a, color_b):
     img = bpy.data.images.new(name + "_tex", 128, 128)
@@ -46,9 +57,9 @@ def run(args: dict) -> dict:
     bpy.ops.wm.read_factory_settings(use_empty=True)
 
     bpy.ops.mesh.primitive_uv_sphere_add(radius=0.3, location=(0, 0, 1.3), segments=32, ring_count=16)
-    head = bpy.context.object
+    head = _added()
     bpy.ops.mesh.primitive_cylinder_add(radius=0.25, depth=1.0, location=(0, 0, 0.6), vertices=32)
-    body = bpy.context.object
+    body = _added()
     bpy.ops.object.select_all(action="DESELECT")
     head.select_set(True); body.select_set(True)
     bpy.context.view_layer.objects.active = body
@@ -60,7 +71,7 @@ def run(args: dict) -> dict:
     body.data.materials.append(textured_material("BodyMat", (0.8, 0.2, 0.2), (0.9, 0.8, 0.3)))
 
     bpy.ops.mesh.primitive_cube_add(size=1, location=(0.45, 0, 0.8))
-    sword = bpy.context.object
+    sword = _added()
     sword.scale = (0.04, 0.08, 0.7)
     bpy.ops.object.transform_apply(scale=True)
     sword.name = "Sword"
@@ -142,7 +153,7 @@ def _limb(a, b, r):
     import mathutils
     a, b = mathutils.Vector(a), mathutils.Vector(b)
     bpy.ops.mesh.primitive_cylinder_add(vertices=12, radius=r, depth=(b - a).length, location=(a + b) / 2)
-    o = bpy.context.active_object
+    o = _added()
     o.rotation_euler = (b - a).to_track_quat("Z", "Y").to_euler()
     return o
 
@@ -153,12 +164,12 @@ def humanoid(args: dict) -> dict:
     bpy.ops.wm.read_factory_settings(use_empty=True)
     parts = [_limb((0, 0, 0.9), (0, 0, 1.48), 0.16)]
     bpy.ops.mesh.primitive_uv_sphere_add(radius=0.12, location=(0, 0, 1.66))
-    parts.append(bpy.context.active_object)
+    parts.append(_added())
     for x in (1, -1):
         parts.append(_limb((0.12 * x, 0, 1.42), (0.80 * x, 0, 1.42), 0.045))
         parts.append(_limb((0.10 * x, 0, 0.95), (0.10 * x, 0.02, 0.06), 0.065))
         bpy.ops.mesh.primitive_cube_add(size=1, location=(0.10 * x, -0.06, 0.04))
-        foot = bpy.context.active_object
+        foot = _added()
         foot.scale = (0.08, 0.22, 0.07)
         parts.append(foot)
     for o in parts:
@@ -175,7 +186,7 @@ def humanoid(args: dict) -> dict:
     body.data.materials.append(textured_material("BodyMat", (0.3, 0.4, 0.8), (0.8, 0.7, 0.6)))
 
     bpy.ops.mesh.primitive_cube_add(size=1, location=(0.82, -0.05, 1.42))
-    sword = bpy.context.active_object
+    sword = _added()
     sword.scale = (0.03, 0.6, 0.06)
     bpy.ops.object.transform_apply(scale=True)
     sword.name = "Sword"
