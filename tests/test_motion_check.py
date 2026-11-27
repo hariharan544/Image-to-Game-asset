@@ -214,6 +214,8 @@ def test_a_fat_elbow_names_the_elbow_and_tells_contact_from_thinning():
     for side in ("left", "right"):                       # folds in the crease are not graded
         assert skin.get(f"{side} elbow", {}).get("folds", 0) == 0, skin.get(f"{side} elbow")
     assert rep["checks"]["joints"]["grade"] == "warn"
+    import json
+    json.dumps(rep)                     # (stored in the scene as JSON: plain numbers only, no numpy)
     # the panel: one sentence per finding, contact as information, nothing longer than 60
     import importlib
     sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
@@ -421,3 +423,29 @@ def test_g_unity_four_bone_limit_is_measured_not_counted():
     assert "Unity" in text and "4-bone limit moves the skin" in text and "points use more than 4 bones" in text, text
     text = " ".join(t.strip() for _i, t in L._anim_rows(out[0.05]))
     assert "4-bone limit moves the skin" not in text and "fine" in text, text
+
+
+def test_a_prop_pinned_to_a_bone_is_a_part_of_its_own():
+    """A box pinned whole to the forearm swings into the upper arm when the elbow folds: it is
+    named by its part and reported as touching the arm (a warning), never as the elbow's contact
+    or as a fold of the forearm."""
+    import bmesh
+    arm, tube = _arm(165)
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=0.12)
+    bmesh.ops.translate(bm, verts=bm.verts, vec=(1.55, 0.2, 0.0))
+    me = bpy.data.meshes.new("Box")
+    bm.to_mesh(me)
+    bm.free()
+    box = bpy.data.objects.new("Box_low", me)
+    bpy.context.scene.collection.objects.link(box)
+    box["forge_part"] = "Box"
+    box.vertex_groups.new(name="forearm.l").add(list(range(len(me.vertices))), 1.0, "REPLACE")
+    box.modifiers.new("Armature", "ARMATURE").object = arm
+    rep = _run(arm, [tube, box], list(range(1, 13)))
+    cross = rep["checks"]["crossing"]["regions"]
+    box_x = [x for x in cross if "Box" in x["where"]]
+    assert box_x and all(x["kind"] == "touch" and x["grade"] == "warn" for x in box_x), cross
+    assert any(x["where"] == "Box touches left upperarm" for x in box_x), box_x
+    assert not [x for x in cross if x["kind"] == "fold"], cross
+    assert rep["checks"]["weights"]["points"] == len(tube.data.vertices) + len(me.vertices)

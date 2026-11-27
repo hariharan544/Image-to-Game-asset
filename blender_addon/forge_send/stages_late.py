@@ -903,9 +903,13 @@ def _finding_text(where, f) -> tuple:
             return f"{where}, {_when_bent(f)}: {what} - game skinning collapses at a {turn} this deep", "deep"
         return f"{where}, {_when_bent(f)}: {what} - more than game skinning loses", "joint"
     if c == "skin":
-        if f.get("stretch_grade", f.get("grade")) != "pass":
-            return f"{where}, {_when_bent(f)}: skin stretched {f['stretch']:.1f}x (the texture smears)", "stretch"
         g = {"frame": f.get("folds_frame"), "pose": f.get("folds_pose")}
+        folds = f.get("folds") and f.get("folds_grade") not in (None, "pass")
+        if f.get("stretch_grade", f.get("grade")) != "pass":
+            text = f"{where}, {_when_bent(f)}: skin stretched {f['stretch']:.1f}x (the texture smears)"
+            if folds:
+                text += f"; {f['folds']} faces turn inside out in {_when_bent(g)}"
+            return text, "stretch"
         return f"{where}, {_when_bent(g)}: {f.get('folds', 0)} faces turn inside out", "folds"
     if c == "crossing" and f.get("kind") == "touch":
         return f"{where} in {_when_bent(f)}: {f['faces']} faces pass into each other", "touch"

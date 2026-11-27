@@ -11,6 +11,8 @@ where it is worst (the caller adds the test pose shown at that frame):
             that is contact, expected, and shown as information. Thinning anywhere else is the
             skinning's: the sides, the outer side (linear blending's elbow loss) and a twist
             (the candy wrapper). Twist bones along one segment are judged as '<segment> twist'.
+            A frame where the two bones no longer meet at the joint (the lower back turning
+            about the body's middle, against the thigh) is skin sliding: the skin check's.
   skin      each triangle's largest principal stretch against rest (the texture smears), and
             triangles turned inside out outside a contact zone (folds): the worst per region
   crossing  faces newly passing through faces. Inside one joint's contact zone: contact. Inside
@@ -369,6 +371,7 @@ class _Layout:
         tot = W.sum(axis=1)
         self.free = tot <= 1e-9
         own = self.free | (np.zeros(n, bool) if rigid is None else rigid)
+        self.own = own
         extra = {}
         for lab in np.unique(labels[own]) if own.any() else []:
             extra[lab] = len(segs)
@@ -531,7 +534,7 @@ class _Layout:
         J.r = float(np.median(J.rest[J.use])) if J.use.any() else med
         J.rdir, J.along, J.rd = self._radial(J, self.rest[idx])
         # the contact zone can hold any point of the two sides near the joint, not just shared ones
-        side_w = self.Wn[:, J.union].sum(axis=1)
+        side_w = np.where(self.own, 0.0, self.Wn[:, J.union].sum(axis=1))    # (a prop is a part of its own)
         cand = np.flatnonzero(side_w >= 0.5)
         rdir, along, rd = self._radial(J, self.rest[cand])
         keep = rd < 2.0 * max(J.r, 1e-9)
@@ -966,6 +969,9 @@ def _report(L, frames, n_tris, med_edge, joints, contact, jzone_folds, skin_s, s
     worst_check = max(bad, key=lambda x: ORDER.index(x["grade"]), default=None)
     out["worst_frame"] = worst_check["frame"] if worst_check else None
     out["regions"] = by_region(out["checks"])
+    top = out["regions"][0]["worst"] if out["regions"] else None
+    if top and top.get("frame") is not None and top["grade"] == (worst_check or {}).get("grade"):
+        out["worst_frame"] = top["frame"]            # (the first place the panel lists)
     out["per_frame"] = per_frame
     return out
 

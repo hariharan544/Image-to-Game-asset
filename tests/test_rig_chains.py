@@ -419,6 +419,8 @@ def test_bull_animation_check_reads_each_place_once(bull_rigged):
     except StopIteration as stop:
         rep = stop.value
     S._attach_poses(rep, "rom")
+    import json
+    json.dumps(rep)                     # (stored in the scene as JSON: plain numbers only, no numpy)
     joints = {e["where"]: e for e in rep["checks"]["joints"]["regions"]}
     for side in ("left", "right"):
         e = joints[f"{side} elbow"]
