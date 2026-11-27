@@ -395,6 +395,28 @@ def plan_rows() -> list:
     return [f"{', '.join(sorted(v))}: {k}" for k, v in sorted(groups.items())]
 
 
+MIN_TRIS_PER_PART = 300
+
+
+def budget_split(budget: int, report_json: str) -> list:
+    """How the Triangles budget divides between the parts: by surface area, like the run
+    (props share the budget; they do not add to it). [(label, tris)], largest first; empty
+    when the Step 3 report does not cover every part (read-only: safe in draw)."""
+    import json
+    try:
+        rep = json.loads(report_json or "{}")
+    except ValueError:
+        return []
+    ps = parts()
+    areas = {p.name: rep.get(p.name, {}).get("area") for p in ps}
+    if not ps or any(a is None for a in areas.values()):
+        return []
+    total = sum(areas.values()) or 1.0
+    out = [("body" if G.kind(p) == "body" else p.name[:18],
+            max(int(budget * areas[p.name] / total), MIN_TRIS_PER_PART)) for p in ps]
+    return sorted(out, key=lambda x: -x[1])
+
+
 def part_names(objs) -> list:
     """Forge part names of the given objects (new meshes or originals)."""
     c = C()
@@ -430,7 +452,7 @@ def run_retopo(budget: int, use_qr: bool = True, detail: float = 0.8, symmetry: 
                 o.data.color_attributes.remove(a)
     args = {"method": "quadremesher" if use_qr else "quadriflow", "target_tris": int(budget),
             "symmetry": symmetry, "only": list(only or []),
-            "min_tris_per_part": 300, "qr_timeout": 900, "shape_retries": 1}
+            "min_tris_per_part": MIN_TRIS_PER_PART, "qr_timeout": 900, "shape_retries": 1}
     return _mod("retopo").run(args)
 
 
@@ -463,6 +485,42 @@ def stop_cleanup(label: str = "") -> None:
                 area.spaces.active.shading.color_type = "MATERIAL"
     except (AttributeError, TypeError):
         pass
+
+
+def mark_defects(me) -> int:
+    """Select exactly the faults of a mesh (object mode; edit mode shows them): open edges,
+    edges of 3+ faces, wire edges, stray points, faces lying on each other, doubled points."""
+    import numpy as np
+    rescue = _mod("rescue")
+    ne, nv, nf = len(me.edges), len(me.vertices), len(me.polygons)
+    le = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("edge_index", le)
+    per_edge = np.bincount(le, minlength=ne)
+    lv = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    ev = np.empty(ne * 2, np.int64)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    e_sel = per_edge != 2
+    f_sel = rescue.stacked_faces(me)
+    v_sel = rescue.doubled_points(me)
+    used = np.zeros(nv, bool)
+    used[lv] = True
+    v_sel |= ~used
+    v_sel[ev[e_sel].ravel()] = True
+    if f_sel.any():
+        fs = np.empty(nf, np.int64)
+        me.polygons.foreach_get("loop_start", fs)
+        ft = np.empty(nf, np.int64)
+        me.polygons.foreach_get("loop_total", ft)
+        for i in np.flatnonzero(f_sel):
+            v_sel[lv[fs[i]:fs[i] + ft[i]]] = True
+    e_sel |= v_sel[ev[:, 0]] & v_sel[ev[:, 1]]
+    me.vertices.foreach_set("select", v_sel)
+    me.edges.foreach_set("select", e_sel)
+    me.polygons.foreach_set("select", f_sel)
+    me.update()
+    return int(e_sel.sum())
 
 
 def clay_lows() -> None:
@@ -1085,6 +1143,46 @@ def sample_animation(clip: str = "rom") -> dict:
     sc.frame_set(1)
     bpy.ops.object.mode_set(mode="OBJECT")
     return {"clip": clip, "frames": length, "controls": used}
+
+
+def animated_meshes(arm) -> list:
+    """The new meshes the rig moves: skinned to it, or pinned to one of its bones."""
+    return [o for o in lows() if o.parent is arm
+            or any(m.type == "ARMATURE" and m.object is arm for m in o.modifiers)]
+
+
+def check_animation_job(clip: str):
+    """Generator: put the clip on (if it is not), measure about 48 of its frames, return the
+    report (motion_check: joints, skin, faces passing through faces, weights)."""
+    if clip not in CLIPS:
+        raise ValueError(f"unknown clip {clip!r}")
+    arm = final_rig()
+    if arm is None:
+        raise RuntimeError("build the rig first")
+    act = arm.animation_data.action if arm.animation_data else None
+    if act is None or act.name != f"FORGE_pose_{clip}":
+        sample_animation(clip)
+    scr = bpy.context.screen
+    if scr is not None and scr.is_animation_playing:
+        bpy.ops.screen.animation_cancel(restore_frame=False)
+    objs = animated_meshes(arm)
+    if not objs:
+        raise RuntimeError("no mesh is skinned to the rig: build the rig again")
+    length = CLIP_LENGTH[clip]
+    frames = list(range(1, length + 1, max(1, length // 48)))
+    gen = _mod("motion_check").check(arm, objs, frames)
+    try:
+        while True:
+            share = next(gen)
+            STATUS["text"] = f"checking {CLIPS[clip][0].lower()}: {int(100 * share)} %"
+            yield 0.01
+    except StopIteration as stop:
+        rep = stop.value
+    finally:
+        STATUS["text"] = ""
+    rep.pop("per_frame", None)
+    rep["clip"] = clip
+    return rep
 
 
 def pose_test_stop() -> None:

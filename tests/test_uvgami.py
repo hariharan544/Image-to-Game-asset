@@ -111,3 +111,55 @@ def test_the_face_is_kept_free_of_seams():
     head = np.array(J["head"][0][:])
     assert (co[w, 2] > J["neck"][0][2]).all()                  # on the head
     assert (co[w, 1] < head[1]).mean() > 0.95                  # its front (the bull faces -Y)
+
+
+def test_a_failed_transfer_is_explained_and_leaves_nothing_behind(uvg):
+    """UVgami cannot put its UVs back (faces on the same spot): it hides Forge's mesh and keeps
+    its own copy. Forge shows its mesh again, removes the copy and says why in plain words."""
+    import fake_uvgami
+
+    from forge_bpy import uv
+    body = _low("Body", "body", (0, 0, 0))
+    rep = _drive(uv.run({"unwrapper": "uvgami", "packer": "blender", "texture_size": 1024}),
+                 lambda: fake_uvgami.deliver(transfer_fail={"Body": "output face 12 matches multiple input faces"}))
+    r = rep["parts"]["Body"]
+    assert r["seams"] == "blender" and r["has_uv"] and "same spot" in r["seams_note"], r
+    assert not body.hide_get()
+    assert not [o for o in bpy.data.objects if o.name.endswith("_unwrapped")]
+    assert "UVgami Unwrapped" not in bpy.data.collections
+
+
+def test_faces_on_the_same_spot_are_fixed_before_uvgami_sees_the_mesh(uvg):
+    import bmesh
+    import fake_uvgami
+
+    from forge_bpy import rescue, uv
+    body = _low("Body", "body", (0, 0, 0))
+    bm = bmesh.new()
+    bm.from_mesh(body.data)
+    bm.faces.ensure_lookup_table()
+    f = bm.faces[5]
+    bm.faces.new([bm.verts.new(v.co) for v in f.verts])     # a face on top of a face
+    bm.to_mesh(body.data)
+    bm.free()
+    rep = _drive(uv.run({"unwrapper": "uvgami", "packer": "blender", "texture_size": 1024}),
+                 lambda: fake_uvgami.deliver())
+    seen = uvg.seen_meshes["Body"]
+    assert not rescue.doubled_points(seen).any() and not rescue.stacked_faces(seen).any()
+    assert rep["parts"]["Body"]["seams"] == "uvgami" and rep["parts"]["Body"]["cleaned"], rep
+
+
+def test_uvgami_grid_never_replaces_the_parts_materials(uvg):
+    import fake_uvgami
+
+    from forge_bpy import uv
+    body = _low("Body", "body", (0, 0, 0))
+    skin = bpy.data.materials.new("Skin")
+    body.data.materials.append(skin)
+    bpy.context.scene.uvgami.auto_grid = True                 # the director's own setting
+    _drive(uv.run({"unwrapper": "uvgami", "packer": "blender", "texture_size": 1024}),
+           lambda: fake_uvgami.deliver(grid=True))
+    assert not uvg.seen_settings["auto_grid"]                 # off while Forge unwraps
+    assert bpy.context.scene.uvgami.auto_grid                 # and back afterwards
+    assert [m.name for m in body.data.materials] == ["Skin"]
+    assert {p.material_index for p in body.data.polygons} == {0}

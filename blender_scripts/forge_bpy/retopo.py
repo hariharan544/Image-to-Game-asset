@@ -133,6 +133,49 @@ def _part_budgets(lows, total_budget: int, budget_scale: float, min_part: int) -
     return {o.name: max(int(total_budget * budget_scale * areas[o.name] / total_area), min_part) for o in lows}
 
 
+ROUND_EDGES = 8          # a round part needs at least this many edges around to stay round
+MIN_PIECE_QUADS = 64
+
+
+def _plug_radius(plug) -> float:
+    return float(plug[6]) if plug and len(plug) >= 7 else 0.0
+
+
+def _piece_edge(edge: float, plug) -> float:
+    """The quad size for a cut-off part: the body's quad size where it attaches, never so
+    coarse that the part's round root gets fewer than ROUND_EDGES edges around."""
+    import math
+    r = _plug_radius(plug)
+    return min(edge, 2 * math.pi * r / ROUND_EDGES) if r > 0 else edge
+
+
+def _quads_for(area: float, edge: float) -> int:
+    return max(MIN_PIECE_QUADS, int(area / max(edge, 1e-9) ** 2))
+
+
+def _local_edge(me, plug) -> float | None:
+    """Median length of the body's edges around a part's root (where it will sit). Looks
+    wider when the neighbourhood is too small to measure."""
+    import numpy as np
+    r = _plug_radius(plug)
+    if r <= 0 or not len(me.edges):
+        return None
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    ev = np.empty(len(me.edges) * 2, np.int32)
+    me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2)
+    root = np.array(plug[:3], np.float32)
+    d = np.linalg.norm((co[ev[:, 0]] + co[ev[:, 1]]) / 2 - root, axis=1)
+    length = np.linalg.norm(co[ev[:, 0]] - co[ev[:, 1]], axis=1)
+    for reach in (3.0, 6.0, 12.0):
+        m = d < reach * r
+        if m.sum() >= 12:
+            return float(np.median(length[m]))
+    return None
+
+
 def _split_ngons(obj) -> int:
     """Engines want tris and quads only; remeshers occasionally leave a few n-gons."""
     bm = bmesh.new()
@@ -596,10 +639,16 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
             _replace_mesh(obj, backup.copy())
         if side == "none" or (side in ("left", "right") and not mirror):
             obj["forge_symmetry_x"] = False
-        if split_pieces:                          # their share comes out of the body's budget
-            total_area = max(_rescue.area(full_backup), 1e-9)
-            piece_quads = [max(120, int(target * float(args.get("split_density", 1.5))
-                                        * _rescue.area(pm) / total_area)) for _k, pm, _p in split_pieces]
+        piece_quads: list = []
+        if split_pieces:
+            # a cut-off part gets the SAME quad size as the body (one quad size across the
+            # joint), never too coarse to stay round. Its share comes out of the body's
+            # budget: reserved now from the body's average quad size, settled after the
+            # body is done from the quad size the body really has where the part sits
+            import math
+            e_avg = math.sqrt(max(_rescue.area(full_backup), 1e-12) / max(target, 1.0))
+            piece_quads = [int(1.1 * _quads_for(_rescue.area(pm), _piece_edge(e_avg, p)))
+                           for _k, pm, p in split_pieces]
             target = max(target - sum(piece_quads), target * 0.5)
         fit = {"tree": None, "fitted": False, "carve": {}}
 
@@ -742,7 +791,10 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         piece_fallbacks: list = []
         if ok and split_pieces:
             from .density import conform
-            for (k, pme, plug), quads in zip(split_pieces, piece_quads):
+            for (k, pme, plug), reserved in zip(split_pieces, piece_quads):
+                edge = _local_edge(obj.data, plug)       # the body's quad size where it sits
+                quads = (min(reserved, _quads_for(_rescue.area(pme), _piece_edge(edge, plug)))
+                         if edge else reserved)
                 src = pme.copy()
                 piece = bpy.data.objects.new(f"{obj.name}_part{k}", pme)
                 piece.matrix_world = obj.matrix_world.copy()
@@ -792,11 +844,20 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         r = report[obj.get(C.PART_PROP)]
         # final gate: a game mesh must be closed. Small leftovers (doubles on a seam, a stray
         # point, a little hole) are tidied; anything bigger is reported and can be shown
+        # (faces lying on each other and doubled points count too: the bake, the skinning
+        # and UVgami - which puts UVs back by position - all need every face in its own place)
+        def stacked():
+            return int(_rescue.stacked_faces(obj.data).sum()) + int(_rescue.doubled_points(obj.data).sum())
         d = _rescue.mesh_defects(obj.data)
-        if any(d):
-            _rescue.tidy(obj.data)
+        st = stacked()
+        if any(d) or st:
+            fixed = _rescue.tidy(obj.data)
+            if any(fixed.values()):
+                r["tidied"] = fixed
             d = _rescue.mesh_defects(obj.data)
+            st = stacked()
         r["open_edges"], r["bad_edges"], r["loose"] = int(d[0]), int(d[1]), int(d[2])
+        r["stacked"] = st
         r["separate_parts"] = len(split_pieces)
         if piece_fallbacks:
             r["piece_fallbacks"] = piece_fallbacks

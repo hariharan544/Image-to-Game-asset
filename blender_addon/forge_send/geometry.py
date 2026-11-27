@@ -279,6 +279,7 @@ def analyse(obj) -> dict:
         "open_edges": int(len(boundary)),
         "bad_edges": nonman,
         "loose": int((~used).sum()) + wire,
+        "area": float(farea.sum()),          # its share of the triangle budget (Step 4)
     }
     rep["ok"] = rep["holes"] == 0 and rep["bad_edges"] == 0 and rep["loose"] == 0 and rep["tiny_bits"] == 0
     # several big overlapping pieces (e.g. horns pushed into the head) = not one welded solid

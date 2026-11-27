@@ -35,6 +35,7 @@ def reopen(st, stage: str) -> None:
         setattr(st, later, "todo")
     if i <= ORDER.index("rig"):
         st.rig_phase = ""
+        st.anim_rep = "{}"
 
 
 def _start_step(st, stage: str) -> None:
@@ -191,6 +192,9 @@ ACTIONS = {
     "rig_pose": "Play a pose test: arms down/forward, elbows, legs, head and spine. Look for tearing",
     "rig_pose_stop": "Stop the pose test and return to the rest pose",
     "rig_anim": "Play the chosen sample animation on the rig (made on the rig itself: no files)",
+    "rig_check": "Step through the chosen animation and measure it: joints that collapse, skin that "
+                 "stretches, the mesh passing through itself, weights the engines refuse",
+    "rig_check_worst": "Go to the frame where the animation looks worst",
     "export_run": "Make LODs and export Unreal (AAA) and Unity (mobile) files + a GLB preview",
     "export_open": "Open the export folder",
 }
@@ -309,16 +313,15 @@ class FORGE_OT_step(bpy.types.Operator):
         """Select and frame the open / broken edges of the new meshes that are not clean."""
         rep = json.loads(st.retopo_rep or "{}").get("parts", {})
         bad = [o for o in S.lows() if any(rep.get(o.get("forge_part"), {}).get(k) for k in
-                                          ("open_edges", "bad_edges", "loose"))]
+                                          ("open_edges", "bad_edges", "loose", "stacked"))]
         if not bad:
             self.report({"INFO"}, "No open or broken edges")
             return
         S.C().select_only(*bad)
+        for o in bad:                    # exactly the faults: not every edge near a joint
+            S.mark_defects(o.data)
         bpy.ops.object.mode_set(mode="EDIT")
         bpy.ops.mesh.select_mode(type="EDGE")
-        bpy.ops.mesh.select_all(action="DESELECT")
-        bpy.ops.mesh.select_non_manifold(extend=False, use_wire=True, use_boundary=True, use_multi_face=True,
-                                         use_non_contiguous=False, use_verts=True)
         for area in context.screen.areas:
             if area.type == "VIEW_3D":
                 region = next((r for r in area.regions if r.type == "WINDOW"), None)
@@ -490,6 +493,7 @@ class FORGE_OT_step(bpy.types.Operator):
         S.edit_joints()
 
     def do_rig_build(self, context, st):
+        st.anim_rep = "{}"                        # (checks of the old skinning)
         rep = S.build_rig(8)
         _save_rep(st, "rig_rep", rep)
         st.rig_phase = "built"
@@ -509,6 +513,20 @@ class FORGE_OT_step(bpy.types.Operator):
             bpy.ops.screen.animation_play()
         except RuntimeError:
             pass
+
+    def do_rig_check(self, context, st):
+        def done(st, rep):
+            _save_rep(st, "anim_rep", rep)
+            if rep.get("worst_frame"):
+                bpy.context.scene.frame_set(int(rep["worst_frame"]))
+        run(st, f"checking {S.CLIPS[st.anim_clip][0].lower()}", lambda: S.check_animation_job(st.anim_clip), done)
+
+    def do_rig_check_worst(self, context, st):
+        rep = json.loads(st.anim_rep or "{}")
+        if rep.get("worst_frame"):
+            if context.screen and context.screen.is_animation_playing:
+                bpy.ops.screen.animation_cancel(restore_frame=False)
+            context.scene.frame_set(int(rep["worst_frame"]))
 
     def do_rig_pose_stop(self, context, st):
         if context.mode != "OBJECT":
@@ -636,6 +654,15 @@ def _retopo_rows(rep):
             out.append((BAD, f"    not clean: {r.get('open_edges', 0)} open, {r.get('bad_edges', 0)} broken, "
                              f"{r.get('loose', 0)} loose edges"))
             out.append(("BLANK1", "    Show the problem edges (button below)"))
+        if r.get("stacked"):
+            out.append((BAD, f"    not clean: {r['stacked']} faces / points on top of each other"))
+            out.append(("BLANK1", "    UVgami and the bake need each face in its own place"))
+        t = r.get("tidied") or {}
+        if any(t.values()):
+            bits = [f"{t['welded']} doubled points welded" if t.get("welded") else "",
+                    f"{t['stacked']} stacked faces removed" if t.get("stacked") else "",
+                    "openings rebuilt" if t.get("rebuilt") else ""]
+            out.append(("BLANK1", "    cleaned: " + ", ".join(b for b in bits if b)))
         if sh:
             if sh.get("lost_pct", 0) > 0.5 and sh.get("detail_only"):
                 out.append(("BLANK1", f"    fine detail flattened: {sh['lost_pct']}% (curls, twists)"))
@@ -685,8 +712,23 @@ def _uv_rows(rep):
         if seams == "uvgami":
             out.append(("BLANK1", "    seams by UVgami"))
         elif seams:
-            out.append((WARN if r.get("seams_note") else "BLANK1",
-                        "    seams by Blender" + (f" ({r['seams_note']})" if r.get("seams_note") else "")))
+            note = str(r.get("seams_note") or "")
+            out.append((WARN if note else "BLANK1", "    seams by Blender"))
+            if note.startswith("UVgami: "):              # its own reason, on lines that fit
+                words, line = note[len("UVgami: "):].split(), "    UVgami:"
+                for w in words:
+                    if len(line) + len(w) > 44:
+                        out.append(("BLANK1", line))
+                        line = "     "
+                    line += " " + w
+                out.append(("BLANK1", line))
+            elif note:
+                out.append(("BLANK1", f"    ({note})"))
+        cl = r.get("cleaned") or {}
+        if cl.get("welded") or cl.get("stacked") or cl.get("rebuilt"):
+            out.append(("BLANK1", "    fixed first: faces on the same spot"))
+        if cl.get("left"):
+            out.append((WARN, f"    {cl['left']} faces still on the same spot"))
         if by_uvpm:
             out.append(("BLANK1", "    packed by UVPackmaster"))
         elif "failed" in packer:
@@ -732,6 +774,51 @@ def _rig_rows(rep):
         out.append((GOOD if un < 0.5 else BAD, f"{part}: {un:.1f}% unweighted"))
     for part, bone in rep.get("props", {}).items():
         out.append(("BONE_DATA", f"{part} > {bone}"))
+    return out
+
+
+def _anim_rows(rep):
+    """The automatic checks of one clip, in plain words."""
+    icon = {"pass": GOOD, "warn": WARN, "fail": BAD}
+    c = rep.get("checks", {})
+    out = [(icon.get(rep.get("grade"), WARN),
+            {"pass": "Animation looks clean", "warn": "Animation: worth a look",
+             "fail": "Animation: something breaks"}.get(rep.get("grade"), "Animation checked")
+            + f" ({rep.get('frames', 0)} frames)")]
+    j = c.get("joints", {})
+    if j:
+        if j.get("frame") is None or j["grade"] == "pass":
+            out.append((GOOD, "    joints keep their shape"))
+        else:
+            out.append((icon[j["grade"]], f"    {j['where'] or 'a joint'} thins to {j['value']:.0%}"))
+            out.append(("BLANK1", f"      at frame {j['frame']} (collapsing joint)"))
+    k = c.get("skin", {})
+    if k:
+        if k["grade"] == "pass":
+            out.append((GOOD, f"    skin stretch fine (up to {k['stretch']:.1f}x)"))
+        else:
+            if k["stretch"] > 1.5:
+                out.append((icon[k["grade"]], f"    skin stretches {k['stretch']:.1f}x: {k['where']}"))
+                out.append(("BLANK1", f"      at frame {k['frame']} (texture smears there)"))
+            if k["squash"] < 0.3:
+                out.append((WARN, f"    skin squashes to {k['squash']:.0%}: {k['squash_where']}"))
+                out.append(("BLANK1", f"      at frame {k['squash_frame']}"))
+    x = c.get("crossing", {})
+    if x:
+        if not x.get("value"):
+            out.append((GOOD, "    nothing passes through the body"))
+        else:
+            out.append((icon[x["grade"]], f"    {x['value']} faces pass through others"))
+            out.append(("BLANK1", f"      worst at frame {x['frame']}"))
+    w = c.get("weights", {})
+    if w:
+        if w.get("unweighted"):
+            out.append((BAD, f"    {w['unweighted']} points no bone moves"))
+        if (w.get("over") or {}).get("Unity"):
+            out.append((WARN, f"    {w['over']['Unity']} points use more than 4 bones"))
+            out.append(("BLANK1", "      (Unity keeps the 4 strongest; Unreal: fine)"))
+        if not w.get("unweighted") and not (w.get("over") or {}).get("Unity"):
+            out.append((GOOD, "    weights fine for Unreal and Unity"))
     return out
 
 
@@ -784,6 +871,14 @@ def _approve_btn(col, stage, text="Approve"):
 
 def _draw_retopo(col, st):
     col.prop(st, "budget")
+    split = S.budget_split(st.budget, st.report)
+    if len(split) > 1:                       # props share the budget with the body
+        c = col.column(align=True)
+        c.label(text="Shared by the parts (by surface):", icon="INFO")
+        for label, tris in split[:6]:
+            c.label(text=f"   {label}: {tris:,} tris")
+        if len(split) > 6:
+            c.label(text=f"   + {len(split) - 6} more")
     col.prop(st, "detail", slider=True)
     c = col.column(align=True)
     c.prop(st, "symmetry")
@@ -886,8 +981,16 @@ def _draw_rig(col, st):
     col.label(text=S.CLIPS[st.anim_clip][1][:60], icon="INFO")
     if len(S.CLIPS[st.anim_clip][1]) > 60:
         col.label(text="  " + S.CLIPS[st.anim_clip][1][60:120])
-    col.label(text="Look for tearing, collapsing joints,", icon="INFO")
-    col.label(text="props leaving the body.")
+    _btn(col, "rig_check", "Check it automatically", "VIEWZOOM")
+    rep_a = json.loads(st.anim_rep or "{}")
+    if rep_a.get("clip") == st.anim_clip:
+        _rows(col.column(align=True), _anim_rows(rep_a))
+        if rep_a.get("worst_frame"):
+            col.operator("forge.step", text=f"Go to the worst frame ({rep_a['worst_frame']})",
+                         icon="FRAME_NEXT").action = "rig_check_worst"
+    else:
+        col.label(text="Look for tearing, collapsing joints,", icon="INFO")
+        col.label(text="props leaving the body.")
     _approve_btn(col, "rig")
     _btn(col, "rig_place", "Redo joints", "LOOP_BACK", alert=True)
 

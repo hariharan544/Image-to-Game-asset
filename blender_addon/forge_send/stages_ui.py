@@ -78,6 +78,7 @@ class ForgeStageState(bpy.types.PropertyGroup):
     uv_rep: StringProperty(default="{}")
     bake_rep: StringProperty(default="{}")
     rig_rep: StringProperty(default="{}")
+    anim_rep: StringProperty(default="{}")        # Step 8 automatic checks of the last clip
     export_rep: StringProperty(default="{}")
 
 

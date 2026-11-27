@@ -122,6 +122,67 @@ def uvgami_status() -> str:
     return ""
 
 
+UVGAMI_COLLECTIONS = ("UVgami Unwrapped", "UVgami Not Unwrapped")
+UVGAMI_GRID = ("UVgami_grid", "uvgami_material_indices")     # its grid material, its saved slots
+LAST = {"why": "", "cleaned": {}}                             # the last UVgami run, for the report
+
+
+def _uvgami_collections() -> list:
+    """UVgami's own collections (it names a second one '<name>.001')."""
+    return [c for c in bpy.data.collections
+            if c.name in UVGAMI_COLLECTIONS or c.name.rpartition(".")[0] in UVGAMI_COLLECTIONS]
+
+
+def _uvgami_leftovers() -> set:
+    return {o.name for c in _uvgami_collections() for o in c.all_objects}
+
+
+def _uvgami_why(manager) -> str:
+    """UVgami's own reason, in plain words ('' when it reported none)."""
+    if manager is None or not getattr(manager, "transfer_uv_failed", False):
+        return ""
+    detail = str(getattr(manager, "transfer_uv_fail_detail", "") or "")
+    if "multiple input faces" in detail or "multiple vertices" in detail:
+        return "it could not put its UVs back: faces of the mesh lie on the same spot"
+    if "timed out" in detail:
+        return "it took too long"
+    if "no matching input vertex" in detail or "no input face" in detail or "face_count" in detail:
+        return "it could not put its UVs back: the mesh changed while it worked"
+    return f"it could not put its UVs back ({detail[:60] or 'no reason given'})"
+
+
+def _strip_uvgami_grid(obj) -> None:
+    """UVgami's 'Auto Grid' puts its grid material on the mesh (all faces): take it off and
+    give the faces their own materials back."""
+    me = obj.data
+    for i, m in enumerate(me.materials):
+        if m is not None and m.name.split(".")[0] == UVGAMI_GRID[0]:
+            me.materials.pop(index=i)
+            break
+    saved = me.get(UVGAMI_GRID[1])
+    if saved is not None:
+        saved = [int(i) for i in saved]              # (a copy: the property goes next)
+        del me[UVGAMI_GRID[1]]
+        if len(saved) == len(me.polygons):
+            me.polygons.foreach_set("material_index", saved)
+
+
+def _uvgami_ready(obj) -> dict:
+    """UVgami puts its UVs back by matching positions: every face must have its own place.
+    Points on the same spot are welded and faces on each other dropped first (the same gate
+    as the end of Step 4). {'fixed': counts, 'stacked': left}"""
+    from . import rescue
+    me = obj.data
+
+    def count():
+        return int(rescue.stacked_faces(me).sum()) + int(rescue.doubled_points(me).sum())
+    n = count()
+    if not n:
+        return {"fixed": {}, "stacked": 0}
+    fixed = rescue.tidy(me)
+    return {"fixed": {k: v for k, v in fixed.items() if v}, "stacked": count()}
+
+
 def face_seam_guard(obj) -> int:
     """Weight the FACE (front of the head) in UVgami's seam-restriction group, so the seams go
     round the back of the head and under the chin, where nobody looks."""
@@ -171,7 +232,21 @@ def _uvgami_unwrap(objs: list, args: dict):
 
     from .addon_trial import view3d_override
     out = {o.name: False for o in objs}
+    LAST["why"], LAST["cleaned"] = "", {}
     if not objs or uvgami_status():
+        return out
+    ready = []
+    for o in objs:
+        r = _uvgami_ready(o)
+        if r["fixed"]:
+            LAST["cleaned"][o.name] = r["fixed"]
+        if r["stacked"]:                    # still faces on each other: Blender unwraps this one
+            LAST["cleaned"].setdefault(o.name, {})["left"] = r["stacked"]
+        else:
+            ready.append(o)
+    objs = ready
+    if not objs:
+        LAST["why"] = "faces of the mesh lie on the same spot"
         return out
     props = bpy.context.scene.uvgami
     keep = {}
@@ -179,8 +254,12 @@ def _uvgami_unwrap(objs: list, args: dict):
             "pack_after_unwrap": False,     # UVPackmaster packs
             "symmetry": False,              # mirrored stacked UVs would bake one side onto both
             "stack_similar": False,         # the bake needs every spot its own place
+            "auto_grid": False,             # its grid material would replace the part's own
             "keep_quads": True,
             "unwrap_timeout": int(max(1, args.get("uvgami_minutes", 20)))}
+    leftovers = _uvgami_leftovers()         # (the director's own earlier UVgami results stay)
+    collections = {c.name for c in _uvgami_collections()}
+    shown = {o.name for o in objs if not o.hide_get()}
     weighted = 0
     for o in objs:
         if not o.data.uv_layers:
@@ -223,13 +302,16 @@ def _uvgami_unwrap(objs: list, args: dict):
                 bpy.ops.uvgami.cancel_all("EXEC_DEFAULT")
             except RuntimeError:
                 pass
+            LAST["why"] = "it took too long"
             return out
+        LAST["why"] = _uvgami_why(manager)
     finally:
         for k, v in keep.items():
             try:
                 setattr(props, k, v)
             except (TypeError, ValueError):
                 pass
+        _uvgami_cleanup(objs, shown, leftovers, collections)
         STATUS["text"] = ""
     import numpy as np
     for o in objs:
@@ -240,6 +322,29 @@ def _uvgami_unwrap(objs: list, args: dict):
         except ReferenceError:
             out[o.name] = False
     return out
+
+
+def _uvgami_cleanup(objs, shown: set, leftovers: set, collections: set) -> None:
+    """After UVgami: Forge's meshes visible as they were (a failed transfer hides them), no grid
+    material on them, and no copies left behind in UVgami's collections from this run."""
+    for o in objs:
+        try:
+            if o.name in shown and o.hide_get():
+                o.hide_set(False)
+            _strip_uvgami_grid(o)
+        except ReferenceError:
+            pass
+    for c in _uvgami_collections():
+        for o in list(c.all_objects):
+            if o.name in leftovers:
+                continue
+            me = o.data if o.type == "MESH" else None
+            bpy.data.objects.remove(o, do_unlink=True)
+            if me is not None and me.users == 0:
+                bpy.data.meshes.remove(me)
+    for c in _uvgami_collections():
+        if c.name not in collections and not c.all_objects and not c.children:
+            bpy.data.collections.remove(c)
 
 
 def _uv_array(o):
@@ -307,7 +412,10 @@ def _run(args: dict, use_uvpm: bool, use_uvgami: bool = False):
         report[obj.get(C.PART_PROP)] = {**metrics.uv_metrics(obj, tex), "packer": packer,
                                         "unflipped": turned, "seams": seams,
                                         "seams_note": "" if seams == "uvgami" or not use_uvgami else
-                                        "UVgami gave no result for this part"}
+                                        ("UVgami: " + LAST["why"] if LAST["why"] else
+                                         "UVgami gave no result for this part"),
+                                        **({"cleaned": LAST["cleaned"][obj.name]}
+                                           if use_uvgami and obj.name in LAST["cleaned"] else {})}
     return {"parts": report}
 
 

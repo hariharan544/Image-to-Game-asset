@@ -9,13 +9,13 @@ bpy = pytest.importorskip("bpy")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_scripts"))
 
 
-def _body_with_tail():
+def _body_with_tail(r1=0.04, r2=0.02):
     import bmesh
     bpy.ops.wm.read_homefile(use_empty=True)          # each test starts from an empty scene
     from mathutils import Matrix
     bm = bmesh.new()
     bmesh.ops.create_icosphere(bm, subdivisions=6, radius=1.0)
-    res = bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=0.04, radius2=0.02, depth=1.0,
+    res = bmesh.ops.create_cone(bm, cap_ends=True, segments=10, radius1=r1, radius2=r2, depth=1.0,
                                 matrix=Matrix.Translation((1.45, 0, 0)) @ Matrix.Rotation(1.5708, 4, "Y"))
     vs = set(res["verts"])
     bmesh.ops.subdivide_edges(bm, edges=[e for e in bm.edges if e.verts[0] in vs and e.verts[1] in vs],
@@ -692,3 +692,75 @@ def test_a_part_the_plan_could_not_cut_blocks_the_mirror(monkeypatch):
     assert any("not mirrored: tail" in w for w in r.get("split_kept", [])), r
     v = np.array([x.co[:] for x in o.data.vertices])
     assert v[:, 0].max() > 1.8 and v[:, 0].min() > -1.1
+
+
+def test_cut_off_part_gets_the_body_quad_size(monkeypatch):
+    """A part remeshed on its own (the tail) gets the quad size the body has where it sits,
+    not a multiple of the average: no dense tail on a coarse body."""
+    import numpy as np
+
+    from forge_bpy import common, density, retopo
+    o = _body_with_tail()
+    co = np.array([v.co[:] for v in o.data.vertices])
+    density.write_split(o.data, (co[:, 0] > 1.02).astype(np.int32))
+    asked = {}
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        whole = any(v.co.x < 0.5 for v in obj.data.vertices)
+        asked.setdefault("body" if whole else "piece", []).append(quads)
+        return retopo._quadriflow(obj, max(int(quads * 2), 200), {})
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": 6000, "qr_timeout": 5, "symmetry": "none", "carve": False,
+                          "conform": False, "shape_check": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration:
+        pass
+    v = np.array([x.co[:] for x in o.data.vertices])
+    ev = np.array([e.vertices[:] for e in o.data.edges])
+    mid = (v[ev[:, 0]] + v[ev[:, 1]]) / 2
+    length = np.linalg.norm(v[ev[:, 0]] - v[ev[:, 1]], axis=1)
+    near_root = (mid[:, 0] > 0.8) & (mid[:, 0] < 0.97)
+    tail = mid[:, 0] > 1.2
+    body_e, tail_e = np.median(length[near_root]), np.median(length[tail])
+    # a 0.04-wide tail keeps 8 edges around (2*pi*0.04/8 = 0.031) or the body's quad size
+    want = min(body_e, 2 * np.pi * 0.035 / 8)
+    assert 0.8 < tail_e / want < 1.25, (tail_e, body_e, asked)
+    assert asked["piece"][0] < 0.1 * asked["body"][0], asked
+
+
+def test_thick_cut_off_part_matches_the_body_not_a_multiple(monkeypatch):
+    """A thick part (round edge no limit): its quads are the body's size where it attaches."""
+    import numpy as np
+
+    from forge_bpy import common, density, retopo
+    o = _body_with_tail(0.16, 0.12)
+    co = np.array([v.co[:] for v in o.data.vertices])
+    density.write_split(o.data, (co[:, 0] > 1.02).astype(np.int32))
+    seen = {}
+
+    def qr(obj, quads, args, timeout):
+        yield 0.0
+        if obj is not o:
+            v = np.array([x.co[:] for x in o.data.vertices])        # the body as it is now
+            ev = np.array([e.vertices[:] for e in o.data.edges])
+            mid = (v[ev[:, 0]] + v[ev[:, 1]]) / 2
+            near = mid[:, 0] > 0.8
+            body_e = float(np.median(np.linalg.norm(v[ev[near, 0]] - v[ev[near, 1]], axis=1)))
+            from forge_bpy.rescue import area
+            seen["want"] = area(obj.data) / min(body_e, 2 * np.pi * 0.16 / 8) ** 2
+            seen["got"] = quads
+        return retopo._quadriflow(obj, max(int(quads * 2), 200), {})
+
+    monkeypatch.setattr(retopo, "_qr_part", qr)
+    gen = retopo._run_qr({"target_tris": 6000, "qr_timeout": 5, "symmetry": "none", "carve": False,
+                          "conform": False, "shape_check": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration:
+        pass
+    assert 0.75 < seen["got"] / seen["want"] < 1.3, seen

@@ -20,6 +20,9 @@ class _Manager:
         self.preparing = []
         self.jobs = []
         self.seen_settings = {}
+        self.seen_meshes = {}
+        self.transfer_uv_failed = False
+        self.transfer_uv_fail_detail = ""
 
 
 class _Props(bpy.types.PropertyGroup):
@@ -31,6 +34,7 @@ class _Props(bpy.types.PropertyGroup):
     keep_quads: bpy.props.BoolProperty(default=True)
     unwrap_timeout: bpy.props.IntProperty(default=60)
     use_weights: bpy.props.BoolProperty(default=False)
+    auto_grid: bpy.props.BoolProperty(default=False)
 
 
 class UVGAMI_OT_start(bpy.types.Operator):
@@ -41,8 +45,10 @@ class UVGAMI_OT_start(bpy.types.Operator):
         m = manager()
         p = context.scene.uvgami
         m.seen_settings = {k: getattr(p, k) for k in ("transfer_uvs", "pack_after_unwrap", "symmetry",
-                                                     "stack_similar", "use_weights")}
+                                                     "stack_similar", "use_weights", "auto_grid")}
         m.jobs = [o.name for o in context.selected_objects if o.type == "MESH"]
+        m.seen_meshes = {n: bpy.data.objects[n].data.copy() for n in m.jobs}
+        m.transfer_uv_failed, m.transfer_uv_fail_detail = False, ""      # (a new session)
         m.is_active = True
         return {"FINISHED"}
 
@@ -83,13 +89,39 @@ def uninstall():
     sys.modules.pop(MOD, None)
 
 
-def deliver(fail=()):
-    """The engine finishes: UVs onto the originals (transfer_uvs), except the failed ones."""
+def _collection(name):
+    c = bpy.data.collections.get(name)
+    if c is None:
+        c = bpy.data.collections.new(name)
+        bpy.context.scene.collection.children.link(c)
+    return c
+
+
+def deliver(fail=(), transfer_fail=None, grid=False):
+    """The engine finishes: UVs onto the originals (transfer_uvs), except the failed ones.
+    transfer_fail {name: detail}: like the real add-on when it cannot put the UVs back - the
+    original is hidden and the unwrapped copy is kept in 'UVgami Unwrapped'. grid: its Auto
+    Grid material lands on the originals."""
     m = manager()
     for name in m.jobs:
         o = bpy.data.objects.get(name)
         if o is None or name in fail:
             continue
+        if transfer_fail and name in transfer_fail:
+            copy = o.copy()
+            copy.data = o.data.copy()
+            copy.name = name + "_unwrapped"
+            _collection("UVgami Unwrapped").objects.link(copy)
+            o.hide_set(True)
+            m.transfer_uv_failed, m.transfer_uv_fail_detail = True, transfer_fail[name]
+            continue
+        if grid:
+            mat = bpy.data.materials.get("UVgami_grid") or bpy.data.materials.new("UVgami_grid")
+            idx = [0] * len(o.data.polygons)
+            o.data.polygons.foreach_get("material_index", idx)
+            o.data["uvgami_material_indices"] = idx
+            o.data.materials.append(mat)
+            o.data.polygons.foreach_set("material_index", [len(o.data.materials) - 1] * len(idx))
         for x in bpy.context.view_layer.objects:
             x.select_set(False)
         o.select_set(True)

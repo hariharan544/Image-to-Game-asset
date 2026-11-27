@@ -47,6 +47,10 @@ def test_steps_4_to_9(tmp_path):
 
         # 4 retopology (no Quad Remesher here -> Blender's remesher, reported as a fallback)
         st.budget = 4000
+        from forge_send import steps as S
+        split = dict(S.budget_split(st.budget, st.report))     # props SHARE the budget
+        assert set(split) == {"body", "Sword"} and split["body"] > split["Sword"], split
+        assert abs(sum(split.values()) - 4000) < 2 * S.MIN_TRIS_PER_PART, split
         assert bpy.ops.forge.step(action="retopo_map") == {"FINISHED"}, st.error
         assert "QR_Density" in bpy.data.objects["Body"].data.color_attributes
         assert bpy.data.objects["Body"].data.color_attributes.active_color_name == "QR_Density"
@@ -362,3 +366,47 @@ def test_sample_animations_play_on_the_rig_and_stop_cleanly(clip):
     S.pose_test_stop()
     assert rig.animation_data.action is None and "forge_pose_switches" not in rig
     assert rig.pose.bones["c_hand_ik.l"]["ik_fk_switch"] == 0.0
+
+
+def test_animation_check_runs_on_the_clip_and_reads_in_plain_words():
+    """Step 8 'Check it automatically': the clip goes on, its frames are measured, the panel
+    rows say what breaks and where; the rig is left as it was."""
+    import bmesh
+    from mathutils import Matrix
+    S = importlib.import_module("forge_send.steps")
+    L = importlib.import_module("forge_send.stages_late")
+    rig = _arp_like_rig()
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=12, radius1=0.06, radius2=0.06, depth=0.6,
+                          matrix=Matrix.Translation((0.5, 0, 1.4)) @ Matrix.Rotation(1.5708, 4, "Y"))
+    side = [e for e in bm.edges if abs(e.verts[0].co.x - e.verts[1].co.x) > 0.3]
+    bmesh.ops.subdivide_edges(bm, edges=side, cuts=19, use_grid_fill=True)
+    me = bpy.data.meshes.new("Arm")
+    bm.to_mesh(me)
+    bm.free()
+    arm_mesh = bpy.data.objects.new("Body_low", me)
+    bpy.context.scene.collection.objects.link(arm_mesh)
+    arm_mesh["forge_role"], arm_mesh["forge_part"], arm_mesh["forge_kind"] = "low", "Body", "body"
+    gu, gf = arm_mesh.vertex_groups.new(name="c_arm_fk.l"), arm_mesh.vertex_groups.new(name="c_forearm_fk.l")
+    for v in me.vertices:
+        w = min(max((v.co.x - 0.45) / 0.1, 0.0), 1.0)
+        if w < 1:
+            gu.add([v.index], 1 - w, "REPLACE")
+        if w > 0:
+            gf.add([v.index], w, "REPLACE")
+    arm_mesh.modifiers.new("Armature", "ARMATURE").object = rig
+    gen = S.check_animation_job("rom")
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    assert rep["clip"] == "rom" and rep["frames"] >= 40, rep
+    assert set(rep["checks"]) == {"joints", "skin", "crossing", "weights"}
+    assert rig.animation_data.action.name == "FORGE_pose_rom"          # the clip is on to look at
+    rows = L._anim_rows(rep)
+    assert rows and all(isinstance(t, str) for _i, t in rows)
+    assert rep["grade"] in ("pass", "warn", "fail")
+    if rep["grade"] != "pass":
+        assert rep["worst_frame"] and 1 <= rep["worst_frame"] <= S.CLIP_LENGTH["rom"]
+    S.pose_test_stop()

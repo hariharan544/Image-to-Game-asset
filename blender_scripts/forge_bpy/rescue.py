@@ -327,32 +327,206 @@ def clean_seam(me, piece_obj) -> None:
     me.update()
 
 
-def tidy(me, max_hole: int = 64) -> None:
-    """Small mesh faults a remesh or a join can leave: near-duplicate vertices on a seam,
-    stray points and wire edges, small holes. Bigger openings are left for the report."""
+def same_spot_tolerance(me) -> float:
+    """Two points closer than this are the same point - for us and for UVgami, which puts its
+    UVs back by matching positions (its tolerance: 2e-6 of the largest coordinate, at least
+    1e-5); ours is a little wider so nothing it would find ambiguous survives."""
+    if not len(me.vertices):
+        return 1e-5
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    return max(float(np.abs(co).max()) * 3e-6, 1.5e-5)
+
+
+def doubled_points(me, tol: float | None = None) -> np.ndarray:
+    """Vertices that share their spot with another vertex (mask)."""
+    from mathutils.kdtree import KDTree
+    n = len(me.vertices)
+    out = np.zeros(n, bool)
+    if not n:
+        return out
+    tol = same_spot_tolerance(me) if tol is None else tol
+    co = np.empty(n * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3)
+    # only vertices in a crowded grid cell can have a twin: few tree queries
+    key = np.floor(co / (4 * tol)).astype(np.int64)
+    _u, inv, cnt = np.unique(key, axis=0, return_inverse=True, return_counts=True)
+    near = np.zeros(n, bool)
+    for off in (0.0, 0.5):                       # (a twin across a cell border)
+        k2 = np.floor(co / (4 * tol) + off).astype(np.int64)
+        _u2, inv2, cnt2 = np.unique(k2, axis=0, return_inverse=True, return_counts=True)
+        near |= cnt2[inv2.ravel()] > 1
+    idx = np.flatnonzero(near)
+    if not len(idx):
+        return out
+    kd = KDTree(len(idx))
+    for i in idx:
+        kd.insert(co[i], int(i))
+    kd.balance()
+    for i in idx:
+        if len(kd.find_range(co[i], tol)) > 1:
+            out[i] = True
+    return out
+
+
+def stacked_faces(me) -> np.ndarray:
+    """Faces lying on top of another face: two faces sharing three corners (a duplicate, or a
+    triangle over part of a quad). A closed, clean surface has none (mask)."""
+    import itertools
+    nf = len(me.polygons)
+    out = np.zeros(nf, bool)
+    if nf < 2:
+        return out
+    lv = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    fs = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_start", fs)
+    ft = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_total", ft)
+    tris, fids = [], []
+    for n in np.unique(ft):
+        idx = np.flatnonzero(ft == n)
+        corners = lv[fs[idx][:, None] + np.arange(n)]
+        combos = (itertools.combinations(range(n), 3) if n <= 8
+                  else [(i, (i + 1) % n, (i + 2) % n) for i in range(n)])
+        for c in combos:
+            tris.append(np.sort(corners[:, list(c)], axis=1))
+            fids.append(idx)
+    t = np.concatenate(tris)
+    f = np.concatenate(fids)
+    o = np.lexsort((t[:, 2], t[:, 1], t[:, 0]))
+    t, f = t[o], f[o]
+    same = np.all(t[1:] == t[:-1], axis=1) & (f[1:] != f[:-1])
+    out[f[1:][same]] = True
+    out[f[:-1][same]] = True
+    return out
+
+
+def _bm_stacked(bm) -> list:
+    """bmesh twin of stacked_faces: [[faces sharing three corners], ...]."""
+    import itertools
+    groups: dict = {}
+    for f in bm.faces:
+        vs = sorted(v.index for v in f.verts)
+        combos = (itertools.combinations(vs, 3) if len(vs) <= 8
+                  else [tuple(sorted((vs[i], vs[(i + 1) % len(vs)], vs[(i + 2) % len(vs)])))
+                        for i in range(len(vs))])
+        for c in combos:
+            groups.setdefault(c, []).append(f)
+    seen, out = set(), []
+    for fs in groups.values():
+        fs = [f for f in dict.fromkeys(fs)]
+        if len(fs) > 1 and not all(f in seen for f in fs):
+            out.append(fs)
+            seen.update(fs)
+    return out
+
+
+def _bm_defects(bm) -> int:
+    """One number to compare repairs by: open + broken edges + stacked faces."""
+    bm.verts.index_update()
+    n = sum(1 for e in bm.edges if e.is_boundary or len(e.link_faces) > 2)
+    return n + sum(len(g) for g in _bm_stacked(bm))
+
+
+def _drop_stacked(bm) -> int:
+    """Of every group of faces lying on each other keep the biggest (a quad over the triangle
+    that covers half of it; one of two duplicates)."""
+    bm.verts.index_update()
+    kill = set()
+    for fs in _bm_stacked(bm):
+        keep = max(fs, key=lambda f: (len(f.verts), f.calc_area()))
+        kill.update(f for f in fs if f is not keep)
+    if kill:
+        bmesh.ops.delete(bm, geom=list(kill), context="FACES_ONLY")
+    return len(kill)
+
+
+def _drop_loose(bm) -> None:
+    wire = [e for e in bm.edges if not e.link_faces]
+    if wire:
+        bmesh.ops.delete(bm, geom=wire, context="EDGES")
+    loose = [v for v in bm.verts if not v.link_faces]
+    if loose:
+        bmesh.ops.delete(bm, geom=loose, context="VERTS")
+
+
+def _fill_openings(bm, max_hole: int = 0) -> None:
+    open_e = [e for e in bm.edges if e.is_boundary]
+    if not open_e:
+        return
+    res = bmesh.ops.holes_fill(bm, edges=open_e, sides=max_hole)
+    ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
+    if ng:
+        bmesh.ops.triangulate(bm, faces=ng, quad_method="BEAUTY", ngon_method="BEAUTY")
+    if max_hole == 0:                       # (a local rebuild: every opening must close)
+        still = [e for e in bm.edges if e.is_boundary]
+        if still:
+            _unpinch(bm, still)
+            _fan_fill(bm, [e for e in bm.edges if e.is_boundary])
+
+
+def _rebuild_defects(bm, rings: int) -> None:
+    """Cut the faces around every leftover open / broken edge out (`rings` rings) and close
+    the opening cleanly - the same idea as the parts cut: rebuild a small clean patch rather
+    than patch a tangle."""
+    bad = {v for e in bm.edges if e.is_boundary or len(e.link_faces) > 2 for v in e.verts}
+    bm.verts.index_update()
+    for fs in _bm_stacked(bm):
+        bad.update(v for f in fs for v in f.verts)
+    faces = {f for v in bad for f in v.link_faces}
+    for _ in range(rings - 1):
+        faces |= {g for f in faces for v in f.verts for g in v.link_faces}
+    if not faces:
+        return
+    bmesh.ops.delete(bm, geom=list(faces), context="FACES_ONLY")
+    _drop_loose(bm)
+    _fill_openings(bm)
+
+
+def tidy(me, max_hole: int = 64) -> dict:
+    """The clean-mesh gate. Small faults a remesh or a join can leave: points on the same spot
+    (welded), faces lying on each other (the smaller dropped), zero-area faces, stray points
+    and wire edges, small holes (filled). What is left is rebuilt locally, one ring wider
+    each try; a try is kept only if the mesh comes out with fewer faults. Returns counts."""
+    out = {"welded": 0, "stacked": 0, "rebuilt": 0}
     bm = bmesh.new()
     bm.from_mesh(me)
-    if bm.verts:
+    if not bm.verts:
+        bm.free()
+        return out
+    tol = same_spot_tolerance(me)
+    n0 = len(bm.verts)
+    bmesh.ops.remove_doubles(bm, verts=list(bm.verts), dist=tol)
+    out["welded"] = n0 - len(bm.verts)
+    bad = {v for e in bm.edges if e.is_boundary or len(e.link_faces) > 2 for v in e.verts}
+    if bad:                                        # (a seam left unwelded by a join)
         size = max((max(v.co[i] for v in bm.verts) - min(v.co[i] for v in bm.verts)) for i in range(3))
-        bad = {v for e in bm.edges if e.is_boundary or len(e.link_faces) > 2 for v in e.verts}
-        if bad:
-            bmesh.ops.remove_doubles(bm, verts=list(bad), dist=size * 2e-5)
-        wire = [e for e in bm.edges if not e.link_faces]
-        if wire:
-            bmesh.ops.delete(bm, geom=wire, context="EDGES")
-        loose = [v for v in bm.verts if not v.link_faces]
-        if loose:
-            bmesh.ops.delete(bm, geom=loose, context="VERTS")
-        open_e = [e for e in bm.edges if e.is_boundary]
-        if open_e:
-            res = bmesh.ops.holes_fill(bm, edges=open_e, sides=max_hole)
-            ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
-            if ng:
-                bmesh.ops.triangulate(bm, faces=ng)
-        bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
-        bm.to_mesh(me)
-        me.update()
+        bmesh.ops.remove_doubles(bm, verts=list(bad), dist=size * 2e-5)
+    bmesh.ops.dissolve_degenerate(bm, dist=tol, edges=list(bm.edges))
+    out["stacked"] = _drop_stacked(bm)
+    _drop_loose(bm)
+    _fill_openings(bm, max_hole)
+    best = _bm_defects(bm)
+    for rings in (1, 2, 3):
+        if best == 0:
+            break
+        trial = bm.copy()
+        _rebuild_defects(trial, rings)
+        _drop_stacked(trial)
+        d = _bm_defects(trial)
+        if d < best:
+            bm.free()
+            bm, best = trial, d
+            out["rebuilt"] = rings
+        else:
+            trial.free()
+    bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
+    bm.to_mesh(me)
+    me.update()
     bm.free()
+    return out
 
 
 def mesh_defects(me) -> tuple:
@@ -662,4 +836,5 @@ def attach(target, piece_obj) -> None:
     no boolean (booleans of overlapping organic shapes leave shards). The hidden plug is
     inside the body; skinning blends the root."""
     seal(piece_obj.data)
+    tidy(piece_obj.data)                 # a clean piece: nothing stacked, nothing open
     _join(target, piece_obj)
