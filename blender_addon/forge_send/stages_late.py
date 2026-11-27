@@ -777,21 +777,32 @@ def _rig_rows(rep):
     return out
 
 
+def _when(frame, pose) -> str:
+    """'pose 'elbows' (frame 85)': which test pose a finding was in, then the frame."""
+    if not pose or not pose.get("name"):
+        return f"frame {frame}"
+    part = "" if float(pose.get("weight", 1.0)) >= 0.9 else ", part way"
+    return f"pose '{pose['name']}'{part} (frame {frame})"
+
+
 def _anim_rows(rep):
-    """The automatic checks of one clip, in plain words."""
+    """The automatic checks of one clip, in plain words: what breaks, in which test pose."""
     icon = {"pass": GOOD, "warn": WARN, "fail": BAD}
     c = rep.get("checks", {})
     out = [(icon.get(rep.get("grade"), WARN),
             {"pass": "Animation looks clean", "warn": "Animation: worth a look",
              "fail": "Animation: something breaks"}.get(rep.get("grade"), "Animation checked")
             + f" ({rep.get('frames', 0)} frames)")]
+    if (rep.get("skinning") or {}).get("preserve_volume"):
+        out.append((WARN, "    the rig blends with Preserve Volume on;"))
+        out.append(("BLANK1", "      engines do not: build the rig again"))
     j = c.get("joints", {})
     if j:
         if j.get("frame") is None or j["grade"] == "pass":
             out.append((GOOD, "    joints keep their shape"))
         else:
             out.append((icon[j["grade"]], f"    {j['where'] or 'a joint'} thins to {j['value']:.0%}"))
-            out.append(("BLANK1", f"      at frame {j['frame']} (collapsing joint)"))
+            out.append(("BLANK1", f"      {_when(j['frame'], j.get('pose'))}"))
     k = c.get("skin", {})
     if k:
         if k["grade"] == "pass":
@@ -799,24 +810,25 @@ def _anim_rows(rep):
         else:
             if k["stretch"] > 1.5:
                 out.append((icon[k["grade"]], f"    skin stretches {k['stretch']:.1f}x: {k['where']}"))
-                out.append(("BLANK1", f"      at frame {k['frame']} (texture smears there)"))
+                out.append(("BLANK1", f"      {_when(k['frame'], k.get('pose'))}"))
+                out.append(("BLANK1", "      (the texture smears there)"))
             if k["squash"] < 0.3:
                 out.append((WARN, f"    skin squashes to {k['squash']:.0%}: {k['squash_where']}"))
-                out.append(("BLANK1", f"      at frame {k['squash_frame']}"))
+                out.append(("BLANK1", f"      {_when(k['squash_frame'], k.get('squash_pose'))}"))
     x = c.get("crossing", {})
     if x:
         if not x.get("value"):
             out.append((GOOD, "    nothing passes through the body"))
         else:
             out.append((icon[x["grade"]], f"    {x['value']} faces pass through others"))
-            out.append(("BLANK1", f"      worst at frame {x['frame']}"))
+            out.append(("BLANK1", f"      worst in {_when(x['frame'], x.get('pose'))}"))
     w = c.get("weights", {})
     if w:
         if w.get("unweighted"):
             out.append((BAD, f"    {w['unweighted']} points no bone moves"))
         if (w.get("over") or {}).get("Unity"):
             out.append((WARN, f"    {w['over']['Unity']} points use more than 4 bones"))
-            out.append(("BLANK1", "      (Unity keeps the 4 strongest; Unreal: fine)"))
+            out.append(("BLANK1", "      (Unity takes 4: the weakest fade out; Unreal: fine)"))
         if not w.get("unweighted") and not (w.get("over") or {}).get("Unity"):
             out.append((GOOD, "    weights fine for Unreal and Unity"))
     return out

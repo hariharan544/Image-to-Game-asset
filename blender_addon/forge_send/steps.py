@@ -915,22 +915,163 @@ def final_rig():
     return next((o for o in bpy.data.objects if o.type == "ARMATURE" and o.get("forge_arp")), None)
 
 
-# pose test: (control bone candidates, world axis, degrees) per key frame
+# ----------------------------------------------------------------------------- test poses
+# Poses made in Python on the rig's own FK controls: no outside animation files, no licences.
+# A move is (control, WORLD axis, degrees). The character faces -Y and its left is +X; the
+# turn follows the right-hand rule about the world axis, so for the left arm (along +X)
+# Z -80 swings it forward (-Y) and Y -80 raises it, and the right side mirrors the sign.
+# Auto-Rig Pro's elbow hinge (c_forearm_fk local Z) is about world Z in the T-pose. Each move
+# becomes the control's own rotation, so the same table works on any Auto-Rig Pro rig.
+# "c_tail_*.x" means every link of that chain; a pair of degrees (40, -40) is taken link by
+# link (a wave). Controls the rig does not have are skipped.
+ARM_DOWN = 65.0                                  # T-pose arms lowered to a relaxed A-pose
+ROM_POSES = [
+    ("rest", []),
+    # the shoulder rises with the arm (about a third of it): a realistic test pose
+    ("arms up", [("c_shoulder.l", "Y", -80 / 3), ("c_shoulder.r", "Y", 80 / 3),
+                 ("c_arm_fk.l", "Y", -80), ("c_arm_fk.r", "Y", 80)]),
+    ("arms down", [("c_arm_fk.l", "Y", ARM_DOWN), ("c_arm_fk.r", "Y", -ARM_DOWN)]),
+    ("arms forward", [("c_arm_fk.l", "Z", -80), ("c_arm_fk.r", "Z", 80)]),
+    ("arms back", [("c_arm_fk.l", "Z", 40), ("c_arm_fk.r", "Z", -40)]),
+    ("elbows", [("c_forearm_fk.l", "Z", -120), ("c_forearm_fk.r", "Z", 120)]),
+    ("arm twist", [("c_arm_fk.l", "X", 70), ("c_arm_fk.r", "X", -70)]),
+    ("leg forward and back", [("c_thigh_fk.l", "X", -80), ("c_leg_fk.l", "X", 100),
+                              ("c_thigh_fk.r", "X", 35)]),
+    ("legs apart", [("c_thigh_fk.l", "Y", -40), ("c_thigh_fk.r", "Y", 40)]),
+    ("bend forward", [("c_spine_01.x", "X", 25), ("c_spine_02.x", "X", 25)]),
+    ("spine twist", [("c_spine_01.x", "Z", 30), ("c_spine_02.x", "Z", 30)]),
+    ("look round", [("c_neck.x", "X", -30), ("c_head.x", "Z", 60)]),
+    ("tail and ears", [("c_tail_*.x", "Z", (40, -40)), ("c_ear_*.l", "Y", 30), ("c_ear_*.r", "Y", -30)]),
+]
+ROM_WINDOW = 15                                  # frames per pose: out, hold, back to rest
+ROM_RISE = 0.4                                   # out over the first 40 % of a window, back over the last 40 %
+# pose test: (range-of-motion pose, share of it) per key frame - the same table as the clip
 POSES = {
-    15: [(("c_arm_fk.l",), "Y", -60), (("c_arm_fk.r",), "Y", 60), (("c_head.x",), "Z", 30)],
-    30: [(("c_arm_fk.l",), "Z", 50), (("c_arm_fk.r",), "Z", -50), (("c_forearm_fk.l",), "Z", 60),
-         (("c_forearm_fk.r",), "Z", -60), (("c_spine_02.x", "c_spine_01.x"), "X", 20)],
-    45: [(("c_thigh_fk.l",), "X", -45), (("c_leg_fk.l",), "X", 70), (("c_thigh_fk.r",), "X", 30),
-         (("c_neck.x",), "X", -20)],
+    15: [("arms up", 0.75), ("look round", 0.5)],
+    30: [("arms forward", 50 / 80), ("elbows", 0.5), ("bend forward", 0.4)],
+    45: [("leg forward and back", 0.6)],
 }
 FK_SWITCHES = (("c_hand_ik.l", "c_hand_ik.r", "c_foot_ik.l", "c_foot_ik.r"), "ik_fk_switch")
 
 
-def pose_test() -> dict:
-    """Key a few extreme poses on the rig's FK controls and play them."""
+def _chain(pb, prefix: str, side: str = "") -> list:
+    """Auto-Rig Pro chain controls in order (c_tail_00.x, c_tail_01.x... / c_ear_01.l...)."""
+    import re
+    out = []
+    for n in pb.keys():
+        m = re.match(rf"^{re.escape(prefix)}(\d+)(\.[xlr])$", n)
+        if m and (not side or m.group(2) == side):
+            out.append((int(m.group(1)), n))
+    return [n for _i, n in sorted(out)]
+
+
+def _expand(moves, pb, share: float = 1.0) -> list:
+    """[(control, axis, degrees)] for this rig: chain patterns become their links, scaled."""
+    out = []
+    for bone, axis, deg in moves:
+        if "*" in bone:
+            prefix, side = bone.split("*", 1)
+            links = _chain(pb, prefix, side)
+        else:
+            links = [bone]
+        for i, b in enumerate(links):
+            d = deg[i % len(deg)] if isinstance(deg, tuple) else deg
+            out.append((b, axis, d * share))
+    return out
+
+
+def _local_rotation(arm, bone: str, turns):
+    """The control's own rotation for world turns [(axis, degrees)] applied in order."""
     import math
 
     from mathutils import Quaternion
+    axes = {"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)}
+    q = Quaternion()
+    for axis, deg in turns:
+        q = Quaternion(Vector(axes[axis]), math.radians(deg)) @ q        # later = outer
+    rest = arm.data.bones[bone].matrix_local.to_3x3()
+    return (rest.inverted() @ q.to_matrix() @ rest).to_quaternion()
+
+
+def _smooth(t: float) -> float:
+    t = min(max(t, 0.0), 1.0)
+    return t * t * (3.0 - 2.0 * t)
+
+
+def _rom_window(f: int) -> tuple:
+    """(pose index, share of the pose 0..1) at frame f of the range-of-motion clip. Each pose
+    goes out from rest, holds, and comes back to rest inside its own window: poses never
+    blend into each other and never snap back, and every window starts and ends at rest."""
+    k = (int(f) - 1) % CLIP_LENGTH["rom"]
+    i, j = divmod(k, ROM_WINDOW)
+    frac = j / (ROM_WINDOW - 1)
+    if frac < ROM_RISE:
+        w = _smooth(frac / ROM_RISE)
+    elif frac <= 1.0 - ROM_RISE:
+        w = 1.0
+    else:
+        w = _smooth((1.0 - frac) / ROM_RISE)
+    return i, w
+
+
+WALK_PHASES = ("left leg passing", "left leg forward", "right leg passing", "right leg forward")
+
+
+def clip_pose(clip: str, f: int) -> tuple:
+    """(index, name, share 0..1) of what the clip shows at frame f: the range-of-motion pose
+    and how far into it, the phase of the walk; name "" for clips without named poses."""
+    n = CLIP_LENGTH[clip]
+    if clip == "rom":
+        i, w = _rom_window(f)
+        return i, ROM_POSES[i][0], w
+    if clip == "walk":
+        q = int(round(4.0 * ((int(f) - 1) % n) / n)) % 4
+        return q, WALK_PHASES[q], 1.0
+    return 0, "", 1.0
+
+
+def clip_peaks(clip: str) -> list:
+    """[(frame, name)]: the frame where each pose of the clip is fully reached."""
+    n = CLIP_LENGTH[clip]
+    if clip == "rom":
+        mid = (ROM_WINDOW - 1) // 2
+        return [(1 + i * ROM_WINDOW + mid, name) for i, (name, moves) in enumerate(ROM_POSES) if moves]
+    if clip == "walk":
+        return [(1 + q * n // 4, WALK_PHASES[q]) for q in range(4)]
+    return []
+
+
+def pose_info(clip: str, f) -> dict | None:
+    """What a finding at frame f was looking at: {name, weight, bend_deg} (bend_deg = the largest
+    turn of the pose's controls at that frame; None when the clip has no table of poses)."""
+    if f is None:
+        return None
+    i, name, w = clip_pose(clip, int(f))
+    bend = None
+    if clip == "rom":
+        degs = [abs(d) for _b, _a, deg in ROM_POSES[i][1] for d in (deg if isinstance(deg, tuple) else (deg,))]
+        bend = int(round(max(degs) * w)) if degs else 0
+    return {"name": name, "weight": round(float(w), 2), "bend_deg": bend}
+
+
+def _attach_poses(node, clip: str) -> None:
+    """Every 'frame' / '<x>_frame' in a report gets its 'pose' / '<x>_pose' next to it."""
+    import numbers
+    if isinstance(node, dict):
+        for k in list(node):
+            v = node[k]
+            if (k == "frame" or k.endswith("_frame")) and isinstance(v, numbers.Integral) \
+                    and not isinstance(v, bool):
+                node["pose" if k == "frame" else k[:-len("frame")] + "pose"] = pose_info(clip, v)
+            elif isinstance(v, (dict, list)):
+                _attach_poses(v, clip)
+    elif isinstance(node, list):
+        for x in node:
+            _attach_poses(x, clip)
+
+
+def pose_test() -> dict:
+    """Key a few extreme poses on the rig's FK controls and play them."""
     arm = final_rig()
     if arm is None:
         raise RuntimeError("build the rig first")
@@ -950,7 +1091,16 @@ def pose_test() -> dict:
         arm.animation_data_create()
     act = bpy.data.actions.new("FORGE_pose_test")
     arm.animation_data.action = act
-    used = set()
+    by_name = dict(ROM_POSES)
+    keys = {}
+    for frame, picks in POSES.items():
+        turns: dict = {}
+        for pose, share in picks:
+            for b, axis, deg in _expand(by_name[pose], pb, share):
+                if b in pb and abs(deg) > 1e-6:
+                    turns.setdefault(b, []).append((axis, deg))
+        keys[frame] = turns
+    used = sorted({b for t in keys.values() for b in t})
     sc = bpy.context.scene
 
     def rest_all(frame):
@@ -960,40 +1110,25 @@ def pose_test() -> dict:
         for n in used:
             pb[n].keyframe_insert("rotation_quaternion", frame=frame)
 
-    for frame, moves in POSES.items():
-        for cands, _axis, _deg in moves:
-            n = next((c for c in cands if c in pb), None)
-            if n:
-                used.add(n)
     rest_all(1)
-    for frame, moves in POSES.items():
+    for frame, turns in keys.items():
         for b in pb:
             b.rotation_quaternion = (1, 0, 0, 0)
-        for cands, axis, deg in moves:
-            n = next((c for c in cands if c in pb), None)
-            if not n:
-                continue
-            bone = arm.data.bones[n]
-            rest = bone.matrix_local.to_3x3()
-            world = Quaternion(Vector({"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)}[axis]),
-                               math.radians(deg))
-            local = (rest.inverted() @ world.to_matrix() @ rest).to_quaternion()
+        for n, t in turns.items():
             pb[n].rotation_mode = "QUATERNION"
-            pb[n].rotation_quaternion = local
+            pb[n].rotation_quaternion = _local_rotation(arm, n, t)
         for n in used:
             pb[n].keyframe_insert("rotation_quaternion", frame=frame)
     rest_all(60)
     sc.frame_start, sc.frame_end = 1, 60
     sc.frame_set(1)
     bpy.ops.object.mode_set(mode="OBJECT")
-    return {"controls_moved": sorted(used)}
+    return {"controls_moved": used}
 
 
 # ----------------------------------------------------------------------------- sample animations
-# Test clips made in Python on the rig's own FK controls: no outside animation files, no
-# licences. Each frame is a list of WORLD rotations per control (character faces -Y, its left
-# is +X), applied in order and turned into the control's local rotation, so the same clip
-# works on any Auto-Rig Pro rig. What each clip is for is in CLIPS (shown in the panel).
+# Test clips on the rig's FK controls, frame by frame, in the same WORLD-axis convention as the
+# poses above. What each clip is for is in CLIPS (shown in the panel).
 CLIPS = {
     "rom": ("Range of motion", "Every joint to its limit, one after another: look for tearing, "
             "collapsing elbows/knees/shoulders, twisting wrists, props leaving the body"),
@@ -1002,19 +1137,7 @@ CLIPS = {
     "idle": ("Idle (breathing)", "Slow breathing, a look around, a tail sway: what the player sees most"),
     "tail": ("Tail and ears", "A wave down the tail and ear flicks: links bend smoothly, no kinks"),
 }
-CLIP_LENGTH = {"rom": 195, "walk": 32, "idle": 120, "tail": 96}   # rom: 13 poses x 15 frames
-ARM_DOWN = 65.0                                  # T-pose arms lowered to a relaxed A-pose
-
-
-def _chain(pb, prefix: str, side: str = "") -> list:
-    """Auto-Rig Pro chain controls in order (c_tail_00.x, c_tail_01.x... / c_ear_01.l...)."""
-    import re
-    out = []
-    for n in pb.keys():
-        m = re.match(rf"^{re.escape(prefix)}(\d+)(\.[xlr])$", n)
-        if m and (not side or m.group(2) == side):
-            out.append((int(m.group(1)), n))
-    return [n for _i, n in sorted(out)]
+CLIP_LENGTH = {"rom": len(ROM_POSES) * ROM_WINDOW, "walk": 32, "idle": 120, "tail": 96}   # rom: 13 x 15
 
 
 def _clip_frame(clip: str, f: int, pb) -> dict:
@@ -1043,8 +1166,8 @@ def _clip_frame(clip: str, f: int, pb) -> dict:
         add("c_leg_fk.l", "X", 5 + 45 * max(0.0, c))         # knee bends while the leg swings
         add("c_leg_fk.r", "X", 5 + 45 * max(0.0, -c))
         arms_down(20 * s, -20 * s)                           # arms swing against the legs
-        add("c_forearm_fk.l", "Y", 15)
-        add("c_forearm_fk.r", "Y", -15)
+        add("c_forearm_fk.l", "Z", -15)                      # elbows a little bent, on the hinge
+        add("c_forearm_fk.r", "Z", 15)
         for b in ("c_spine_02.x", "c_spine_01.x"):
             add(b, "Z", 4 * s)
         add("c_neck.x", "Z", -3 * s)
@@ -1072,36 +1195,26 @@ def _clip_frame(clip: str, f: int, pb) -> dict:
             for b in ears[side]:
                 add(b, "Y", sign * 20 * math.sin(2 * ph))
     elif clip == "rom":
-        # a pose every 15 frames, rest in between: each joint toward its limit
-        poses = [
-            [],
-            [("c_arm_fk.l", "Y", -80), ("c_arm_fk.r", "Y", 80)],                 # arms up
-            [("c_arm_fk.l", "Y", ARM_DOWN), ("c_arm_fk.r", "Y", -ARM_DOWN)],     # arms down
-            [("c_arm_fk.l", "Z", 80), ("c_arm_fk.r", "Z", -80)],                 # arms forward
-            [("c_arm_fk.l", "Z", -40), ("c_arm_fk.r", "Z", 40)],                 # arms back
-            [("c_forearm_fk.l", "Z", 120), ("c_forearm_fk.r", "Z", -120)],       # elbows
-            [("c_arm_fk.l", "X", 70), ("c_arm_fk.r", "X", -70)],                 # arm twist
-            [("c_thigh_fk.l", "X", -80), ("c_leg_fk.l", "X", 100),
-             ("c_thigh_fk.r", "X", 35)],                                         # leg forward / back
-            [("c_thigh_fk.l", "Y", -40), ("c_thigh_fk.r", "Y", 40)],             # legs apart
-            [("c_spine_01.x", "X", 25), ("c_spine_02.x", "X", 25)],              # bend forward
-            [("c_spine_01.x", "Z", 30), ("c_spine_02.x", "Z", 30)],              # twist
-            [("c_neck.x", "X", -30), ("c_head.x", "Z", 60)],                     # look round
-        ] + [[(b, "Z", 40 * (1 if i % 2 == 0 else -1)) for i, b in enumerate(tail)]
-             + [(b, "Y", 30) for b in ears["l"]] + [(b, "Y", -30) for b in ears["r"]]]
-        k = (f - 1) / 15.0
-        i0 = int(k) % len(poses)
-        w = 0.5 - 0.5 * math.cos(math.pi * min(1.0, 2 * (k - int(k))))        # out and back
-        for bone, axis, deg in poses[i0]:
-            add(bone, axis, deg * w)
+        # one pose per window, out from rest and back: each joint toward its limit
+        i, w = _rom_window(f)
+        for bone, axis, deg in _expand(ROM_POSES[i][1], pb, w):
+            add(bone, axis, deg)
     return out
+
+
+def _clip_keys(clip: str) -> list:
+    """The frames keyed: every other frame, each pose's peak, the ends of every pose window,
+    and length+1 (= frame 1) for a clean loop."""
+    n = CLIP_LENGTH[clip]
+    keys = set(range(1, n + 1, 2)) | {f for f, _ in clip_peaks(clip)} | {n + 1}
+    if clip == "rom":
+        for i in range(len(ROM_POSES)):
+            keys |= {1 + i * ROM_WINDOW, (i + 1) * ROM_WINDOW}
+    return sorted(keys)
 
 
 def sample_animation(clip: str = "rom") -> dict:
     """Key a test clip on the rig's FK controls and set the scene to play it in a loop."""
-    import math
-
-    from mathutils import Quaternion
     if clip not in CLIPS:
         raise ValueError(f"unknown clip {clip!r}")
     arm = final_rig()
@@ -1124,19 +1237,13 @@ def sample_animation(clip: str = "rom") -> dict:
     act = bpy.data.actions.new(f"FORGE_pose_{clip}")
     arm.animation_data.action = act
     length = CLIP_LENGTH[clip]
-    axes = {"X": (1, 0, 0), "Y": (0, 1, 0), "Z": (0, 0, 1)}
-    frames = list(range(1, length + 1, 2)) + [length + 1]
+    frames = _clip_keys(clip)
     poses = {f: _clip_frame(clip, f if f <= length else 1, pb) for f in frames}
     used = sorted({b for p in poses.values() for b in p})
     for f in frames:
         for b in used:
-            q = Quaternion()
-            for axis, deg in poses[f].get(b, []):
-                q = Quaternion(Vector(axes[axis]), math.radians(deg)) @ q    # later = outer
-            rest = arm.data.bones[b].matrix_local.to_3x3()
-            local = (rest.inverted() @ q.to_matrix() @ rest).to_quaternion()
             pb[b].rotation_mode = "QUATERNION"
-            pb[b].rotation_quaternion = local
+            pb[b].rotation_quaternion = _local_rotation(arm, b, poses[f].get(b, []))
             pb[b].keyframe_insert("rotation_quaternion", frame=f)
     sc = bpy.context.scene
     sc.frame_start, sc.frame_end = 1, length               # frame length+1 == frame 1: a clean loop
@@ -1152,8 +1259,9 @@ def animated_meshes(arm) -> list:
 
 
 def check_animation_job(clip: str):
-    """Generator: put the clip on (if it is not), measure about 48 of its frames, return the
-    report (motion_check: joints, skin, faces passing through faces, weights)."""
+    """Generator: put the clip on (if it is not), measure about 48 of its frames plus the
+    frame where each pose is fully reached, return the report (motion_check: joints, skin,
+    faces passing through faces, weights). Every finding carries the pose it was found in."""
     if clip not in CLIPS:
         raise ValueError(f"unknown clip {clip!r}")
     arm = final_rig()
@@ -1169,7 +1277,7 @@ def check_animation_job(clip: str):
     if not objs:
         raise RuntimeError("no mesh is skinned to the rig: build the rig again")
     length = CLIP_LENGTH[clip]
-    frames = list(range(1, length + 1, max(1, length // 48)))
+    frames = sorted(set(range(1, length + 1, max(1, length // 48))) | {f for f, _ in clip_peaks(clip)})
     gen = _mod("motion_check").check(arm, objs, frames)
     try:
         while True:
@@ -1182,6 +1290,11 @@ def check_animation_job(clip: str):
         STATUS["text"] = ""
     rep.pop("per_frame", None)
     rep["clip"] = clip
+    _attach_poses(rep, clip)
+    # how the rig blends bones: engines play linear blending, never Preserve Volume
+    rep["skinning"] = {"preserve_volume": any(
+        m.use_deform_preserve_volume for o in objs for m in o.modifiers
+        if m.type == "ARMATURE" and m.object is arm)}
     return rep
 
 
