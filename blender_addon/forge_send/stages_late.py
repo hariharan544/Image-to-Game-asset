@@ -500,7 +500,13 @@ class FORGE_OT_step(bpy.types.Operator):
 
     def do_rig_build(self, context, st):
         st.anim_rep = "{}"                        # (checks of the old skinning)
+        try:                                      # what Place joints found stays listed
+            placed = json.loads(st.rig_rep or "{}").get("extras")
+        except ValueError:
+            placed = None
         rep = S.build_rig(8)
+        if placed and "extras" not in rep:
+            rep["extras"] = placed
         _save_rep(st, "rig_rep", rep)
         st.rig_phase = "built"
 
@@ -654,10 +660,16 @@ def _part_name(j: dict, only: bool) -> str:
     """A cut-off part by its name in the parts plan (the tail, the left antenna...)."""
     name = str(j.get("name") or "")
     if name and not name.startswith("part_"):
-        base, side = (name[:-2], {"_l": "left ", "_r": "right "}[name[-2:]]) if name[-2:] in ("_l", "_r") \
-            else (name, "")
-        return f"the {side}{base.rstrip('0123456789').replace('_', ' ')}"
+        return f"the {S.part_words(name)}"
     return "the cut-off part" if only else f"cut-off part {j.get('part', '')}".strip()
+
+
+PANEL_WIDTH = 44                                 # characters a sidebar row shows (Steps 4-6)
+
+
+def _row(icon, text):
+    """One indented sentence as rows that fit the sidebar (Steps 4-6)."""
+    return _wrapped(icon, text, first="    ", rest="     ", width=PANEL_WIDTH)
 
 
 def _joint_rows(r):
@@ -668,16 +680,19 @@ def _joint_rows(r):
         name = _part_name(j, len(joints) == 1)
         res = str(j.get("joint", ""))
         if res == "welded":
-            out.append(("BLANK1", f"    {name}: joined into the body as one skin"))
+            out += _row("BLANK1", f"{name}: joined into the body as one skin")
             if j.get("folds_near"):
-                out.append((WARN, f"    {name}: {j['folds_near']} folded faces near its root (the part's own "
-                                  "remesh): look at it, paint it denser and run again if it shows"))
+                out += _row(WARN, f"{name}: {j['folds_near']} folded faces near its root (the part's own "
+                                  "remesh). Look at it; if it shows, paint it denser and run again")
             continue
         why = res.split(":", 1)[1].strip() if ":" in res else ""
-        out.append(("BLANK1", f"    {name}: kept as its own piece"))
+        out += _row("BLANK1", f"{name}: kept as its own piece")
         if why:
-            out.append(("BLANK1", f"    ({JOINT_WHY.get(why, why)})"))
-        out.append(("BLANK1", f"    {JOINT_TODO.get(why, 'its root is hidden inside the body: nothing to do')}"))
+            out += _row("BLANK1", f"({JOINT_WHY.get(why, why)})")
+        todo = JOINT_TODO.get(why, "its root is hidden inside the body: nothing to do")
+        if j.get("plug_shows") and why not in ("no overlap", "no plug", "inside"):
+            todo = "part of its root shows next to the body: check it in the viewport"
+        out += _row("BLANK1", todo)
     return out
 
 
@@ -689,82 +704,79 @@ def _retopo_rows(rep):
         sh = r.get("shape")
         if sh and sh.get("lost_pct", 0) > 0.5:
             icon = WARN if sh.get("detail_only") else BAD
-        out.append((icon, f"{part}: {r.get('tris_before', 0):,} > {r.get('tris_after', 0):,} tris"))
+        out += _wrapped(icon, f"{part}: {r.get('tris_before', 0):,} > {r.get('tris_after', 0):,} tris", rest="    ")
         if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
-            out.append(("BLANK1", f"    method: {m}"))
+            out += _row("BLANK1", f"method: {m}")
         cr = r.get("creases") or {}
         if "left_pct" in cr or "right_pct" in cr:
             low_side = min(cr.get("left_pct", 100), cr.get("right_pct", 100))
-            out.append(("BLANK1" if low_side >= 80 else WARN,
-                        f"    face creases kept: left {cr.get('left_pct', '-')}%, "
+            out += _row("BLANK1" if low_side >= 80 else WARN,
+                        f"face creases kept: left {cr.get('left_pct', '-')}%, "
                         f"right {cr.get('right_pct', '-')}%"
-                        + (f" (+{cr.get('carved_tris', 0)} tris carved)" if cr.get("carved_tris") else "")))
+                        + (f" (+{cr.get('carved_tris', 0)} tris carved)" if cr.get("carved_tris") else ""))
         if "symmetry" in r:
             if r["symmetry"] and r.get("asymmetry_pct", 0) >= 1:
-                out.append(("BLANK1", f"    mirrored, then fitted ({r['asymmetry_pct']}% one-sided)"))
+                out += _row("BLANK1", f"mirrored, then fitted ({r['asymmetry_pct']}% one-sided)")
             else:
-                out.append(("BLANK1", "    mirrored (symmetric)" if r["symmetry"]
-                            else f"    not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)"))
+                out += _row("BLANK1", "mirrored (symmetric)" if r["symmetry"]
+                            else f"not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)")
         if r.get("separate_parts"):
-            out.append(("BLANK1", f"    {r['separate_parts']} part(s) remeshed on their own, then joined"))
+            out += _row("BLANK1", f"{r['separate_parts']} part(s) remeshed on their own, then joined")
             out += _joint_rows(r)
         if r.get("over_budget"):
-            out.append((WARN, f"    {r['over_budget']:,} tris over the budget, left as is: reducing"))
-            out.append(("BLANK1", "    would crumple the joint. To fit, lower Triangles a little, run again"))
+            out += _row(WARN, f"{r['over_budget']:,} tris over the budget, left as is: reducing would "
+                              "crumple the joint. To fit, lower Triangles a little and run again")
         for how in r.get("piece_fallbacks", []):
-            out.append((WARN, f"    a part got no Quad Remesher result: {how} used"))
+            out += _row(WARN, f"a part got no Quad Remesher result: {how} used")
         for why in r.get("split_kept", []):
-            out.append((WARN, f"    {why}"))
+            out += _row(WARN, why)
         if r.get("open_edges") or r.get("bad_edges") or r.get("loose"):
-            out.append((BAD, f"    not clean: {r.get('open_edges', 0)} open, {r.get('bad_edges', 0)} broken, "
-                             f"{r.get('loose', 0)} loose edges"))
-            out.append(("BLANK1", "    Show the problem edges (button below)"))
+            out += _row(BAD, f"not clean: {r.get('open_edges', 0)} open, {r.get('bad_edges', 0)} broken, "
+                             f"{r.get('loose', 0)} loose edges")
+            out += _row("BLANK1", "Show the problem edges (button below)")
         if r.get("stacked"):
-            out.append((BAD, f"    not clean: {r['stacked']} faces / points on top of each other"))
-            out.append(("BLANK1", "    UVgami and the bake need each face in its own place"))
+            out += _row(BAD, f"not clean: {r['stacked']} faces / points on top of each other")
+            out += _row("BLANK1", "UVgami and the bake need each face in its own place")
         t = r.get("tidied") or {}
         if any(t.values()):
             bits = [f"{t['welded']} doubled points welded" if t.get("welded") else "",
                     f"{t['stacked']} stacked faces removed" if t.get("stacked") else "",
                     "openings rebuilt" if t.get("rebuilt") else ""]
-            out.append(("BLANK1", "    cleaned: " + ", ".join(b for b in bits if b)))
+            out += _row("BLANK1", "cleaned: " + ", ".join(b for b in bits if b))
         if sh:
             if sh.get("lost_pct", 0) > 0.5 and sh.get("detail_only"):
-                out.append(("BLANK1", f"    fine detail flattened: {sh['lost_pct']}% (curls, twists)"))
-                out.append(("BLANK1", "    the bake keeps it as a normal map; for real geometry:"))
-                out.append(("BLANK1", "    raise Triangles or paint it red, run again"))
+                out += _row("BLANK1", f"fine detail flattened: {sh['lost_pct']}% (curls, twists)")
+                out += _row("BLANK1", "the bake keeps it as a normal map; for real geometry: "
+                                      "raise Triangles or paint it red, run again")
             elif sh.get("lost_pct", 0) > 0.5:
-                out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))
-                out.append(("BLANK1", "    paint the lost part red (Paint), run again"))
+                out += _row("BLANK1", f"shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)")
+                out += _row("BLANK1", "paint the lost part red (Paint), run again")
             if sh.get("rescue_undone"):
-                out.append((WARN, "    rebuilding a lost part was undone (it left openings)"))
+                out += _row(WARN, "rebuilding a lost part was undone (it left openings)")
             else:
                 fixed = f", fixed {sh['refined']}x" if sh.get("refined") else ""
                 if "face-refined" in m:
                     fixed += ", face details refined"
                 if sh.get("rescued"):
                     fixed += f", {sh['rescued']} thin part(s) rebuilt"
-                out.append(("BLANK1", f"    shape kept{fixed}"))
+                out += _row("BLANK1", f"shape kept{fixed}")
     for name in rep.get("missing", []):
-        out.append((WARN, f"{name}: no new mesh yet - select it, Run for selected parts"))
+        out += _wrapped(WARN, f"{name}: no new mesh yet - select it, Run for selected parts", rest="    ")
     if rep.get("total_tris"):
         out.append(("INFO", f"total {rep['total_tris']:,} triangles"))
     reg = rep.get("regions") or {}
     if reg:
         tot = max(sum(reg.values()), 1)
         order = sorted(reg.items(), key=lambda kv: -kv[1])
-        line = ", ".join(f"{k} {100 * v // tot}%" for k, v in order[:4])
-        out.append(("BLANK1", f"    {line}"))
-        if len(order) > 4:
-            out.append(("BLANK1", "    " + ", ".join(f"{k} {100 * v // tot}%" for k, v in order[4:])))
+        out += _row("BLANK1", ", ".join(f"{k} {100 * v // tot}%" for k, v in order))
     return out
 
 
 def _wrapped(icon, text, first="", rest="    ", width=44):
     """A long plain sentence as panel rows that fit: the icon on the first row only."""
     import textwrap
-    lines = textwrap.wrap(text, width - len(first)) or [""]
-    return [(icon if i == 0 else "BLANK1", (first if i == 0 else rest) + line) for i, line in enumerate(lines)]
+    lines = textwrap.wrap(text, width, initial_indent=first, subsequent_indent=rest) or [first]
+    return [(icon if i == 0 else "BLANK1", line) for i, line in enumerate(lines)]
 
 
 GUARD_ROWS = {"island": "face kept in one piece: no seam across it",
@@ -837,13 +849,13 @@ def _bake_rows(rep):
     out = []
     for part, r in rep.get("parts", {}).items():
         if r.get("skipped"):
-            out.append((BAD, f"{part}: {r['skipped']}"))
+            out += _wrapped(BAD, f"{part}: {r['skipped']}", rest="    ")
             continue
         inv = r.get("invalid_texels_max")
         if inv is None:                         # a report from before the rays were checked
             miss = r.get("bake_miss_ratio", 0)
             icon = GOOD if miss <= 0.02 else (WARN if miss <= 0.10 else BAD)
-            out.append((icon, f"{part}: {len(r.get('maps', {}))} maps, {miss:.1%} patched"))
+            out += _wrapped(icon, f"{part}: {len(r.get('maps', {}))} maps, {miss:.1%} patched", rest="    ")
         else:
             # measured BEFORE the patch: spots where the bake found nothing, the inside of the
             # original, hidden texture, or a surface facing away from the new mesh
@@ -854,22 +866,27 @@ def _bake_rows(rep):
             # check cannot tell whether the bake saw their front or their back
             both = float(r.get("both_ways", 0.0))
             if inv >= 0.0005:
-                out.append(("BLANK1", f"    {inv:.1%} of the texture could not be baked cleanly"))
-                out.append(("BLANK1", "    and was patched from nearby"))
+                out += _row("BLANK1", f"{inv:.1%} of the texture could not be baked cleanly and was "
+                                      "patched from nearby")
             elif both < 0.0005:
-                out.append(("BLANK1", "    the whole texture baked cleanly"))
+                out += _row("BLANK1", "the whole texture baked cleanly")
             if both >= 0.0005:
-                out.append(("BLANK1", f"    {both:.1%} comes from open, paper-thin pieces of the original:"))
-                out.append(("BLANK1", "    there the bake cannot be checked (Step 3: Weld into one solid,"))
-                out.append(("BLANK1", "    then bake again)"))
+                out += _row("BLANK1", f"{both:.1%} comes from open, paper-thin pieces of the original: "
+                                      "there the bake cannot be checked. To fix: Step 3, Weld into one "
+                                      "solid; then Steps 4, 5 and 6 run again")
         spots = int((r.get("cage") or {}).get("unenclosed", 0))
         if spots:                               # a warning only when the patching is not small
             sev = "INFO" if inv is not None and inv <= 0.02 else WARN
-            out.append((sev, f"    {spots:,} places where the new mesh is too coarse or folded"))
-            out.append(("BLANK1", "    to bake cleanly (Step 4: more triangles there, then bake again)"))
+            out += _row(sev, f"{spots:,} faces of the new mesh are too coarse or folded to bake "
+                             "cleanly. To fix: raise Triangles in Step 4 (or paint the spot red); "
+                             "then Steps 5 and 6 run again")
+        hidden = int((r.get("cage") or {}).get("hidden", 0))
+        if hidden:
+            out += _row("BLANK1", f"{hidden:,} faces of a part's hidden root, inside the body: "
+                                  "never seen, not checked")
         sp = sum((r.get("specks_removed") or {}).values())
         if sp:
-            out.append(("BLANK1", f"    {sp:,} specks cleaned"))
+            out += _row("BLANK1", f"{sp:,} specks cleaned")
     return out
 
 
@@ -879,12 +896,16 @@ def _rig_rows(rep):
     for k, n in (ex.get("added") or {}).items():
         out.append((GOOD, f"{k}: {n} bones"))
     for k, why in (ex.get("skipped") or {}).items():
-        out.append(("INFO", f"{k}: {why}"))
+        out += _wrapped("INFO", f"{_app_words(k)}: {why}", first="", rest="  ", width=60)
+    for k in ex.get("stray") or []:                # (Auto-Rig Pro adds ears in pairs)
+        out += _wrapped("INFO", f"{_app_words(k)}: none on this body; Auto-Rig Pro adds it anyway, "
+                                "its bones move no skin", first="", rest="  ", width=60)
     for e in (ex.get("errors") or [])[:3]:
         out.append((BAD, e[:60]))
+    stray = set(ex.get("stray") or [])
     if not rep.get("chain_parents"):              # (placed, not built yet)
         for chain, h in (ex.get("parents") or {}).items():
-            if isinstance(h, dict) and h.get("ref_parent"):
+            if isinstance(h, dict) and h.get("ref_parent") and chain not in stray:
                 out.append(("BLANK1", f"  {_app_words(chain)} will hang from "
                                       f"{_bone_words(h['ref_parent'].replace('_ref', ''))}"))
     if rep.get("bones"):
@@ -914,11 +935,8 @@ def _bone_words(name) -> str:
 
 
 def _app_words(app) -> str:
-    """'ear_l' -> 'left ear', 'tail' -> 'tail'."""
-    base, _, side = str(app).rpartition("_")
-    if side in ("l", "r") and base:
-        return f"{'left' if side == 'l' else 'right'} {base.replace('_', ' ')}"
-    return str(app).replace("_", " ")
+    """'ear_l' -> 'left ear', 'tail' -> 'tail', 'tail2' -> 'second tail'."""
+    return S.part_words(app)
 
 
 def _chain_rows(rep):
@@ -929,12 +947,14 @@ def _chain_rows(rep):
         out.append(("INFO", "Preserve Volume turned off (engines blend"))
         out.append(("BLANK1", "  bones linearly: now the viewport matches)"))
     differs = set()
+    stray = set((rep.get("extras") or {}).get("stray") or []) | set(rep.get("stray_chains") or {})
     for chain, cp in (rep.get("chain_parents") or {}).items():
-        if isinstance(cp, dict) and cp.get("ok") is False:
+        if isinstance(cp, dict) and cp.get("ok") is False and chain not in stray:
             differs.add(chain)
             out.append((WARN, f"{_app_words(chain)} hangs from {_bone_words(cp.get('parent'))},"))
-            out.append(("BLANK1", f"  not {_bone_words(cp.get('wanted'))} (Auto-Rig Pro differs:"))
-            out.append(("BLANK1", "  tell Forge, the root may tear)"))
+            out.append(("BLANK1", f"  not {_bone_words(cp.get('wanted'))} (Auto-Rig Pro differs)."))
+            out.append(("BLANK1", "  Its root may tear when the body bends: send"))
+            out.append(("BLANK1", "  a screenshot of this box back to the Forge team"))
     for app, a in (rep.get("appendages") or {}).items():
         if not isinstance(a, dict):
             continue
@@ -944,9 +964,17 @@ def _chain_rows(rep):
             out.append(("BLANK1", f"  ({str(a.get('error') or a.get('skipped'))[:40]})"))
             continue
         share, parent, owner = a.get("root_share", 0.0), a.get("parent"), a.get("root_owner")
-        if a.get("root_ok", share >= 0.5):
+        ok = a.get("root_ok", share >= 0.5)
+        if ok is None:                               # no body skin round its root to read
+            out.append(("INFO", f"{name} hangs from {_bone_words(parent)}"))
+            out.append(("BLANK1", "  (no body skin round its root to check)"))
+        elif ok:
             out.append((GOOD, f"{name} hangs from {_bone_words(parent)}"))
             out.append(("BLANK1", f"  which moves {share:.0%} of the skin round its root"))
+        elif owner == parent:                        # the biggest share, though under half
+            out.append(("INFO", f"{name} hangs from {_bone_words(parent)}"))
+            out.append(("BLANK1", f"  which moves most ({share:.0%}) of the skin round"))
+            out.append(("BLANK1", "  its root; bones near it move the rest"))
         else:
             out.append((WARN, f"{name}: the skin round its root moves"))
             out.append(("BLANK1", f"  with {_bone_words(owner)}, not {_bone_words(parent)}"))
@@ -1010,6 +1038,9 @@ ANIM_ADVICE = {
              "Blend over a shorter one on the inside of the bend, or add a helper bone.",
     "deep": "Game skinning cannot hold a turn that deep: turn it less, or add a helper bone.",
     "touch": "Parts passing into each other: turn less in that pose, or move the part.",
+    "hidden": "A part Step 4 kept as its own piece has its root hidden in the body; a far turn "
+              "brings it out. Turn it less in that pose, or raise Triangles in Step 4 so it "
+              "joins the body as one skin.",
     "unity": "Unity's limit: fewer bones per point there (smoother, wider weights) helps.",
 }
 STRETCH_FAIL = 2.0                               # (motion_check.LIMITS["stretch"][1])
@@ -1073,7 +1104,9 @@ def _finding_text(where, f) -> tuple:
             text += f"; {t}" + ("" if same else f" in {_when_bent(g)}")
         return text, why
     if c == "crossing" and f.get("kind") == "touch":
-        return f"{where} in {_when_bent(f)}: {f['faces']} faces pass into each other", ["touch"]
+        return f"{where}, {_when_bent(f)}: {f['faces']} faces pass into each other", ["touch"]
+    if c == "crossing" and f.get("kind") == "hidden":
+        return f"{where}, {_when_bent(f)}: {f['faces']} faces come out through the body", ["hidden"]
     if c == "crossing":
         return f"{where}, {_when_bent(f)}: {f['faces']} faces fold through each other", ["folds"]
     if c == "unity":

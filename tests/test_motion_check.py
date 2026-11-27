@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 
 bpy = pytest.importorskip("bpy")
+np = pytest.importorskip("numpy")
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_scripts"))
 
 
@@ -676,3 +677,81 @@ def test_a_modifier_that_adds_points_is_measured_without_it():
     assert tube.modifiers["Smooth"].show_viewport
     text = " ".join(t.strip() for _i, t in _late()._anim_rows(b))
     assert "Tube_low: measured without its Smooth" in text, text
+
+
+# ----------------------------------------------------------------------------- a part kept as its own piece
+
+def test_faces_inside_another_shell_are_found_by_shells_not_names():
+    """The root of a part Step 4 kept as its own piece lies inside the body (and the body's lid
+    lies inside the part): hidden_faces finds both by ray parity against the other closed
+    shell. A shell beside the body hides nothing; an open sheet is never a container (parity
+    cannot tell its inside), though it can lie inside a body."""
+    import bmesh
+    from mathutils import Matrix
+    from forge_bpy import motion_check as M
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)                                     # the body, 6 x 6 per side
+    bmesh.ops.subdivide_edges(bm, edges=bm.edges[:], cuts=5, use_grid_fill=True)
+    bmesh.ops.create_cube(bm, size=0.3, matrix=Matrix.Translation((0.5, 0, 0)))  # half inside it
+    bmesh.ops.create_cube(bm, size=0.2, matrix=Matrix.Translation((2.0, 0, 0)))  # beside it
+    bmesh.ops.create_grid(bm, x_segments=2, y_segments=2, size=0.1,
+                          matrix=Matrix.Translation((0, 0, 0.2)))                 # an open sheet inside
+    bmesh.ops.triangulate(bm, faces=bm.faces)
+    bm.verts.ensure_lookup_table()
+    rest = np.array([v.co[:] for v in bm.verts])
+    tris = np.array([[v.index for v in f.verts] for f in bm.faces])
+    bm.free()
+    hid, shell, plugged = M.hidden_faces(rest, tris)
+    cen = rest[tris].mean(axis=1)
+    body = shell == shell[0]
+    near = (np.abs(cen[:, 1]) <= 0.15) & (np.abs(cen[:, 2]) <= 0.15)
+    small = ~body & (np.abs(cen[:, 0] - 0.5) <= 0.15 + 1e-6)
+    assert small.sum() == 12
+    assert hid[small & (cen[:, 0] < 0.5 - 1e-6)].all() and not hid[small & (cen[:, 0] > 0.5 + 1e-6)].any()
+    on_side = body & (np.abs(cen[:, 0] - 0.5) < 1e-6)
+    lid = on_side & near                                                    # the body's faces under the part
+    assert lid.any() and hid[lid].all()
+    clear = body & ~(on_side & (np.abs(cen[:, 1]) <= 0.2) & (np.abs(cen[:, 2]) <= 0.2))
+    assert not hid[clear].any()
+    assert not hid[cen[:, 0] > 1.5].any()
+    sheet = ~body & ~small & (np.abs(cen[:, 2] - 0.2) < 1e-6) & (np.abs(cen[:, 0]) < 0.2)
+    assert sheet.any() and hid[sheet].all()                                 # (an open sheet inside a body)
+    assert len(plugged) == 2
+
+
+def test_the_hidden_root_of_a_separate_part_is_told_as_such_never_as_a_touch():
+    """A bull whose tail Step 4 kept as its own piece, its root plugged into the body: when the
+    tail swings, the plug comes out through the back. That is the part's hidden root (Step 4's
+    advice: more triangles let it join as one skin), not 'small of the back touches tail' with
+    advice to move the part. The real touch of the tail's tuft on the thigh is still a touch."""
+    import importlib
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "tests"))
+    import arp_like
+    import bodies
+    from forge_bpy import parts, rescue
+    late = _late()
+    S = importlib.import_module("forge_send.steps")
+    bpy.ops.wm.read_homefile(use_empty=True)
+    ob = bodies.bull(voxel=0.012)
+    cap = ob.data.copy()
+    (_k, src, _plug), = rescue.split_off(cap, parts.one_sided_parts(ob.data))
+    target = bpy.data.objects.new("Body_low", cap.copy())
+    piece = bpy.data.objects.new("Body_low_part1", src.copy())
+    for o in (target, piece):
+        bpy.context.scene.collection.objects.link(o)
+    rescue.attach(target, piece)
+    bpy.data.objects.remove(piece)
+    bpy.data.objects.remove(ob)
+    bpy.context.view_layer.update()
+    target["forge_role"], target["forge_part"], target["forge_kind"] = "low", "Body", "body"
+    arm, _J, _apps, _rep = arp_like.build(target)
+    S.sample_animation("tail")
+    rep = _run(arm, [target], [1, 60, 65, 69, 71, 75, 80, 87])
+    cr = rep["checks"]["crossing"]
+    wheres = [e["where"] for e in cr["regions"]]
+    assert not any(w.endswith("touches tail") and "thigh" not in w for w in wheres), wheres
+    assert cr["hidden_roots"] > 0 and "hidden root of the tail" in wheres, wheres
+    f = next(e for e in cr["regions"] if e["where"] == "hidden root of the tail")
+    text, why = late._finding_text(f["where"], {**f, "check": "crossing"})
+    assert why == ["hidden"] and "come out through the body" in text and " in at " not in text, text
+    assert "Step 4" in late.ANIM_ADVICE["hidden"]

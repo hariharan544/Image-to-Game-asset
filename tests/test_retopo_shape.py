@@ -621,6 +621,41 @@ def test_a_part_that_cannot_be_cut_is_never_mirrored(monkeypatch):
     assert v[:, 0].max() > 1.8 and v[:, 0].min() > -1.1                     # one tail, not two
 
 
+def test_a_symmetric_part_that_cannot_be_cut_keeps_the_mirror(monkeypatch):
+    """A part on the middle line that cannot be cut (a fin or crest whose long root no plug
+    fits) stays with the body; mirroring leaves it as it is, so the body is still mirrored -
+    only a one-sided part kept with the body turns the mirror off. The report names the part."""
+    import numpy as np
+
+    from forge_bpy import common, density, rescue, retopo
+    o = _body_with_tail()
+    co = np.array([v.co[:] for v in o.data.vertices])
+    crest = (co[:, 2] > 0.9) & (np.abs(co[:, 0]) < 0.3)              # on top, across the middle
+    density.write_split(o.data, np.where(crest, 1, 0).astype(np.int32))
+    o.data["forge_split_names"] = {"1": "back_extra"}
+
+    def refuse(me, ids, report=None):
+        if report is not None:
+            report.append((1, "its root is too long and thin, or lies along the body, for a hidden plug: "
+                              "kept with the body"))
+        return []
+
+    monkeypatch.setattr(rescue, "split_off", refuse)
+    monkeypatch.setattr(retopo, "_qr_part", _stand_in_qr())
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "symmetry": "left",
+                          "carve": False, "shape_check": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    r = rep["parts"]["Body"]
+    assert o.get("forge_symmetry_x") and "failed" not in r["method"], (r["method"], r.get("split_kept"))
+    kept = " ".join(r.get("split_kept", []))
+    assert "the part on the back: its root is too long and thin" in kept and "still mirrored" in kept, kept
+    assert "not mirrored" not in kept
+
+
 def test_cleanup_retires_jobs_and_late_results_are_removed_when_idle():
     from forge_bpy import retopo
     bpy.ops.wm.read_homefile(use_empty=True)
@@ -689,7 +724,7 @@ def test_a_part_the_plan_could_not_cut_blocks_the_mirror(monkeypatch):
         rep = stop.value
     r = rep["parts"]["Body"]
     assert not o.get("forge_symmetry_x")
-    assert any("not mirrored: tail" in w for w in r.get("split_kept", [])), r
+    assert any("not mirrored: the tail" in w for w in r.get("split_kept", [])), r
     v = np.array([x.co[:] for x in o.data.vertices])
     assert v[:, 0].max() > 1.8 and v[:, 0].min() > -1.1
 
@@ -898,6 +933,55 @@ def test_tail_root_is_one_skin_or_a_clean_attach(monkeypatch, case, budget, defa
     assert n > 50 and wrong <= 2 and p95 < fit, (joint, n, wrong, p95)
     if joint == "welded":
         assert shells == 1 and cross <= 2, (shells, cross)          # one skin, nothing crossing
+
+
+def test_a_cut_to_one_side_of_the_middle_is_never_mirrored_onto_bare_skin(monkeypatch):
+    """A tail whose root sits across the mirror plane unevenly (x -0.01..+0.07), mirrored from
+    the left: mirroring copied the lid closing the cut to the right side, where no part covers
+    it - a 3.7 cm dent - and the body's opening no longer matched the tail's ring (the weld
+    failed: 13-21 faces facing the wrong way at the root). Until mirroring keeps the original
+    skin there, such a body is not mirrored, the panel says why, and the root is clean. The
+    same tail mirrored from the right (its lid is dropped with that side), or a tail on the
+    middle line, mirrors as before."""
+    from mathutils import Vector
+
+    import bodies
+    from forge_bpy import density, parts, rescue, retopo
+    for dx, side, want in ((0.025, "left", [1]), (0.025, "right", []), (0.0, "left", [])):
+        path = [(p[0] + dx, p[1], p[2]) for p in bodies.CURL]
+        ob = bodies.curled_tail(1.0, r=0.035, path=path)[0]
+        cap = ob.data.copy()
+        rescue.split_off(cap, parts.one_sided_parts(ob.data))
+        assert retopo._lids_mirror_onto_skin(cap, side) == want, (dx, side)
+    path = [(p[0] + 0.025, p[1], p[2]) for p in bodies.CURL]
+    ob = bodies.curled_tail(1.0, r=0.035, path=path)[0]
+    ob.name = "Body_low"
+    ob["forge_role"], ob["forge_part"] = "low", "Body"
+    me = ob.data
+    density.write_split(me, parts.one_sided_parts(me))
+    me["forge_onesided_planned"] = True
+    me["forge_split_names"] = {"1": "tail"}
+    orig = me.copy()
+    plugs = []
+    real_extract = rescue.extract
+
+    def extract(*a, **k):
+        out = real_extract(*a, **k)
+        if "forge_plug" in out and out.name.startswith("forge_part"):
+            plugs.append(list(out["forge_plug"]))
+        return out
+    monkeypatch.setattr(rescue, "extract", extract)
+    monkeypatch.setattr(retopo, "_qr_part", _stand_in_qr())
+    r = _run({"target_tris": 30000, "qr_timeout": 5, "symmetry": "left", "carve": False,
+              "shape_check": False})["parts"]["Body"]
+    assert not ob.get("forge_symmetry_x")
+    kept = " ".join(r.get("split_kept", []))
+    assert "not mirrored: the cut for the tail sits to one side of the middle" in kept, kept
+    fin = ob.data
+    assert rescue.mesh_defects(fin) == (0, 0, 0), r
+    root, rad = Vector(plugs[-1][0:3]), float(plugs[-1][6])
+    n, wrong, p95, _shells, _cross = _root_faces(fin, orig, root, rad)
+    assert n > 50 and wrong <= 2 and p95 < 0.1, (r.get("joint"), n, wrong, p95)
 
 
 def test_weld_rolls_back_and_attaches_when_the_bridge_fails(monkeypatch):

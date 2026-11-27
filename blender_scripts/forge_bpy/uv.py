@@ -245,11 +245,12 @@ def engine_missing(eid: str, engines=None) -> str:
     return f"{label} isn't downloaded yet: {DOWNLOAD_HOW.format(label)}."
 
 
-def resolve_engine(choice: str = "AUTO", winner: str = "", installed=None, engines=None) -> tuple:
+def resolve_engine(choice: str = "AUTO", winner: str = "", installed=None, engines=None,
+                   ahead: bool = False) -> tuple:
     """(engine id to use, plain note). choice: 'AUTO' or an engine id; Auto = the engine that won
     Compare engines for this model (winner), else OptCuts. An engine that cannot be used is
     replaced by the first downloaded one, and the note says why (engine_missing). ('', '') when
-    none is downloaded."""
+    none is downloaded. ahead: the note is read before the run ('Will use ... instead')."""
     if engines is None:
         engines = uvgami_engines()
     if installed is None:
@@ -260,7 +261,8 @@ def resolve_engine(choice: str = "AUTO", winner: str = "", installed=None, engin
     use = next((e for e in ENGINE_IDS if e in installed), "")
     if not use:
         return "", ""
-    return use, f"{engine_missing(want, engines)} Used {ENGINE_LABELS[use]} this time."
+    then = f"Will use {ENGINE_LABELS[use]} instead." if ahead else f"Used {ENGINE_LABELS[use]} this time."
+    return use, f"{engine_missing(want, engines)} {then}"
 
 
 def _on_mac() -> bool:
@@ -280,14 +282,16 @@ def partuv_ai_missing() -> str:
             "Download Engine under AI Segmentation; it needs an NVIDIA card).")
 
 
-def resolve_split(choice: str = "AUTO", ai_ready=None) -> tuple:
+def resolve_split(choice: str = "AUTO", ai_ready=None, ahead: bool = False) -> tuple:
     """PartUV's split: (mode, plain note). Auto = AI when it is downloaded, else Tree (splits by
-    shape, nothing extra to download). Geometric clusters faces (faster, more seams)."""
+    shape, nothing extra to download). Geometric clusters faces (faster, more seams).
+    ahead: the note is read before the run."""
     ai = partuv_ai_ready() if ai_ready is None else bool(ai_ready)
     if choice in ("TREE", "GEOMETRIC"):
         return choice, ""
     if choice == "AI" and not ai:
-        return "TREE", f"{partuv_ai_missing()} Used the tree split this time."
+        then = "Will use the tree split instead." if ahead else "Used the tree split this time."
+        return "TREE", f"{partuv_ai_missing()} {then}"
     return ("AI" if ai else "TREE"), ""
 
 

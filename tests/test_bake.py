@@ -456,12 +456,15 @@ def test_panel_says_how_much_had_no_clean_hit():
     rows = L._bake_rows(rep)
     text = [t for _i, t in rows]
     assert (L.WARN, "Body: 5 maps") in rows
-    assert "    3.4% of the texture could not be baked cleanly" in text and "    and was patched from nearby" in text
-    joined = " ".join(text)
-    assert "5 places where the new mesh is too coarse or folded" in joined and "Step 4" in joined
+    joined = " ".join(" ".join(t.split()) for t in text)
+    assert "3.4% of the texture could not be baked cleanly and was patched from nearby" in joined
+    assert "5 faces of the new mesh are too coarse or folded" in joined and "Step 4" in joined
+    assert "Steps 5 and 6 run again" in joined                    # (Change on Step 4 resets them)
+    assert max(len(t) for t in text) <= L.PANEL_WIDTH, max(text, key=len)
     assert (L.GOOD, "Sword: 1 map") in rows and "    the whole texture baked cleanly" in text
     cape = text[text.index("Cape: 1 map") + 1:]
-    assert cape[0].startswith("    40.0% comes from open, paper-thin pieces") and "Weld into one solid" in " ".join(cape)
+    assert cape[0].startswith("    40.0% comes from open, paper-thin") and \
+        "Weld into one solid" in " ".join(" ".join(t.split()) for t in cape)
     assert text.count("    the whole texture baked cleanly") == 1          # not said for the cape
     for t in text:                                  # plain words: no bake jargon on the panel
         assert not any(w in t.lower() for w in ("texel", "cage", " hit", "ray"))
@@ -843,3 +846,49 @@ def test_a_flipped_normal_in_the_result_is_patched_whatever_the_check_said():
     assert (res.reshape(n, n, 4)[..., 0] > 0.99).all() and abs(out["share"] - 4 / 64) < 1e-6
     bpy.data.images.remove(nm)
     bpy.data.images.remove(ao)
+
+
+def test_a_hidden_root_is_never_a_coarse_spot_nor_patched_texture():
+    """A tail Step 4 kept as its own piece: its root is plugged into the body and the body's lid
+    lies inside the tail. Those faces are never seen. The bake counted them as places where the
+    new mesh is too coarse (90, 74 of them on the tail piece) and their texels as texture that
+    could not be baked (212 of 267), while Step 4 said 'its root is hidden: nothing to do'. Now
+    they are left out and named on their own row."""
+    import importlib
+
+    import bodies
+    from forge_bpy import bake, parts, rescue
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    bpy.ops.wm.read_homefile(use_empty=True)
+    ob = bodies.bull(voxel=0.012)
+    full = ob.data.copy()
+    cap = ob.data.copy()
+    (_k, src, _plug), = rescue.split_off(cap, parts.one_sided_parts(ob.data))
+    low = bpy.data.objects.new("Body_low", cap.copy())
+    piece = bpy.data.objects.new("Body_low_part1", src.copy())
+    for o in (low, piece):
+        bpy.context.scene.collection.objects.link(o)
+    rescue.attach(low, piece)
+    bpy.data.objects.remove(piece)
+    ob.data = full
+    ob.name = "Body_high"
+    bpy.context.view_layer.update()
+    bpy.context.view_layer.objects.active = low
+    for o in bpy.context.view_layer.objects:
+        o.select_set(o == low)
+    bpy.ops.object.mode_set(mode="EDIT")
+    bpy.ops.mesh.select_all(action="SELECT")
+    bpy.ops.uv.smart_project(angle_limit=1.15, island_margin=0.01)
+    bpy.ops.object.mode_set(mode="OBJECT")
+    bake.clear_fit_cache()
+    fit = bake.fit_cage(low, bake._surface_of(ob), ob.matrix_world, size=512)
+    assert fit["hidden"] > 40 and fit["unenclosed"] <= 5, (fit["hidden"], fit["unenclosed"])
+    cage, max_ray = bake.build_cage(low, ob, size=512)
+    val = bake._validate_hits(low, ob.matrix_world, cage, bake._surface_cached(ob), max_ray, bake._raster(low, 512))
+    assert val["share"] < 0.0005, val["kinds"]
+    L = importlib.import_module("forge_send.stages_late")
+    text = " ".join(" ".join(t.split()) for _i, t in L._bake_rows(
+        {"parts": {"Body": {"maps": {"normal": "x"}, "invalid_texels_max": 0.0,
+                            "cage": {"unenclosed": 0, "hidden": int(fit["hidden"])}}}}))
+    assert "hidden root" in text and "too coarse" not in text, text
+    bake.clear_fit_cache()

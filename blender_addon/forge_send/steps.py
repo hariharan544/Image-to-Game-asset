@@ -512,8 +512,13 @@ def prepare_maps_job(detail: float, recompute: bool = False, side: str = "", bud
     return n
 
 
+def part_words(name) -> str:
+    """A found part's name in plain words ('tail2' -> 'second tail'): appendages.plain_name."""
+    return _mod("appendages").plain_name(name)
+
+
 def plan_rows() -> list:
-    """The parts plan as short panel lines (read-only: safe in draw)."""
+    """The parts plan as short panel lines, parts in plain words (read-only: safe in draw)."""
     body = None
     for p in parts():
         if G.kind(p) == "body":
@@ -522,7 +527,7 @@ def plan_rows() -> list:
     groups: dict = {}
     for name, what in plan.items():
         groups.setdefault(str(what), []).append(str(name))
-    return [f"{', '.join(sorted(v))}: {k}" for k, v in sorted(groups.items())]
+    return [f"{', '.join(part_words(n) for n in sorted(v))}: {k}" for k, v in sorted(groups.items())]
 
 
 MIN_TRIS_PER_PART = 300
@@ -705,17 +710,23 @@ def run_uv(texture_size: int, use_uvpm: bool = True, use_uvgami: bool = True, en
     would see where two materials meet (material seams would stay off). It comes back on after."""
     checker = checker_off()
     args = _uv_args(texture_size, use_uvpm, use_uvgami, engine, split, winner)
-    rep = _mod("uv").run(args)
+    try:
+        rep = _mod("uv").run(args)
+    except BaseException:
+        _checker_back(checker)
+        raise
     if not hasattr(rep, "__next__"):
         rep["uvgami"] = uvgami_status()
         _checker_back(checker)
         return rep
 
     def gen():
-        out = yield from rep
-        out["uvgami"] = uvgami_status()
-        _checker_back(checker)
-        return out
+        try:                                  # (Stop closes the job: the checker comes back too)
+            out = yield from rep
+            out["uvgami"] = uvgami_status()
+            return out
+        finally:
+            _checker_back(checker)
     return gen()
 
 
@@ -726,11 +737,13 @@ def run_uv_compare(texture_size: int, use_uvpm: bool = True, split: str = "AUTO"
     args = _uv_args(texture_size, use_uvpm, True, "AUTO", split, "")
 
     def gen():
-        out = yield from _mod("uv").compare(args)
-        if out.get("report"):
-            out["report"]["uvgami"] = uvgami_status()
-        _checker_back(checker)
-        return out
+        try:                                  # (Stop closes the job: the checker comes back too)
+            out = yield from _mod("uv").compare(args)
+            if out.get("report"):
+                out["report"]["uvgami"] = uvgami_status()
+            return out
+        finally:
+            _checker_back(checker)
     return gen()
 
 
@@ -753,8 +766,8 @@ def uv_engine_plan(choice: str, winner: str = "", split: str = "AUTO") -> dict:
     """What Unwrap + pack will use: {'engine', 'label', 'note'} (engine '' = no UVgami engine)."""
     try:
         uv = _mod("uv")
-        eid, note = uv.resolve_engine(choice, winner)
-        sp, sp_note = uv.resolve_split(split) if eid == "PARTUV" else ("", "")
+        eid, note = uv.resolve_engine(choice, winner, ahead=True)          # (read before the run)
+        sp, sp_note = uv.resolve_split(split, ahead=True) if eid == "PARTUV" else ("", "")
         return {"engine": eid, "label": uv.engine_label(eid, sp) if eid else "",
                 "note": " ".join(n for n in (note, sp_note) if n)}
     except Exception as exc:                          # noqa: BLE001
@@ -1129,6 +1142,8 @@ def place_joints() -> dict:
         report["extras"]["regions"] = _mod("arp_rig").store_regions(body, apps, report["extras"].get("chains", []))
     except Exception as exc:                          # noqa: BLE001
         report["extras"].setdefault("errors", []).append(f"appendage surfaces: {exc}")
+    # a chain Auto-Rig Pro added that no part was found for (its second ear): no skin at the bind
+    body[_mod("arp_rig").STRAY_PROP] = ",".join(report["extras"].get("stray", []))
     rig["forge_ref_rig"] = True
     report["ref_rig"] = rig.name
     return report

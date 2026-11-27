@@ -663,8 +663,8 @@ def test_the_auto_row_says_why_auto_uses_its_engine(uvg):
     eng = sys.modules[fake_uvgami.ENG]                    # ...or this UVgami has none
     eng.ENGINES = {k: v for k, v in eng.ENGINES.items() if k != "PARTUV"}
     assert _text(L._uv_engine_rows(st)[0]) == ("Auto uses OptCuts (PartUV won Compare engines, but your UVgami "
-                                               "comes without it) Your UVgami comes without PartUV. Used "
-                                               "OptCuts this time.")
+                                               "comes without it) Your UVgami comes without PartUV. Will "
+                                               "use OptCuts instead.")
     st.uv_compare_rep = json.dumps({"winner": "", "why": "no engine delivered every part",
                                     "rows": [{"engine": "OPTCUTS", "label": "OptCuts", "ok": False}]})
     assert _text(L._uv_engine_rows(st)[0]) == "Auto uses OptCuts (Compare engines found no winner)"
@@ -771,3 +771,30 @@ def test_stop_from_the_panel_during_compare_keeps_what_the_director_hid_hidden(u
         c = bpy.data.collections.get(G.PARTS_COLLECTION)
         if c is not None and not c.objects:
             bpy.data.collections.remove(c)
+
+
+def test_stop_during_unwrap_or_compare_puts_the_checker_back(uvg):
+    """'Stop is safe at any time: Forge puts the model back as it was.' The checker comes off
+    while UVgami works (it hides the material borders) and comes back on after Stop too, not
+    only after a normal finish."""
+    import importlib
+
+    import fake_uvgami
+    sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "blender_addon"))
+    F = importlib.import_module("forge_send")
+    F.register()
+    try:
+        from forge_send import steps as S
+        fake_uvgami.set_installed(("OPTCUTS", "PARTUV"))
+        _two_lows_with_uvs()
+        for start, job in ((lambda: S.run_uv_compare(1024, False, "AUTO"), S.UV_COMPARE_JOB),
+                           (lambda: S.run_uv(1024, False, True, "AUTO"), S.UV_JOB)):
+            S.checker_off()
+            assert S.toggle_checker() is True
+            gen = start()
+            next(gen)                                   # UVgami working
+            gen.close()                                 # Stop
+            S.stop_cleanup(job)
+            assert all("forge_checker" in o for o in S.lows()), job
+    finally:
+        F.unregister()

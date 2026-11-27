@@ -259,6 +259,28 @@ def _name(items: list) -> list:
     return items
 
 
+# the kinds _classify gives, in plain words
+KIND_WORDS = {"extra": "extra part", "back_extra": "part on the back", "head_extra": "part on the head"}
+ORDINALS = {2: "second", 3: "third", 4: "fourth", 5: "fifth", 6: "sixth"}
+
+
+def plain_name(name) -> str:
+    """A found part's name (see _name) in plain words for the panel: 'tail2' -> 'second tail',
+    'ear_l' -> 'left ear', 'extra_l2' -> 'second left extra part', 'back_extra' -> 'part on the
+    back' (the counter comes after the side). Anything else comes back with spaces for
+    underscores ('spine_01' -> 'spine 01')."""
+    import re
+    m = re.fullmatch(r"(.*?[^_\d])(?:_([lr]))?(\d*)", str(name))
+    if not m:
+        return str(name).replace("_", " ")
+    base, side, num = m.groups()
+    word = KIND_WORDS.get(base, base.replace("_", " "))
+    side_w = {"l": "left ", "r": "right "}.get(side or "", "")
+    k = int(num) if num else 1
+    first = (ORDINALS.get(k, f"no. {k}") + " ") if k > 1 else ""
+    return f"{first}{side_w}{word}"
+
+
 def from_object(obj, J: dict, segments: int = 5, grow: bool = True) -> list:
     from .parts import MeshArrays
     arr = MeshArrays(obj.data)

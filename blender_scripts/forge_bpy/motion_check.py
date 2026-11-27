@@ -23,8 +23,9 @@ where it is worst (the caller adds the test pose shown at that frame):
             that cannot help
   crossing  faces newly passing through faces. Inside one joint's contact zone: contact. Inside
             one segment: a fold (a fault). Between parts: '<A> touches <B>' (a forearm into an
-            ear). Parts that already overlap at rest - a tail root plugged into the body - are
-            not counted
+            ear). Faces that already cross at rest are not counted. Faces lying inside another
+            shell at rest - the root of a part Step 4 kept as its own piece, plugged into the
+            body - are its 'hidden root' when they come out (hidden_faces), never a touch
   weights   points no bone moves; and what Unity's 4-bone limit does to the skin (simulated
             with the same limit the export applies, on the full mesh before Unity's copy is
             reduced): how far it moves the skin and the stretch it adds
@@ -297,6 +298,56 @@ def crossing_faces(co, tris, shrink: float = 0.98) -> set:
     return set(crossing_pairs(co, tris, shrink).ravel().tolist())
 
 
+def hidden_faces(rest, tris) -> tuple:
+    """(hidden, shell, plugged): which triangles lie, at rest, inside ANOTHER closed shell of
+    the measured meshes, each triangle's shell, and the pairs of shells one of which is
+    plugged into the other ({frozenset((a, b))}). A part Step 4 kept as its own piece has its
+    root plugged into the body (and the body's lid under it lies inside the part): crossing
+    nothing at rest, those faces come out when the part turns. That is the part's hidden root
+    showing, not two parts touching. Read by shells, not by names: a tail, a wing, an antenna.
+    Inside: ray parity against the other shell (rescue._parity_inside)."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
+    from .appendages import _components
+    from .rescue import _parity_inside
+    hid = np.zeros(len(tris), bool)
+    plugged: set = set()
+    if len(tris) < 2:
+        return hid, np.zeros(len(tris), np.int64), plugged
+    e = np.concatenate([tris[:, [0, 1]], tris[:, [1, 2]], tris[:, [2, 0]]])
+    lab = _components(len(rest), e[:, 0], e[:, 1])
+    tlab = lab[tris[:, 0]]
+    shells = np.unique(tlab)
+    if len(shells) < 2:
+        return hid, tlab, plugged
+    se, cnt = np.unique(np.sort(e, axis=1), axis=0, return_counts=True)
+    open_shell = set(np.unique(lab[se[cnt != 2].ravel()]).tolist())     # (parity needs a closed one)
+    cen = rest[tris].mean(axis=1)
+    size = float(np.ptp(rest, axis=0).max()) if len(rest) else 1.0
+    eps = 1e-6 * max(size, 1e-3)
+    verts = None
+    order = np.argsort(tlab, kind="stable")             # each shell's triangles, without a scan per shell
+    starts = np.searchsorted(tlab[order], shells)
+    ends = np.searchsorted(tlab[order], shells, side="right")
+    for s, a, b in zip(shells.tolist(), starts.tolist(), ends.tolist()):
+        if s in open_shell:
+            continue
+        own = order[a:b]
+        pts = rest[tris[own]].reshape(-1, 3)
+        lo, hi = pts.min(axis=0), pts.max(axis=0)
+        cand = np.flatnonzero(~hid & (tlab != s) & np.all((cen >= lo) & (cen <= hi), axis=1))
+        if not len(cand):
+            continue
+        if verts is None:
+            verts = [Vector(p) for p in rest]
+        tree = BVHTree.FromPolygons(verts, tris[own].tolist(), all_triangles=True)
+        for t in cand.tolist():
+            if _parity_inside(tree, Vector(cen[t]), eps):
+                hid[t] = True
+                plugged.add(frozenset((int(tlab[t]), int(s))))
+    return hid, tlab, plugged
+
+
 # ----------------------------------------------------------------------------- segments, joints
 
 class _Seg:
@@ -356,10 +407,12 @@ def _joint_word(P: _Seg, C: _Seg):
     """The anatomical name of the joint between a parent and a child segment (None: none)."""
     if not (P.arp and C.arp):
         return None
-    if C.role == "tail" or P.role == "tail":
-        return "tail root"
-    if C.role == "ear" or P.role == "ear":
-        return "ear root"
+    for role in ("tail", "ear"):
+        if role in (C.role, P.role):
+            other = P if C.role == role else C
+            # its root is where it meets the body; skin it shares with a thigh it rests on is
+            # '<thigh> and <tail>' (the director is pointed at the right place)
+            return f"{role} root" if other.role in CORE else None
     if P.role == "spine" and C.role == "spine" and C.word != "chest":
         return f"back under the {C.word}"            # (three or more spine bones)
     w = JOINT_WORDS.get((P.role, C.role))
@@ -883,6 +936,21 @@ def _run(arm, objs, frames, deform, rests, sizes):
     at_rest_pairs = crossing_pairs(rest, tris)
     at_rest = np.zeros(len(tris), bool)
     at_rest[at_rest_pairs.ravel()] = True
+    hidden, tshell, plugged = hidden_faces(rest, tris)
+    hidden &= ~at_rest
+    root_word: dict = {}
+
+    def hidden_root(a: int, b: int) -> str:
+        """'hidden root of the tail': named after the smaller shell of the two (the piece),
+        by the segment carrying most of its faces."""
+        sa, sb = int(tshell[a]), int(tshell[b])
+        na, nb = int((tshell == sa).sum()), int((tshell == sb).sum())
+        s = sa if na <= nb else sb
+        if s not in root_word:
+            seg = L.segs[int(np.bincount(L.tri_seg[tshell == s]).argmax())]
+            root_word[s] = f"a part on the {seg.name}" if seg.role in CORE or seg.role is None \
+                else f"the {seg.name}"
+        return f"hidden root of {root_word[s]}"
     nreg = len(L.reg_names)
     # worst per region over the clip
     joints: dict = {}
@@ -981,7 +1049,11 @@ def _run(arm, objs, frames, deform, rests, sizes):
             sa, sb = L.tri_seg[pairs[:, 0]], L.tri_seg[pairs[:, 1]]
             groups: dict = {}
             for (a, b), cz, x, y in zip(pairs.tolist(), pz.tolist(), sa.tolist(), sb.tolist()):
-                if cz >= 0:
+                if hidden[a] or hidden[b] or (x == y and tshell[a] != tshell[b]
+                                              and frozenset((int(tshell[a]), int(tshell[b]))) in plugged):
+                    # (or the piece and the body round its root, both carried by the part's bones)
+                    key = ("hidden", hidden_root(a, b))
+                elif cz >= 0:
                     key = ("contact", L.joints[cz].name)
                 elif x == y:
                     key = ("fold", L.segs[x].name)
@@ -1240,7 +1312,8 @@ def _report(L, frames, n_tris, med_edge, joints, contact, jzone_folds, skin_s, s
         "all_faces": int(total_cross[0]), "all_frame": total_cross[1], "at_rest": int(at_rest.sum()),
         "contact": sum(e["faces"] for e in cr if e["kind"] == "contact"),
         "folds": sum(e["faces"] for e in cr if e["kind"] == "fold"),
-        "touches": sum(e["faces"] for e in cr if e["kind"] == "touch"), "regions": cr}
+        "touches": sum(e["faces"] for e in cr if e["kind"] == "touch"),
+        "hidden_roots": sum(e["faces"] for e in cr if e["kind"] == "hidden"), "regions": cr}
     # ---- weights: unweighted points, and what Unity's limit does
     skinned = [o for o in objs if any(md.type == "ARMATURE" and md.object is arm for md in o.modifiers)]
     w = weights(skinned, deform)                     # (a prop pinned to a bone has no weights)
