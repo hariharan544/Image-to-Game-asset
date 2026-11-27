@@ -492,10 +492,27 @@ def undo_retopo() -> None:
 
 # ----------------------------------------------------------------------------- step 5: UVs
 
-def run_uv(texture_size: int, use_uvpm: bool = True):
+def run_uv(texture_size: int, use_uvpm: bool = True, use_uvgami: bool = True):
     args = {"packer": "uvpackmaster" if use_uvpm else "blender", "method": "angle_seams",
+            "unwrapper": "uvgami" if use_uvgami else "blender",
             "texture_size": int(texture_size), "margin_px": 8, "uvpm_search_time": 3}
-    return _mod("uv").run(args)
+    rep = _mod("uv").run(args)
+    if not hasattr(rep, "__next__"):
+        rep["uvgami"] = uvgami_status()
+        return rep
+
+    def gen():
+        out = yield from rep
+        out["uvgami"] = uvgami_status()
+        return out
+    return gen()
+
+
+def uvgami_status() -> str:
+    try:
+        return _mod("uv").uvgami_status()
+    except Exception as exc:                          # noqa: BLE001
+        return str(exc)
 
 
 CHECKER = "FORGE_UV_CHECKER"

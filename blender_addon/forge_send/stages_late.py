@@ -66,7 +66,7 @@ def _finish(result=None, error=None) -> None:
     snap = _JOB.pop("snapshot", None)
     _JOB.pop("label", None)
     if error or (done and snap is not None and snap != _snapshot(st)):
-        for mod in ("retopo", "bake"):            # no stale progress text for the next job
+        for mod in ("retopo", "bake", "uv"):      # no stale progress text for the next job
             try:
                 S._mod(mod).STATUS["text"] = ""
             except Exception:                     # noqa: BLE001
@@ -670,6 +670,8 @@ def _retopo_rows(rep):
 
 def _uv_rows(rep):
     out = []
+    if rep.get("uvgami"):
+        out.append((WARN, rep["uvgami"][:60]))
     for part, r in rep.get("parts", {}).items():
         if not r.get("has_uv"):
             out.append((BAD, f"{part}: no UVs"))
@@ -679,6 +681,12 @@ def _uv_rows(rep):
         by_uvpm = packer == "uvpackmaster"                # exactly: "uvpackmaster-failed>..." is a fallback
         icon = BAD if over > 0.5 else (WARN if cv > 0.4 or not by_uvpm else GOOD)
         out.append((icon, f"{part}: {r.get('utilization', 0):.0%} used, stretch {cv:.2f}"))
+        seams = r.get("seams")
+        if seams == "uvgami":
+            out.append(("BLANK1", "    seams by UVgami"))
+        elif seams:
+            out.append((WARN if r.get("seams_note") else "BLANK1",
+                        "    seams by Blender" + (f" ({r['seams_note']})" if r.get("seams_note") else "")))
         if by_uvpm:
             out.append(("BLANK1", "    packed by UVPackmaster"))
         elif "failed" in packer:
@@ -736,7 +744,7 @@ def draw_late(layout, context):
         box.label(text=f"Working: {busy}...", icon="SORTTIME")
         secs = int(_t.time() - _JOB.get("started", _t.time()))
         now = ""
-        for mod in ("retopo", "bake"):                    # whichever step is running reports here
+        for mod in ("retopo", "bake", "uv"):              # whichever step is running reports here
             try:
                 now = now or S._mod(mod).STATUS.get("text", "")
             except Exception:                             # noqa: BLE001
