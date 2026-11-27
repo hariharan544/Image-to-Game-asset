@@ -760,3 +760,14 @@ def test_stop_from_the_panel_during_compare_keeps_what_the_director_hid_hidden(u
         assert not lows[1].hide_get() and original.hide_get()
     finally:
         F.unregister()
+        # this test's own extras must not reach the next test file (it counts the scene's objects)
+        for name in ("Body_original",):
+            o = bpy.data.objects.get(name)
+            if o is not None:
+                me = o.data
+                bpy.data.objects.remove(o)
+                if me is not None and me.users == 0:
+                    bpy.data.meshes.remove(me)
+        c = bpy.data.collections.get(G.PARTS_COLLECTION)
+        if c is not None and not c.objects:
+            bpy.data.collections.remove(c)
