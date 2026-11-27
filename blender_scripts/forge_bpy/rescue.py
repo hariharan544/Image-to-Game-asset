@@ -971,7 +971,7 @@ def attach(target, piece_obj) -> None:
 
 OPEN_LAYER = "forge_open"
 JOINT_ROOM = 1                 # rings of faces each side gives up so the bridge has room
-JOINT_CUTS = 1                 # rings put back across the bridge
+JOINT_CUTS = 1                 # rings put back across the bridge (tried first; then none)
 JOINT_RELAX = (4, 8, 16)       # relax + lay-on-the-original rounds for the joint band (checked after each)
 MIN_JOINT_ANGLE = 5.0          # degrees: a smaller corner is a needle that shades and skins badly
 
@@ -1163,6 +1163,60 @@ def _joint_faults(bm, band: set, t_full, before: int):
     return None
 
 
+def _bridge(bm, t_full, before: int, cuts: int):
+    """Bridge the two marked cut loops of `bm` (as many edges on both: a ring of quads), put
+    `cuts` rings back across the bridge (the room given up for it: the joint keeps about the
+    body's quad size and follows the fillet), relax the band and lay it on the ORIGINAL
+    surface, which has the real fillet - relaxing further only while the one fault left is a
+    needle corner. Returns why the joint is not acceptable, or None."""
+    lay = bm.edges.layers.int.get(OPEN_LAYER)
+    grown = _even_loops(bm, lay)
+    rim = [e for e in bm.edges if e[lay]]
+    try:
+        res = bmesh.ops.bridge_loops(bm, edges=rim)
+    except (RuntimeError, ValueError, TypeError):
+        return "bridge"
+    joint = [f for f in res.get("faces", []) if f.is_valid]
+    if not joint:
+        return "bridge"
+    js = set(joint)
+    cross = list({e for f in joint for e in f.edges if not e[lay] and all(g in js for g in e.link_faces)})
+    if cross and cuts:
+        inner = set(bmesh.ops.subdivide_edges(bm, edges=cross, cuts=cuts, use_grid_fill=True)["geom_inner"])
+        joint = [f for f in bm.faces if f in js or any(v in inner for v in f.verts)]
+    band = {v for f in joint for v in f.verts}
+    for _ in range(2):
+        band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
+    done, shell, why = 0, None, None
+    for total in JOINT_RELAX:
+        for _ in range(total - done):
+            bmesh.ops.smooth_vert(bm, verts=list(band), factor=0.5, use_axis_x=True, use_axis_y=True,
+                                  use_axis_z=True)
+            for v in band:
+                hit = t_full.find_nearest(v.co)
+                if hit[0] is not None:
+                    v.co = hit[0]
+        done = total
+        if shell is None:
+            ng = [f for f in grown if f.is_valid and len(f.verts) > 4]
+            if ng:
+                res = bmesh.ops.triangulate(bm, faces=ng, quad_method="BEAUTY", ngon_method="BEAUTY")
+                joint += [f for f in res.get("faces", []) if f.is_valid]
+            shell, stack = set(joint), list(joint)
+            while stack:
+                f = stack.pop()
+                for e in f.edges:
+                    for g in e.link_faces:
+                        if g not in shell:
+                            shell.add(g)
+                            stack.append(g)
+        bmesh.ops.recalc_face_normals(bm, faces=list(shell))
+        why = _joint_faults(bm, band, t_full, before)
+        if why != "thin faces":
+            break
+    return why
+
+
 def _weld(target, piece_obj, src_me, cap_me, full_me):
     """The weld itself, on bmesh copies: (reason or None, [body loop, part loop]). The target
     mesh is written only when the joint passed every check."""
@@ -1216,61 +1270,20 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
         rim = [e for e in bb.edges if e[lay]]        # ONLY the two cut loops (never an old hole)
         if sorted((sum(1 for e in rim if e[lay] == 2), sum(1 for e in rim if e[lay] == 1))) != sorted(loops):
             return "openings", loops
-        grown = _even_loops(bb, lay)               # as many edges on both: a ring of quads
-        rim = [e for e in bb.edges if e[lay]]
-        try:
-            res = bmesh.ops.bridge_loops(bb, edges=rim)
-        except (RuntimeError, ValueError, TypeError):
-            return "bridge", loops
-        joint = [f for f in res.get("faces", []) if f.is_valid]
-        if not joint:
-            return "bridge", loops
-        # the room given up for the bridge comes back as one ring across it: the joint keeps
-        # about the body's quad size and follows the fillet
-        js = set(joint)
-        cross = list({e for f in joint for e in f.edges if not e[lay] and all(g in js for g in e.link_faces)})
-        if cross:
-            inner = set(bmesh.ops.subdivide_edges(bb, edges=cross, cuts=JOINT_CUTS, use_grid_fill=True)["geom_inner"])
-            joint = [f for f in bb.faces if f in js or any(v in inner for v in f.verts)]
-        band = {v for f in joint for v in f.verts}
-        for _ in range(2):
-            band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
-        # relax the band and lay it on the ORIGINAL surface, which has the real fillet; relax
-        # further only while the one fault left is needle corners
         t_full = _tree_of(full_me)
-        done, shell, why = 0, None, None
-        for total in JOINT_RELAX:
-            for _ in range(total - done):
-                bmesh.ops.smooth_vert(bb, verts=list(band), factor=0.5, use_axis_x=True, use_axis_y=True,
-                                      use_axis_z=True)
-                for v in band:
-                    hit = t_full.find_nearest(v.co)
-                    if hit[0] is not None:
-                        v.co = hit[0]
-            done = total
-            if shell is None:
-                ng = [f for f in grown if f.is_valid and len(f.verts) > 4]
-                if ng:
-                    res = bmesh.ops.triangulate(bb, faces=ng, quad_method="BEAUTY", ngon_method="BEAUTY")
-                    joint += [f for f in res.get("faces", []) if f.is_valid]
-                shell, stack = set(joint), list(joint)
-                while stack:
-                    f = stack.pop()
-                    for e in f.edges:
-                        for g in e.link_faces:
-                            if g not in shell:
-                                shell.add(g)
-                                stack.append(g)
-            bmesh.ops.recalc_face_normals(bb, faces=list(shell))
-            why = _joint_faults(bb, band, t_full, before)
-            if why != "thin faces":
-                break
-        if why:
-            return why, loops
-        bb.edges.layers.int.remove(lay)
-        bb.to_mesh(target.data)
-        target.data.update()
-        return None, loops
+        why = None
+        for cuts in sorted({JOINT_CUTS, 0}, reverse=True):     # the finer joint first
+            work = bb.copy()
+            try:
+                why = _bridge(work, t_full, before, cuts)
+                if why is None:
+                    work.edges.layers.int.remove(work.edges.layers.int.get(OPEN_LAYER))
+                    work.to_mesh(target.data)
+                    target.data.update()
+                    return None, loops
+            finally:
+                work.free()
+        return why, loops
     finally:
         bb.free()
         bp.free()
