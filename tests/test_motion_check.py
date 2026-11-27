@@ -597,7 +597,7 @@ def test_skin_squashed_where_nothing_bends_is_graded():
     assert rep["grade"] != "pass"
     _fake_poses(rep, "rest")
     text = " ".join(t.strip() for _i, t in _late()._anim_rows(rep))
-    assert "skin squashed to" in text and "Squashed skin where nothing bends" in text, text
+    assert "skin squashed to" in text and "Squashed skin away from a bend's crease" in text, text
     # bending the elbow 120 degrees squeezes the crease: that is the bend's, not graded as squash
     arm, tube = _elbows(120.0, radius=0.15)
     rep = _run(arm, [tube], list(range(1, 13)))

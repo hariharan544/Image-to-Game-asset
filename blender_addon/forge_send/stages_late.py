@@ -884,8 +884,8 @@ ANIM_ADVICE = {
     "stretch": "Stretched skin: smooth the weights there over a wider band.",
     "pose": "The pose asks for that stretch: on this body no weights can spread the turn "
             "wider. Turn that part less in the animation.",
-    "squash": "Squashed skin where nothing bends: a bone there shrinks, or the weights pull "
-              "the points together - smooth them.",
+    "squash": "Squashed skin away from a bend's crease: a bone there shrinks, or the weights "
+              "pull the points together - smooth them.",
     "folds": "Faces turning inside out or folding through: smooth the weights there.",
     "joint": "Thinner than game skinning makes it: smooth the weights across that joint.",
     "inner": "The inside of a bend caves in: the weights blend over too long a stretch there. "
