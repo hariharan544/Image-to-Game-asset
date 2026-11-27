@@ -96,6 +96,7 @@ def _pixels(path, size):
 def _texel_points(low, size):
     """Covered texels of the low's UVs: (ys, xs, 3D point on the low)."""
     import numpy as np
+
     from forge_bpy import bake
     tri, bary, _isl = bake._raster(low, size)
     tv, _tl, co, _vn, _uv = bake._low_arrays(low)
@@ -123,8 +124,9 @@ def test_cage_encloses_coarse_parts():
     every ray OUTSIDE the original, wherever Blender interpolates it."""
     import bmesh
     import numpy as np
-    from forge_bpy import bake, density
     from mathutils import Matrix, Vector
+
+    from forge_bpy import bake, density
     bpy.ops.wm.read_homefile(use_empty=True)
     bm = bmesh.new()
     bmesh.ops.create_uvsphere(bm, u_segments=64, v_segments=40, radius=0.17)
@@ -186,6 +188,7 @@ def test_fit_respects_flipped_normals(tmp_path, flip):
     have such pieces): an open piece has no inside/outside to trust, so it counts both ways and
     the cage still stops between it and the neighbour."""
     import numpy as np
+
     from forge_bpy import bake
     _ear_scene(flip, 0.008)
     bake.clear_fit_cache()
@@ -211,9 +214,10 @@ def test_body_scale_crevice(tmp_path):
     OTHER finger's colour, and no normal may come out flipped."""
     import bmesh
     import numpy as np
-    from forge_bpy import bake
     from mathutils import Matrix, Vector
     from mathutils.bvhtree import BVHTree
+
+    from forge_bpy import bake
     bpy.ops.wm.read_homefile(use_empty=True)
     r, gap = 0.008, 0.003
     xa = r + gap / 2
@@ -313,8 +317,9 @@ def test_validation_marks_backface_hits(tmp_path, monkeypatch):
     normal). The check marks them and fills them from the good half."""
     import bmesh
     import numpy as np
-    from forge_bpy import bake
     from mathutils import Matrix
+
+    from forge_bpy import bake
     bpy.ops.wm.read_homefile(use_empty=True)
     low = _plane("Slab_low", 0.0, cuts=8)
     _unwrap(low)
@@ -348,8 +353,9 @@ def test_despeckle_is_off_by_default_detail_survives(tmp_path):
     two-colour border across two UV islands stay exactly as baked."""
     import bmesh
     import numpy as np
-    from forge_bpy import bake
     from mathutils import Matrix
+
+    from forge_bpy import bake
     bpy.ops.wm.read_homefile(use_empty=True)
     bm = bmesh.new()
     for x in (-0.51, 0.51):                       # two pieces of new mesh: two UV islands
@@ -386,8 +392,9 @@ def test_colour_never_comes_from_buried_pieces(tmp_path, monkeypatch):
     the original without its buried pieces and the bad rays are marked and filled: no green."""
     import bmesh
     import numpy as np
-    from forge_bpy import bake
     from mathutils import Matrix
+
+    from forge_bpy import bake
     bpy.ops.wm.read_homefile(use_empty=True)
     bm = bmesh.new()
     bmesh.ops.create_uvsphere(bm, u_segments=48, v_segments=24, radius=0.2)

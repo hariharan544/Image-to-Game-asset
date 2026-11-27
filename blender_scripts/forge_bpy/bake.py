@@ -248,9 +248,10 @@ def _coords(me) -> np.ndarray:
 def _surface_cached(target, co=None) -> _Surface:
     """_surface_of, remembered for the last mesh (by its coordinates): the fit and the ray check
     of a pass meet the same surface, and a multi-million-face tree takes a while to build."""
+    evaluated = isinstance(target, bpy.types.Object) and len(target.modifiers) > 0
     me = target.data if isinstance(target, bpy.types.Object) else target
     co = _coords(me) if co is None else co
-    key = _hash(co, np.array([len(me.polygons), len(me.loops), isinstance(target, bpy.types.Object)]))
+    key = _hash(co, np.array([len(me.polygons), len(me.loops), evaluated]))
     surf = _SURF.get(key)
     if surf is None:
         _SURF.clear()
