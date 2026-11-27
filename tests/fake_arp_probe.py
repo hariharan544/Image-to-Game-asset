@@ -8,11 +8,17 @@ registers leaks into other tests. Behaviour follows ARP 3.77.33 where the probe 
     'spine_count'; rig_preset "bird" kills Blender (the crash the probe must survive)
   - show_limb_params (EXEC) writes the options onto the limb's reference bones; a tail moved
     to another side takes that side's next free name (tail_00_ref_dupli_001.x -> tail_00_ref.l);
-    load_limb_settings(self) reads them back from the selected reference bone
+    on an arm it also stores the finger IK colour on hand_ref as an ID-property array, as ARP's
+    set_fingers does (the human preset already has one, like ARP's dog preset has toe colours);
+    load_limb_settings(self) reads them back from the selected reference bone, so the colour
+    arrives as an edit-bone ID-property array that dies when Edit Mode ends
   - add_limb names a second limb of a kind <bone>_ref_dupli_001<side>
-  - match_to_rig adds deform bones (name without '_ref'), c_root_master.x, IK poles
-  - bind_to_rig prints "set real chin pos" when rig.data has 'arp_chin_pos_vec'
+  - match_to_rig adds deform bones (name without '_ref'), c_root_master.x, and IK poles named
+    'c_leg_pole' / 'c_arms_pole' + the limb's side (c_arms_pole_dupli_001.l for a second arm)
+  - bind_to_rig prints "set real chin pos" when rig.data has 'arp_chin_pos_vec'; without it, it
+    reports a heat-weighting failure and turns scene.arp_bind_scale_fix on, as ARP does
   - arp_export_fbx_panel writes the selection with Blender's FBX exporter
+  - id.set_humanoid_rig / id.set_mped_rig exist (ARP registers them under "id.")
 """
 
 from __future__ import annotations
@@ -131,6 +137,8 @@ class FAKE_OT_append_arp(bpy.types.Operator):
         _new_bones(ad, bones)
         if "root_ref.x" in ad.edit_bones and self.rig_preset == "human":
             ad.edit_bones["root_ref.x"]["spine_count"] = 2
+            for s in "lr":
+                ad.edit_bones[f"hand_ref.{s}"]["fingers_ik_color"] = [0.8, 0.432, 0.0]
         bpy.ops.object.mode_set(mode="OBJECT")
         o["arp_rig_type"] = self.rig_preset
         print(f"appended {self.rig_preset}")
@@ -176,6 +184,7 @@ class FAKE_OT_show_limb_params(bpy.types.Operator):
         if self.limb_type == "arm":
             for k in ("finger_thumb", "finger_index", "finger_middle", "finger_ring", "finger_pinky", "arm_wings"):
                 b[k] = getattr(self, k)
+            b["fingers_ik_color"] = self.fingers_ik_color      # an ID-property array, like set_fingers
         elif self.limb_type == "neck":
             b["neck_count"] = self.neck_count
         elif self.limb_type == "head":
@@ -246,9 +255,14 @@ class FAKE_OT_match_to_rig(bpy.types.Operator):
             out[n] = (tuple(b.head), tuple(b.tail), p)
             if b.name.startswith("hand_ref") and b.get("arm_wings"):
                 out["c_arm_feather_01" + _side(b.name)] = (tuple(b.head), tuple(b.tail), n)
-        for s, x in (("l", 1), ("r", -1)):
-            out[f"c_leg_pole.{s}"] = ((0.1 * x, -0.5, 0.5), (0.1 * x, -0.6, 0.5), "c_root_master.x")
-            out[f"c_arms_pole.{s}"] = ((0.45 * x, 0.5, 1.4), (0.45 * x, 0.6, 1.4), "c_root_master.x")
+        legs = [_side(b.name) for b in refs if b.name.startswith("thigh_ref")]
+        arms = [_side(b.name) for b in refs if b.name.startswith("shoulder_ref")]
+        for s in legs:
+            x = -1 if s.endswith(".r") else 1
+            out["c_leg_pole" + s] = ((0.1 * x, -0.5, 0.5), (0.1 * x, -0.6, 0.5), "c_root_master.x")
+        for s in arms:
+            x = -1 if s.endswith(".r") else 1
+            out["c_arms_pole" + s] = ((0.45 * x, 0.5, 1.4), (0.45 * x, 0.6, 1.4), "c_root_master.x")
         for n, (h, t, p) in out.items():
             b = eb.get(n) or eb.new(n)
             b.head, b.tail = Vector(h), Vector(t)
@@ -257,12 +271,13 @@ class FAKE_OT_match_to_rig(bpy.types.Operator):
             if p and p in eb:
                 eb[n].parent = eb[p]
         bpy.ops.object.mode_set(mode="POSE")
-        for s in "lr":
-            pb = rig.pose.bones.get(f"leg.{s}")
-            if pb is not None:
-                c = pb.constraints.new("IK")
-                c.target, c.subtarget = rig, f"foot.{s}"
-                c.pole_target, c.pole_subtarget = rig, f"c_leg_pole.{s}"
+        for owner, target, pole, sides in (("leg", "foot", "c_leg_pole", legs), ("forearm", "hand", "c_arms_pole", arms)):
+            for s in sides:
+                pb = rig.pose.bones.get(owner + s) or rig.pose.bones.get("arm" + s)
+                if pb is not None:
+                    c = pb.constraints.new("IK")
+                    c.target, c.subtarget = rig, target + s
+                    c.pole_target, c.pole_subtarget = rig, pole + s
         bpy.ops.object.mode_set(mode="OBJECT")
         return {"FINISHED"}
 
@@ -277,6 +292,9 @@ class FAKE_OT_bind_to_rig(bpy.types.Operator):
         meshes = [o for o in context.selected_objects if o.type == "MESH"]
         chin = "arp_chin_pos_vec" in rig.data.keys()
         print("  set real chin pos" if chin else "  set approximate chin pos")
+        if not chin and sc.arp_bind_engine == "HEAT_MAP" and not sc.arp_bind_scale_fix:
+            print("Warning: Bone Heat Weighting: failed to find solution for one or more bones")
+            sc.arp_bind_scale_fix = True                    # ARP leaves it on and asks to bind again
         bpy.ops.object.parent_set(type="ARMATURE_AUTO")
         for o in meshes:
             m = next(m for m in o.modifiers if m.type == "ARMATURE" and m.object == rig)
@@ -302,8 +320,24 @@ class FAKE_OT_export_fbx_panel(bpy.types.Operator):
         return {"FINISHED"}
 
 
+class FAKE_OT_set_humanoid_rig(bpy.types.Operator):
+    bl_idname = "id.set_humanoid_rig"
+    bl_label = "set_humanoid_rig"
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+
+class FAKE_OT_set_mped_rig(bpy.types.Operator):
+    bl_idname = "id.set_mped_rig"
+    bl_label = "set_mped_rig"
+
+    def execute(self, context):
+        return {"FINISHED"}
+
+
 CLASSES = (FAKE_OT_append_arp, FAKE_OT_show_limb_params, FAKE_OT_add_limb, FAKE_OT_match_to_rig,
-           FAKE_OT_bind_to_rig, FAKE_OT_export_fbx_panel)
+           FAKE_OT_bind_to_rig, FAKE_OT_export_fbx_panel, FAKE_OT_set_humanoid_rig, FAKE_OT_set_mped_rig)
 ENUMS = {"arp_bind_engine": ("HEAT_MAP", "PSEUDO_VOXELS", "VHDS"),
          "arp_engine_type": ("UNITY", "UNREAL", "GODOT"),
          "arp_export_rig_type": ("HUMANOID", "UNIVERSAL")}

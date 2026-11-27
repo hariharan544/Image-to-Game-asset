@@ -2,9 +2,11 @@
 
 The new Step 8 (rig brief card + point-and-click joints) leans on Auto-Rig Pro facts that were
 read from an older ARP (3.77.33). This command checks them in the director's Blender and ARP and
-writes them to docs/research/arp_3_79_probe.json, which the later work packages read instead of
-guessing. It changes no Forge behaviour: every part runs in a fresh, throwaway Blender scene and
-nothing is saved into any .blend file or into Blender's preferences.
+writes them to jobs/_setup/arp_probe/arp_3_79_probe.json (outside git, so the director's next
+`git pull` is never blocked by it). The director sends that file back and it is committed as
+docs/research/arp_3_79_probe.json, which the later work packages read instead of guessing. It
+changes no Forge behaviour: every part runs in a fresh, throwaway Blender scene and nothing is
+saved into any .blend file or into Blender's preferences.
 
 Each part runs in its own Blender process, so one crash (ARP's bird preset is known to crash
 some Blender 5 builds) does not lose the rest. A part writes what it has found after every
@@ -16,6 +18,7 @@ The Blender side is `blender_scripts/forge_bpy/addon_trial.py` (`run_rig_probe`)
 from __future__ import annotations
 
 import json
+import os
 import re
 import time
 from datetime import datetime, timezone
@@ -25,14 +28,16 @@ from typing import Callable, Optional
 from .blender import find_blender, run_stage
 
 ROOT = Path(__file__).resolve().parent.parent
-DEFAULT_OUT = ROOT / "docs" / "research" / "arp_3_79_probe.json"
+RESULT_NAME = "arp_3_79_probe.json"         # written to <jobs>/_setup/arp_probe/ (gitignored)
+COMMITTED = ROOT / "docs" / "research" / RESULT_NAME    # where it goes once the director sent it
 SCHEMA_ID = "forge.arp_probe/1"
 
 # (key, words for the director, needs a window, timeout in seconds)
 PARTS = (
     ("basics", "Auto-Rig Pro version, options, and the human, dog, horse and free rigs", True, 600),
     ("bird", "The bird rig, in its own window in case it crashes Blender", True, 300),
-    ("wings", "A second pair of arms, then wings on an extra arm (in case it crashes Blender)", True, 900),
+    ("wings", "Wings on an extra arm, in its own window in case it crashes Blender", True, 600),
+    ("multi_arm", "A second pair of arms (skin and export), and the dog rig's knee and elbow controls", True, 900),
     ("limbs", "Extra tails, ears, arms and chains", True, 900),
     ("build", "A test character: build, skin twice, export four ways", True, 1800),
     ("headless", "Auto-Rig Pro without a window", False, 300),
@@ -51,7 +56,7 @@ SECTIONS = {
     "spine_count": ("basics", ("human",)),
     "scale_fix": ("basics", ("prop", "exists", "default")),
     "humanoid_check": ("basics", ("reachable", "results")),
-    "multi_arm_export": ("wings", ("humanoid_check", "exported", "dupli_bones_exported")),
+    "multi_arm_export": ("multi_arm", ("humanoid_check", "exported", "dupli_bones_exported", "ik_poles")),
     "wings": ("wings", ("arm_wings_set", "match_ok", "feather_bones")),
     "load_limb_settings": ("limbs", ("module", "keys_in_source", "per_limb")),
     "ref_bone_keys": ("limbs", ("bones", "keys_seen")),
@@ -72,6 +77,11 @@ NESTED = (
     ("load_limb_settings", "per_limb", ("ref", "limb_type", "values")),
     ("humanoid_check", "results", ("humanoid",)),
     ("socket_export", "variants", ("exported", "socket")),
+    ("ik_poles", "rigs", ("pole_bones", "dupli_poles", "ik_constraints")),
+)
+# one named entry inside a section, checked when it is there: (section, field, keys when "ok")
+SUBS = (
+    ("add_limb", "after_match", ("deform_count", "ik_poles")),
 )
 STATUSES = {"ok", "error", "skipped", "crashed", "not_run", "timeout", "partial"}
 PART_STATUSES = {"ok", "error", "crashed", "timeout", "skipped", "not_run"}
@@ -215,6 +225,10 @@ def validate(rep: dict, require_arp: bool = False) -> list[str]:
             continue
         for case, e in s[field].items():
             _check_entry(f"{sec}.{field}.{case}", e, keys, p)
+    for sec, field, keys in SUBS:
+        s = rep.get(sec) or {}
+        if s.get("status") in ("ok", "partial") and field in s:
+            _check_entry(f"{sec}.{field}", s[field], keys, p)
     if not isinstance(rep.get("errors", []), list):
         p.append("errors is not a list")
     return p
@@ -224,12 +238,12 @@ def validate(rep: dict, require_arp: bool = False) -> list[str]:
 
 def dumps(o, ind: int = 0, width: int = 100) -> str:
     """JSON with one key per line, but short lists and dicts kept on one line (vectors, names)."""
-    flat = json.dumps(o, ensure_ascii=False, default=str)
+    flat = json.dumps(o, ensure_ascii=True, default=str)       # ASCII: any odd character is escaped
     if not isinstance(o, (dict, list)) or len(flat) + ind <= width or not o:
         return flat
     pad = " " * (ind + 1)
     if isinstance(o, dict):
-        body = ",\n".join(f"{pad}{json.dumps(str(k), ensure_ascii=False)}: {dumps(v, ind + 1, width)}"
+        body = ",\n".join(f"{pad}{json.dumps(str(k), ensure_ascii=True)}: {dumps(v, ind + 1, width)}"
                           for k, v in o.items())
         return "{\n" + body + "\n" + " " * ind + "}"
     return "[\n" + ",\n".join(pad + dumps(v, ind + 1, width) for v in o) + "\n" + " " * ind + "]"
@@ -269,15 +283,57 @@ def summary_lines(rep: dict) -> list[str]:
 
 # ----------------------------------------------------------------------------- command
 
+def _safe_say(say: Callable[[str], None]) -> Callable[[str], None]:
+    """A console that cannot print a character must not end the command (Windows code pages)."""
+    def s(line: str) -> None:
+        try:
+            say(line)
+        except UnicodeError:
+            say(line.encode("ascii", "backslashreplace").decode("ascii"))
+    return s
+
+
+def _report_text(merged: dict, parts: dict) -> tuple[str, Optional[str]]:
+    """The result file's text, and what went wrong making it (None when nothing did). Never
+    raises: when the full report cannot be put together, a plainer one still keeps the data."""
+    roots = [(ROOT, "<forge>"), (Path.home(), "~")]
+    try:
+        return _scrub(dumps(assemble(merged, parts)), roots), None
+    except Exception as exc:                    # noqa: BLE001
+        problem = f"{type(exc).__name__}: {exc}"[:300]
+    try:
+        raw = json.dumps({"schema": SCHEMA_ID, "write_error": problem, "parts": parts, "raw": merged},
+                         ensure_ascii=True, default=repr, skipkeys=True, indent=1)
+        return _scrub(raw, roots), problem
+    except Exception as exc:                    # noqa: BLE001
+        return json.dumps({"schema": SCHEMA_ID, "write_error": problem, "second_error": str(exc)[:300],
+                           "parts": {k: str(v)[:2000] for k, v in parts.items()}}, ensure_ascii=True), problem
+
+
+def _write(targets: list, text: str, say: Callable[[str], None]) -> Optional[Path]:
+    """Write the file (through a temporary file, so it is never left empty). Returns where."""
+    for target in dict.fromkeys(targets):
+        tmp = target.with_name(target.name + ".tmp")
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            tmp.write_text(text + "\n", encoding="utf-8", errors="backslashreplace")
+            os.replace(tmp, target)
+            return target
+        except Exception as exc:                # noqa: BLE001
+            say(f"[!] Could not write {target}: {exc}")
+    return None
+
+
 def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = None,
         say: Callable[[str], None] = print, runner: Callable = run_stage) -> int:
     t_start = time.time()
+    say = _safe_say(say)
     blender = blender or find_blender()
     if not blender:
         say("[X] Blender was not found. Run `forge setup-blender` first, or add --blender \"C:\\path\\to\\blender.exe\".")
         return 1
-    out = Path(out_path) if out_path else DEFAULT_OUT
     work = (Path(jobs_dir) / "_setup" / "arp_probe").resolve()     # Blender must never see relative paths
+    out = Path(out_path) if out_path else work / RESULT_NAME
     logs, exports = work / "logs", work / "exports"
     exports.mkdir(parents=True, exist_ok=True)
     logs.mkdir(parents=True, exist_ok=True)
@@ -313,20 +369,25 @@ def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = 
                 _set_path(rep, rep["_current"], {
                     "status": "crashed" if status == "crashed" else "timeout" if status == "timeout" else "error",
                     "reason": f"Blender stopped while doing this ({first})", "error": first})
-        rep = dict(rep or {})
-        rep.pop("_current", None)
-        rep.pop("part", None)
-        head_arp, head_blender = rep.pop("arp", None), rep.pop("blender", None)
-        if isinstance(head_arp, dict):          # the version facts come from the first part that has them
-            st["arp_loaded"] = head_arp.get("loaded")
-            if "arp" not in merged or key == "basics":
-                merged["arp"] = head_arp
-        if isinstance(head_blender, dict) and ("blender" not in merged or key == "basics"):
-            merged["blender"] = head_blender
+        head_arp = None
+        try:
+            rep = dict(rep or {})
+            rep.pop("_current", None)
+            rep.pop("part", None)
+            head_arp, head_blender = rep.pop("arp", None), rep.pop("blender", None)
+            if isinstance(head_arp, dict):      # the version facts come from the first part that has them
+                st["arp_loaded"] = head_arp.get("loaded")
+                if "arp" not in merged or key == "basics":
+                    merged["arp"] = head_arp
+            if isinstance(head_blender, dict) and ("blender" not in merged or key == "basics"):
+                merged["blender"] = head_blender
+            _deep_merge(merged, rep)
+        except Exception as exc:                # noqa: BLE001 - what this part found could not be merged
+            st = {**st, "status": "error" if st["status"] == "ok" else st["status"],
+                  "message": st.get("message") or f"its result could not be read: {type(exc).__name__}: {exc}"[:300]}
         st["seconds"] = round(time.time() - t0, 1)
         st["log"] = f"_setup/arp_probe/logs/{key}.log (in the jobs folder)"
         parts[key] = st
-        _deep_merge(merged, rep)
         if st["status"] == "ok":
             say(f"        ok ({st['seconds']:.0f} s)")
         else:
@@ -342,22 +403,31 @@ def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = 
             say("    In Blender: Edit > Preferences > Add-ons, search for Auto-Rig Pro and tick it,")
             say("    then run this command again. (The file below is still written.)")
 
-    report = assemble(merged, parts)
-    text = dumps(report)
-    text = _scrub(text, [(ROOT, "<forge>"), (Path.home(), "~")])
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text + "\n", encoding="utf-8")
-    report = json.loads(text)
-    problems = validate(report)
+    # from here on nothing may stop the file being written or the plain-words summary being shown
+    text, write_error = _report_text(merged, parts)
+    written = _write([out, work / RESULT_NAME], text, say)
+    try:
+        report = json.loads(text)
+        problems = validate(report)
+        lines = summary_lines(report)
+    except Exception as exc:                    # noqa: BLE001
+        problems, lines = [f"the summary could not be read back ({type(exc).__name__})"], []
     say("")
-    for line in summary_lines(report):
+    for line in lines:
         say("   " + line)
+    if write_error:
+        say(f"[!] Part of the result could not be laid out normally ({write_error[:160]}).")
+        say("    The file still has everything that was found.")
     if problems:
         say(f"[!] The result file is missing {len(problems)} expected entries (first: {problems[0]}).")
     minutes, seconds = divmod(int(time.time() - t_start), 60)
     say("")
+    if written is None:
+        say(f"[X] Finished in {minutes} min {seconds} s, but the result file could not be saved (see above).")
+        say("    Please copy every line of this window into your message instead.")
+        return 1
     say(f"{'[X]' if arp_missing else '[OK]'} Finished in {minutes} min {seconds} s. The result file is:")
-    say(f"     {out}")
+    say(f"     {written}")
     say("Please send that file back: attach it, or open it in Notepad, select all, copy and paste it.")
     say("If any line above starts with [X] or [!], copy those lines into your message too.")
     say("Nothing in your own Blender files or settings was changed.")

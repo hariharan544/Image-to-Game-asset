@@ -1,5 +1,6 @@
-"""The Auto-Rig Pro probe file (docs/research/arp_3_79_probe.json) that Step 8's later work
-packages read instead of guessing from the 3.77.33 source mirror.
+"""The Auto-Rig Pro probe file that Step 8's later work packages read instead of guessing from
+the 3.77.33 source mirror. `forge arp-probe` writes it to jobs/_setup/arp_probe/ on the
+director's PC (outside git); once sent back it is committed as docs/research/arp_3_79_probe.json.
 
 - The committed file, once the director has sent it back, has every key they read
   (skipped while the file is absent).
@@ -15,7 +16,7 @@ import pytest
 from forge import arp_probe
 from forge.blender import BlenderError
 
-PROBE_FILE = Path(__file__).resolve().parent.parent / "docs" / "research" / "arp_3_79_probe.json"
+PROBE_FILE = arp_probe.COMMITTED       # docs/research/arp_3_79_probe.json
 
 
 def test_committed_probe_file_has_every_key_later_work_reads():
@@ -85,7 +86,7 @@ def test_a_crash_or_a_timeout_is_recorded_and_the_rest_kept(tmp_path):
         if part == "headless":                  # ARP does not load without a window: a finding
             return {"part": part, "arp": {"loaded": False}, "blender": {"version": "5.3.0"},
                     "headless": {"status": "ok", "arp_loaded": False, "append_ok": False, "match_ok": None}}
-        if part == "wings":
+        if part in ("wings", "multi_arm"):
             return {"part": part, "arp": {"loaded": False}}
         if part == "build":
             raise OSError("Blender could not start")       # not even a Blender error: still recorded
@@ -110,9 +111,77 @@ def test_a_crash_or_a_timeout_is_recorded_and_the_rest_kept(tmp_path):
     assert rep["arp"] == {"loaded": True, "version": "3.79.17"}
     assert rep["headless"]["append_ok"] is False and rep["parts"]["headless"]["arp_loaded"] is False
     assert rep["wings"] == {"status": "skipped", "reason": "Auto-Rig Pro did not load in the 'wings' part's Blender"}
-    assert rep["multi_arm_export"]["status"] == "skipped"
+    assert rep["multi_arm_export"] == {"status": "skipped",
+                                       "reason": "Auto-Rig Pro did not load in the 'multi_arm' part's Blender"}
     assert any("Blender closed by itself" in s for s in said)
     assert str(out) in said[-4] and "send that file back" in said[-3]
+
+
+def _basics_only(merged_extra: dict):
+    """A runner whose basics part returns `merged_extra` on top of a normal head; the rest is empty."""
+    def runner(stage, args, log_path, **kw):
+        if args["part"] != "basics":
+            return {"part": args["part"], "_current": None}
+        return {"part": "basics", "_current": None, "blender": {"version": "5.3.0"},
+                "arp": {"loaded": True, "version": "3.79.17"}, **merged_extra}
+    return runner
+
+
+def test_result_goes_to_the_jobs_folder_not_into_git(tmp_path, monkeypatch):
+    """Inside the git checkout an untracked result file would block the director's next
+    `git pull` once the file is committed; the jobs folder is gitignored."""
+    monkeypatch.chdir(tmp_path)
+    said: list = []
+    assert arp_probe.run(["blender"], "jobs", None, say=said.append, runner=_basics_only({})) == 0
+    out = (tmp_path / "jobs" / "_setup" / "arp_probe" / "arp_3_79_probe.json").resolve()
+    assert json.loads(out.read_text(encoding="utf-8"))["schema"] == arp_probe.SCHEMA_ID
+    assert any(str(out) in s for s in said)
+    assert not list(tmp_path.glob("**/*.tmp"))
+    gitignore = (Path(arp_probe.ROOT) / ".gitignore").read_text()
+    assert "jobs/" in gitignore.splitlines()
+
+
+def test_an_odd_character_never_costs_the_file_or_the_summary(tmp_path):
+    """A lone surrogate (what Blender gives for bytes that are not UTF-8) once ended the command
+    with a traceback and left a 0-byte file."""
+    said: list = []
+    odd = "bone_\udcff.l"
+    runner = _basics_only({"presets": {"human": {"status": "ok", "armature": odd, "ref_bones": {odd: {}},
+                                                 "ref_count": 1}},
+                           "errors": [f"presets.dog: KeyError: {odd}"]})
+    out = tmp_path / "probe.json"
+    assert arp_probe.run(["blender"], str(tmp_path / "jobs"), out, say=said.append, runner=runner) == 0
+    rep = json.loads(out.read_text(encoding="utf-8"))
+    assert rep["presets"]["human"]["armature"] == odd and odd in rep["presets"]["human"]["ref_bones"]
+    assert any(s.strip().startswith("Auto-Rig Pro 3.79.17") for s in said)
+    assert str(out) in said[-4]
+
+
+def test_the_file_is_written_even_when_the_report_cannot_be_laid_out(tmp_path, monkeypatch):
+    def broken(merged, parts):
+        raise ValueError("cannot lay this out")
+    monkeypatch.setattr(arp_probe, "assemble", broken)
+    said: list = []
+    out = tmp_path / "probe.json"
+    arp_probe.run(["blender"], str(tmp_path / "jobs"), out, say=said.append,
+                  runner=_basics_only({"presets": {"human": {"status": "ok"}}}))
+    rep = json.loads(out.read_text(encoding="utf-8"))
+    assert "cannot lay this out" in rep["write_error"]
+    assert rep["raw"]["presets"]["human"]["status"] == "ok" and rep["parts"]["basics"]["status"] == "ok"
+    assert any("could not be laid out normally" in s for s in said) and str(out) in said[-4]
+
+
+def test_a_console_that_cannot_print_a_character_does_not_end_the_command(tmp_path):
+    said: list = []
+
+    def cp1252_console(line):
+        line.encode("cp1252")
+        said.append(line)
+
+    runner = _basics_only({"errors": ["x: \u0142\udcff"]})
+    out = tmp_path / "\u0142probe.json"
+    assert arp_probe.run(["blender"], str(tmp_path / "jobs"), out, say=cp1252_console, runner=runner) == 0
+    assert out.exists() and any("send that file back" in s for s in said)
 
 
 def test_paths_are_shortened_before_the_file_is_shared(tmp_path):

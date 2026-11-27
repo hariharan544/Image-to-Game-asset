@@ -513,8 +513,9 @@ def run_v2(args: dict):
 
 # ============================================================================ rig brief probe (WP0)
 # `forge arp-probe` (forge/arp_probe.py) runs `run_rig_probe` once per part, each part in its own
-# Blender, and merges the parts into docs/research/arp_3_79_probe.json. Step 8's later work reads
-# that file instead of guessing from the 3.77.33 source mirror. Rules:
+# Blender, and merges the parts into one result file, which is committed as
+# docs/research/arp_3_79_probe.json once the director sends it back. Step 8's later work reads that
+# file instead of guessing from the 3.77.33 source mirror. Rules:
 #   * every item runs in its own try/except and records {"status": "error", "error": ...};
 #   * after every item the part's report is written to args["partial"], and "_current" names the
 #     item in progress, so a Blender crash still leaves everything found before it;
@@ -543,7 +544,7 @@ OPTION_GROUPS = ("finger_", "fingers_", "toes_", "three_bones_leg", "spine_", "n
                  "arm_wings", "feathers_", "spline_", "bbones_", "kilt_", "facial", "lips_", "eye")
 PROBE_OPS = ("arp.append_arp", "arp.show_limb_params", "arp.add_limb", "arp.dupli_limb", "arp.disable_limb",
              "arp.match_to_rig", "arp.bind_to_rig", "arp.unbind_to_rig", "arp.arp_export_fbx_panel",
-             "arp_export_scene.fbx", "arp.set_humanoid_rig", "arp.set_mped_rig")
+             "arp_export_scene.fbx", "id.set_humanoid_rig", "id.set_mped_rig")     # ARP names these two id.*
 OWNER_BONES = ("hand.r", "hand.l", "head.x", "neck.x", "spine_01.x", "spine_02.x", "spine_03.x", "root.x",
                "forearm.r", "forearm.l", "arm.r", "arm.l", "thigh.r", "thigh.l", "leg.r", "leg.l",
                "foot.r", "foot.l")
@@ -562,7 +563,18 @@ EXPORTS = (("unity_humanoid", "UNITY", "HUMANOID", {}),
 
 
 def _js(v, depth: int = 0):
-    """JSON-safe copy of a Blender / ARP value (ID properties, vectors, sets)."""
+    """JSON-safe copy of a Blender / ARP value (ID properties, vectors, sets). Never raises: a
+    value that cannot be read is recorded as such (one bad value must not end the probe)."""
+    try:
+        return _js_value(v, depth)
+    except Exception as exc:                                # noqa: BLE001
+        try:
+            return f"<could not read {type(v).__name__}: {_err(exc)}>"[:300]
+        except Exception:                                   # noqa: BLE001
+            return "<could not read this value>"
+
+
+def _js_value(v, depth: int):
     if depth > 6:
         return str(v)[:200]
     if v is None or isinstance(v, (bool, int, str)):
@@ -585,15 +597,60 @@ def _js(v, depth: int = 0):
         return str(v)[:200]
 
 
+def _plain(v, depth: int = 0):
+    """A copy of an option value that no longer points into Blender data. ARP's
+    load_limb_settings copies ID-property arrays straight from EDIT bones (the finger and toe
+    colours); Blender frees those when Edit Mode ends, after which they read as empty or as
+    garbage, or crash. So every value is copied while still in Edit Mode."""
+    try:
+        if v is None or isinstance(v, (bool, int, float, str)):
+            return v
+        if isinstance(v, (set, frozenset)):
+            return set(v)                   # enum-flag options: the operator wants a set
+        if depth > 6 or hasattr(v, "bl_rna"):
+            return _js(v)                   # a Blender struct is not an option value: its name
+        if hasattr(v, "to_dict"):
+            return {str(k): _plain(x, depth + 1) for k, x in v.to_dict().items()}
+        if hasattr(v, "to_list"):
+            return [_plain(x, depth + 1) for x in v.to_list()]
+        if isinstance(v, dict):
+            return {str(k): _plain(x, depth + 1) for k, x in v.items()}
+        return [_plain(x, depth + 1) for x in v]
+    except Exception:                                       # noqa: BLE001
+        return _js(v)
+
+
+def _norm(v):
+    """For comparing: ID-property arrays, vectors and tuples as lists."""
+    try:
+        if hasattr(v, "to_list"):
+            v = v.to_list()
+        elif hasattr(v, "to_dict"):
+            v = v.to_dict()
+        if v is None or isinstance(v, (bool, int, float, str, bytes, dict, set, frozenset, list)):
+            return v
+        if hasattr(v, "bl_rna"):
+            return v
+        return list(v)
+    except Exception:                                       # noqa: BLE001
+        return v
+
+
 def _eq(a, b) -> bool:
+    a, b = _norm(a), _norm(b)
     if isinstance(a, float) or isinstance(b, float):
         try:
             return abs(float(a) - float(b)) < 1e-6
         except (TypeError, ValueError):
             return False
-    if isinstance(a, (list, tuple)) and isinstance(b, (list, tuple)):
+    if isinstance(a, list) and isinstance(b, list):
         return len(a) == len(b) and all(_eq(x, y) for x, y in zip(a, b))
-    return a == b
+    if isinstance(a, (set, frozenset, list)) and isinstance(b, (set, frozenset, list)):
+        return sorted(map(str, a)) == sorted(map(str, b))   # an enum-flag value against a copy
+    try:
+        return bool(a == b)
+    except Exception:                                       # noqa: BLE001
+        return False
 
 
 def _v3(v) -> list:
@@ -648,7 +705,15 @@ def _item(rec: _Rec, key: str, fn, *a, **kw) -> dict:
         rec.r["errors"].append(f"{key}: {_err(exc)}")
         _to_object_mode()
     out["seconds"] = round(time.time() - t0, 2)
-    rec.put(key, out)
+    try:
+        rec.put(key, out)
+    except Exception as exc:                                # noqa: BLE001 - recording must not end the part
+        out = {"status": "error", "error": f"could not record: {_err(exc)}", "seconds": out["seconds"]}
+        rec.r["errors"].append(f"{key}: could not record: {_err(exc)}")
+        try:
+            rec.put(key, out)
+        except Exception:                                   # noqa: BLE001
+            rec.r["_current"] = None
     return out
 
 
@@ -917,9 +982,18 @@ def _op_defaults() -> dict:
             if p.identifier != "rna_type" and p.type not in ("POINTER", "COLLECTION")}
 
 
+LIVE_VALUES_NOTE = (
+    "load_limb_settings copies some values straight from EDIT bones as ID-property arrays (finger "
+    "and toe colours: per_limb.*.edit_bone_values lists them). Blender frees those when Edit Mode "
+    "ends, so they read empty or as garbage, or crash Blender. The spec 9.2 namespace protocol must "
+    "copy every value to plain Python before leaving Edit Mode, as this probe does.")
+
+
 def _limb_state(rig, ref: str, defaults: dict):
     """Every current option of the limb `ref` belongs to, read the way ARP's panel reads it:
-    load_limb_settings() on a namespace filled with the operator defaults (spec 9.2)."""
+    load_limb_settings() on a namespace filled with the operator defaults (spec 9.2).
+    Returns (values, other attributes ARP set, ARP's reports, names of values that were live
+    edit-bone ID properties). Everything is copied to plain Python while still in Edit Mode."""
     mod = _arp_module("load_limb_settings")
     if mod is None:
         raise RuntimeError("no Auto-Rig Pro module defines load_limb_settings")
@@ -930,15 +1004,17 @@ def _limb_state(rig, ref: str, defaults: dict):
     ns.report = lambda kind, msg: notes.append(str(msg))
     with bpy.context.temp_override(**view3d_override()):
         mod.load_limb_settings(ns)
-    vals = {k: getattr(ns, k, None) for k in defaults}
-    extra = {k: v for k, v in vars(ns).items() if k not in defaults and k != "report"}
-    return vals, extra, notes
+    raw = {k: v for k, v in vars(ns).items() if k != "report"}
+    live = sorted(k for k, v in raw.items() if hasattr(v, "to_list") or hasattr(v, "to_dict"))
+    vals = {k: _plain(raw.get(k)) for k in defaults}
+    extra = {k: _plain(v) for k, v in raw.items() if k not in defaults}
+    return vals, extra, notes, live
 
 
 def _set_limb_options(rig, ref: str, changes: dict) -> dict:
     """Spec 9.2 protocol: read the limb's state, change only `changes`, verify the rest."""
     defaults = _op_defaults()
-    before, _, _ = _limb_state(rig, ref, defaults)
+    before, _, _, _ = _limb_state(rig, ref, defaults)
     pre = _ref_parents(rig)
     _select_ref(rig, ref)
     kw = {k: v for k, v in before.items() if k not in UI_ONLY}
@@ -968,7 +1044,7 @@ def _set_limb_options(rig, ref: str, changes: dict) -> dict:
         ref_after = next((n for n in roots if n.startswith(stem)), roots[0] if roots else ref)
         rep["renamed"] = {"gone": sorted(set(pre) - set(post))[:40], "new": sorted(new)[:40]}
     rep["ref_after"] = ref_after
-    after, _, _ = _limb_state(rig, ref_after, defaults)
+    after, _, _, _ = _limb_state(rig, ref_after, defaults)
     _to_object_mode()
     rep["changed_ok"] = all(_eq(after.get(k), v) for k, v in changes.items())
     rep["after"] = {k: after.get(k) for k in changes}
@@ -1165,10 +1241,10 @@ def _probe_load_settings(st: dict) -> dict:
             per[limb] = {"status": "error", "error": f"none of {list(refs)} in the rig"}
             continue
         try:
-            vals, extra, notes = _limb_state(rig, ref, defaults)
+            vals, extra, notes, live = _limb_state(rig, ref, defaults)
             per[limb] = {"status": "ok", "ref": ref, "limb_type": vals.get("limb_type"), "side": vals.get("side"),
                          "changed": {k: v for k, v in vals.items() if not _eq(v, defaults.get(k))},
-                         "values": vals, "extra": extra, "notes": notes}
+                         "values": vals, "extra": extra, "notes": notes, "edit_bone_values": live}
         except Exception as exc:                            # noqa: BLE001
             per[limb] = {"status": "error", "error": _err(exc)}
         _to_object_mode()
@@ -1178,7 +1254,7 @@ def _probe_load_settings(st: dict) -> dict:
         src = {"keys": [], "error": _err(exc)}
     return {"module": mod.__name__, "keys_in_source": src.get("keys", []),
             "edit_bones_in_source": src.get("bones", []), "source": {k: v for k, v in src.items() if k not in ("keys", "bones")},
-            "per_limb": per}
+            "per_limb": per, "edit_bone_values_note": LIVE_VALUES_NOTE}
 
 
 def _probe_ref_keys(st: dict) -> dict:
@@ -1197,7 +1273,7 @@ def _after_match(st: dict) -> dict:
         if ("tail" in b.name or "ear" in b.name or "spline" in b.name) and \
                 (b.parent is None or not any(k in b.parent.name for k in ("tail", "ear", "spline"))):
             chains[b.name] = _parent_chain(rig, b.name)
-    return {"match": res, "bones": len(names), "deform_count": len(deform),
+    return {"match": res, "bones": len(names), "deform_count": len(deform), "ik_poles": _poles_or_error(st),
             "dupli_deform": sorted(n for n in deform if "dupli" in n),
             "tail_deform": sorted(n for n in deform if "tail" in n),
             "ear_deform": sorted(n for n in deform if "ear" in n),
@@ -1263,12 +1339,20 @@ def _group_weights(obj, group: str):
     return w
 
 
-def _bind_once(st: dict, engine: str):
-    """bind_to_rig on the test body. Returns (facts, what ARP printed)."""
+def _bind_once(st: dict, engine: str, scale_fix=None):
+    """bind_to_rig on the test body. Returns (facts, what ARP printed).
+
+    After 'Bone Heat Weighting: failed', ARP turns scene.arp_bind_scale_fix on for good and asks
+    'Bind again with Scale Fix enabled?' in a dialog. The probe records that, then puts the
+    setting back, so the next bind runs like this one did. `scale_fix` forces the setting."""
     rig, body = _rig(st), bpy.data.objects[st["body"]]
     _unbind(body)
     sc = bpy.context.scene
     old = getattr(sc, "arp_bind_engine", None)
+    has_fix = hasattr(sc, "arp_bind_scale_fix")
+    old_fix = bool(sc.arp_bind_scale_fix) if has_fix else None
+    fix_used = old_fix if scale_fix is None or not has_fix else bool(scale_fix)
+    fix_after = None
     _to_object_mode()
     for o in bpy.context.view_layer.objects:
         o.select_set(False)
@@ -1280,9 +1364,14 @@ def _bind_once(st: dict, engine: str):
     t0 = time.time()
     try:
         sc.arp_bind_engine = engine
+        if has_fix:
+            sc.arp_bind_scale_fix = fix_used
         with _captured(buf), bpy.context.temp_override(**view3d_override()):
             res = list(bpy.ops.arp.bind_to_rig())
     finally:
+        if has_fix:
+            fix_after = bool(sc.arp_bind_scale_fix)
+            sc.arp_bind_scale_fix = old_fix
         if old is not None:
             sc.arp_bind_engine = old
     _to_object_mode()
@@ -1295,7 +1384,8 @@ def _bind_once(st: dict, engine: str):
              "unweighted_vertices": unweighted, "armature_modifiers": len(mods),
              "modifier_preserve_volume": mods[0].use_deform_preserve_volume if mods else None,
              "scene_arp_bind_preserve": _js(getattr(sc, "arp_bind_preserve", None)),
-             "scene_arp_bind_scale_fix_after": _js(getattr(sc, "arp_bind_scale_fix", None)),
+             "scale_fix_used": fix_used, "scene_arp_bind_scale_fix_after": fix_after,
+             "scale_fix_turned_on_by_arp": bool(has_fix and fix_after and not fix_used),
              "log_tail": _tail(buf.getvalue(), 20)}
     return facts, buf.getvalue()
 
@@ -1311,7 +1401,8 @@ def _probe_chin(st: dict) -> dict:
     for k in ("arp_chin_loc", "arp_chin_pos_vec"):
         if k in rig.data.keys():
             del rig.data[k]
-    a, log_a = _bind_once(st, "HEAT_MAP")
+    fix = bool(getattr(bpy.context.scene, "arp_bind_scale_fix", False))   # the same for both binds
+    a, log_a = _bind_once(st, "HEAT_MAP", scale_fix=fix)
     st["bind_heat"] = a
     wa = _group_weights(body, "head.x")
     hh, ht = head.head_local, head.tail_local
@@ -1319,7 +1410,8 @@ def _probe_chin(st: dict) -> dict:
     chin = rig.matrix_world @ (hh + Vector((0.0, -0.6 * L, -0.35 * L)))
     rig.data["arp_chin_loc"] = chin.z
     rig.data["arp_chin_pos_vec"] = list(chin)
-    b, log_b = _bind_once(st, "HEAT_MAP")
+    b, log_b = _bind_once(st, "HEAT_MAP", scale_fix=fix)
+    flipped = [n for n, f in (("bind_without_keys", a), ("bind_with_keys", b)) if f.get("scale_fix_turned_on_by_arp")]
     wb = _group_weights(body, "head.x")
     if wa is not None and wb is not None and len(wa) == len(wb):
         deltas = [abs(x - y) for x, y in zip(wa, wb)]
@@ -1328,12 +1420,20 @@ def _probe_chin(st: dict) -> dict:
         delta = abs(sum(wa or []) - sum(wb or []))
         changed = None
     approx = rig.matrix_world @ (hh + head.z_axis.normalized() * L * 0.5)
-    return {"arp_bind_chin": _js(getattr(bpy.context.scene, "arp_bind_chin", None)),
-            "keys_read": "set real chin pos" in log_b,
-            "approximate_without_keys": "set approximate chin pos" in log_a,
-            "weights_changed": delta > 1e-3, "max_head_weight_delta": round(delta, 5),
-            "changed_vertices": changed, "chin_set": _v3(chin), "approx_chin_arp": _v3(approx),
-            "head_group_found": wa is not None, "bind_without_keys": a, "bind_with_keys": b}
+    out = {"arp_bind_chin": _js(getattr(bpy.context.scene, "arp_bind_chin", None)),
+           "keys_read": "set real chin pos" in log_b,
+           "approximate_without_keys": "set approximate chin pos" in log_a,
+           "weights_changed": delta > 1e-3, "max_head_weight_delta": round(delta, 5),
+           "changed_vertices": changed, "chin_set": _v3(chin), "approx_chin_arp": _v3(approx),
+           "head_group_found": wa is not None, "scale_fix_both_binds": fix,
+           "scale_fix_turned_on_by_arp": flipped, "weights_comparison_valid": not flipped,
+           "bind_without_keys": a, "bind_with_keys": b}
+    if flipped:
+        out["weights_comparison_note"] = (
+            "Heat weighting failed for some bones in " + " and ".join(flipped) + " (ARP then turned Scale "
+            "Fix on and asked to bind again). weights_changed and max_head_weight_delta do not measure "
+            "the chin here; keys_read still does.")
+    return out
 
 
 def _import_fbx(path: str) -> dict:
@@ -1460,6 +1560,8 @@ def _probe_deform_names(st: dict) -> dict:
 
 
 def _probe_poles(st: dict) -> dict:
+    """IK pole controls and IK constraints. ARP names a pole 'c_leg_pole' / 'c_arms_pole' + the
+    limb's side, so a duplicated limb's pole is e.g. c_arms_pole_dupli_001.l."""
     rig = _rig(st)
     poles = sorted(b.name for b in rig.data.bones if "pole" in b.name.lower())
     iks = {}
@@ -1470,10 +1572,26 @@ def _probe_poles(st: dict) -> dict:
                                 "pole_angle": round(float(getattr(c, "pole_angle", 0.0)), 5),
                                 "chain_count": getattr(c, "chain_count", None)}
     heads = {n: _v3(rig.data.bones[n].head_local) for n in poles[:24]}
-    joints = {n: _v3(rig.data.bones[n].head_local) for n in ("leg.l", "leg.r", "forearm.l", "forearm.r")
-              if n in rig.data.bones}
+    joints = {b.name: _v3(b.head_local) for b in rig.data.bones
+              if re.match(r"(leg|forearm)(_dupli_\d+)?\.[lr]$", b.name)}
     return {"pole_bones": poles, "expected": {n: n in rig.data.bones for n in POLE_NAMES},
+            "dupli_poles": [n for n in poles if "_dupli_" in n],
             "ik_constraints": iks, "pole_heads": heads, "knee_elbow_heads": joints}
+
+
+def _poles_or_error(st: dict) -> dict:
+    try:
+        return {"status": "ok", **_probe_poles(st)}
+    except Exception as exc:                                # noqa: BLE001
+        return {"status": "error", "error": _err(exc)}
+
+
+def _probe_rig_poles(st: dict, preset: str) -> dict:
+    """IK pole names on another preset after match_to_rig (the dog's front legs, spec WP13)."""
+    rig, _, _ = _append(preset)
+    st["rig"] = rig.name
+    rig, res, log = _match(rig)
+    return {"preset": preset, "match": res, "log_tail": _tail(log, 8), **_probe_poles(st)}
 
 
 def _bind_section(st: dict) -> dict:
@@ -1532,7 +1650,8 @@ def _probe_multi_arm(st: dict) -> dict:
     _facial_off(rig)
     case = _add_case(st, "arm.l")
     rig, res, _ = _match(_rig(st))
-    out = {"arm_dupli_refs": case["new_ref_bones"], "match": res, "humanoid_check": _humanoid(rig)["humanoid"]}
+    out = {"arm_dupli_refs": case["new_ref_bones"], "match": res, "humanoid_check": _humanoid(rig)["humanoid"],
+           "ik_poles": _poles_or_error(st)}
     body = _body_from_bones(rig)
     st["body"] = body.name
     bind, _ = _bind_once(st, "HEAT_MAP")
@@ -1543,12 +1662,20 @@ def _probe_multi_arm(st: dict) -> dict:
     return out
 
 
-def _part_wings(rec: _Rec, args: dict):
+def _part_multi_arm(rec: _Rec, args: dict):
     st: dict = {"out_dir": os.path.abspath(args.get("out_dir") or ".")}
     os.makedirs(st["out_dir"], exist_ok=True)
     _humanoid_section(rec)
     _item(rec, "multi_arm_export", _probe_multi_arm, st)
     yield 0.3
+    _item(rec, "ik_poles.rigs.dog", _probe_rig_poles, st, "dog")
+    yield 0.1
+    _clear_scene()
+
+
+def _part_wings(rec: _Rec, args: dict):
+    """Only wings in this Blender: spec 9.5 allows arm_wings only if this does not crash."""
+    st: dict = {}
 
     def wings():
         rig, _, _ = _append("human")
@@ -1601,8 +1728,9 @@ def _part_limbs(rec: _Rec, args: dict):
     yield 0.1
     _item(rec, "load_limb_settings", _probe_load_settings, st)
     _item(rec, "ref_bone_keys", _probe_ref_keys, st)
-    rec.put("limb_protocol", {"status": "ok", "cases": {}})
+    rec.put("limb_protocol", {"status": "ok", "cases": {}, "note": LIVE_VALUES_NOTE})
     for case, ref, changes in (("arm_pinky_off", "arm_ref.l", {"finger_pinky": False}),
+                               ("arm_ring_off", "arm_ref.l", {"finger_ring": False}),
                                ("neck_count_2", "neck_ref.x", {"neck_count": 2}),
                                ("tail_count_6", "tail_00_ref.x", {"tail_count": 6})):
         _item(rec, f"limb_protocol.cases.{case}", lambda r=ref, c=changes: _set_limb_options(_rig(st), r, c))
@@ -1685,8 +1813,8 @@ def _part_headless(rec: _Rec, args: dict):
     _clear_scene()
 
 
-PROBE_PARTS = {"basics": _part_basics, "bird": _part_bird, "wings": _part_wings, "limbs": _part_limbs,
-               "build": _part_build, "headless": _part_headless}
+PROBE_PARTS = {"basics": _part_basics, "bird": _part_bird, "wings": _part_wings, "multi_arm": _part_multi_arm,
+               "limbs": _part_limbs, "build": _part_build, "headless": _part_headless}
 
 
 def run_rig_probe(args: dict):

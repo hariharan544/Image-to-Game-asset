@@ -150,6 +150,12 @@ def test_fake_probe_limb_settings_and_protocol(probed):
     assert rep["load_limb_settings"]["module"] == "auto_rig_pro.src.auto_rig"
     cases = rep["limb_protocol"]["cases"]
     assert cases["arm_pinky_off"]["changed_ok"] is True and cases["arm_pinky_off"]["unexpected_changes"] == {}
+    # two arm calls in a row: the finger colour ARP reads from the EDIT bone (an ID-property array
+    # that dies with Edit Mode) is copied in time, so nothing reads as reset and nothing crashes
+    assert cases["arm_ring_off"]["changed_ok"] is True and cases["arm_ring_off"]["unexpected_changes"] == {}
+    assert per["arm"]["edit_bone_values"] == ["fingers_ik_color"]
+    assert per["arm"]["values"]["fingers_ik_color"] == [0.8, 0.432, 0.0]
+    assert "Edit Mode" in rep["limb_protocol"]["note"]
     assert cases["neck_count_2"]["changed_ok"] is True
     assert cases["tail_count_6"]["after"] == {"tail_count": 6}
     assert "spine_count" in rep["ref_bone_keys"]["keys_seen"]
@@ -173,9 +179,58 @@ def test_source_keys_reads_arp_style_lookups(tmp_path, monkeypatch):
     assert got["keys"] == ["ears_amount", "tail_count", "thumb"] and got["bones"] == ["ear_01_ref"]
 
 
+def _addon_trial(monkeypatch):
+    monkeypatch.syspath_prepend(str(HERE.parent / "blender_scripts"))
+    from forge_bpy import addon_trial
+    return addon_trial
+
+
+def test_values_are_compared_and_recorded_safely(monkeypatch):
+    """ID-property arrays compare by value, and a value that cannot be read is recorded as such."""
+    import bpy
+    at = _addon_trial(monkeypatch)
+    ob = bpy.data.objects.new("probe_eq_test", None)
+    try:
+        ob["c"] = [0.8, 0.432, 0.0]
+        arr = ob["c"]
+        assert type(arr).__name__ == "IDPropertyArray"
+        assert at._eq(arr, arr) and at._eq(arr, (0.8, 0.432, 0.0)) and not at._eq(arr, [0.0, 0.0, 0.0])
+        assert at._plain(arr) == [0.8, 0.432, 0.0] and at._plain({"a"}) == {"a"}
+        assert at._eq({"A", "B"}, ["B", "A"]) and at._eq((1, 2), [1, 2])
+    finally:
+        bpy.data.objects.remove(ob)
+
+    class Broken:
+        def __iter__(self):
+            raise RuntimeError("freed")
+    got = at._js({"ok": 1, "bad": Broken()})
+    assert got["ok"] == 1 and got["bad"].startswith("<could not read Broken: RuntimeError: freed")
+
+
+def test_an_item_that_cannot_be_recorded_is_an_error_not_the_end(monkeypatch):
+    at = _addon_trial(monkeypatch)
+    rec = at._Rec("limbs", None)
+    real_put, calls = rec.put, []
+
+    def put(key, value):
+        calls.append(key)
+        if len(calls) == 1:
+            raise RuntimeError("bad type code")
+        real_put(key, value)
+    rec.put = put
+    out = at._item(rec, "limb_protocol.cases.arm_pinky_off", lambda: {"x": 1})
+    assert out["status"] == "error" and "could not record" in out["error"]
+    assert rec.r["limb_protocol"]["cases"]["arm_pinky_off"]["status"] == "error"
+    at._item(rec, "limb_protocol.cases.neck_count_2", lambda: {"x": 2})    # the next item still runs
+    assert rec.r["limb_protocol"]["cases"]["neck_count_2"] == {"x": 2, "status": "ok",
+                                                               "seconds": rec.r["limb_protocol"]["cases"]["neck_count_2"]["seconds"]}
+
+
 def test_fake_probe_add_limb_names(probed):
     a = probed["rep"]["add_limb"]
     assert "spline_ik" in a["presets_items"]
+    assert all(a["cases"][c]["status"] == "ok" for c in ("arm_dupli", "tail_dupli_left", "tail_dupli_right",
+                                                          "spline_ik", "ears_second", "kilt")), a["cases"].keys()
     assert a["cases"]["arm_dupli"]["new_root"] == "shoulder_ref_dupli_001.l"
     left = a["cases"]["tail_dupli_left"]
     # ARP renames a tail moved to another side; the probe follows it and hangs it from the head
@@ -195,13 +250,28 @@ def test_fake_probe_build_bind_chin_poles_sockets(probed):
     assert rep["ik_poles"]["expected"] == {n: True for n in ("c_leg_pole.l", "c_leg_pole.r", "c_arms_pole.l",
                                                              "c_arms_pole.r")}
     assert rep["ik_poles"]["ik_constraints"]["leg.l"]["pole"] == "c_leg_pole.l"
+    # a second arm's pole is named after its side (ARP: 'c_arms_pole' + side)
+    after = probed["rep"]["add_limb"]["after_match"]["ik_poles"]
+    assert after["dupli_poles"] == ["c_arms_pole_dupli_001.l"]
+    multi = rep["multi_arm_export"]["ik_poles"]
+    assert multi["dupli_poles"] == ["c_arms_pole_dupli_001.l"]
+    assert multi["ik_constraints"]["arm_dupli_001.l"]["pole"] == "c_arms_pole_dupli_001.l"
+    dog = rep["ik_poles"]["rigs"]["dog"]
+    assert dog["status"] == "ok" and dog["preset"] == "dog" and "c_leg_pole.l" in dog["pole_bones"]
+    ops = rep["operators"]["ops"]
+    assert ops["id.set_humanoid_rig"]["exists"] and ops["id.set_mped_rig"]["exists"]
     assert rep["deform_names"]["owner_bones"]["hand.r"] is True
     chin = rep["chin"]
     assert chin["keys_read"] is True and chin["approximate_without_keys"] is True and chin["weights_changed"]
+    # the fake's first bind fails heat weighting and turns Scale Fix on, like ARP: the second chin
+    # bind still runs without it, and the chin says its weight comparison does not count
+    assert chin["scale_fix_turned_on_by_arp"] == ["bind_without_keys"] and chin["weights_comparison_valid"] is False
+    assert chin["bind_with_keys"]["scale_fix_used"] is False and "weights_comparison_note" in chin
     b = rep["bind"]
     assert b["engine_items"] == ["HEAT_MAP", "PSEUDO_VOXELS", "VHDS"] and b["preserve_volume_prop"] == "arp_bind_preserve"
     assert b["modifier_preserve_volume"] is True and b["pseudo_voxels"]["ok"] is True
     assert b["heat_map"]["unweighted_vertices"] == 0
+    assert b["pseudo_voxels"]["scale_fix_used"] is False          # ARP's switch was put back
     for label in ("unity_humanoid", "unity_universal", "unreal_humanoid", "unreal_universal"):
         v = rep["socket_export"]["variants"][label]
         assert v["exported"] and v["socket"] == {"found": True, "name": "cc_socket_probe", "parent": "hand.r",
@@ -210,5 +280,6 @@ def test_fake_probe_build_bind_chin_poles_sockets(probed):
     m = rep["multi_arm_export"]
     assert m["humanoid_check"] is True and m["exported"] and "arm_dupli_001.l" in m["dupli_bones_exported"]
     assert rep["wings"]["arm_wings_set"] is True and rep["wings"]["feather_bones"] == ["c_arm_feather_01_dupli_001.l"]
+    assert rep["wings"]["protocol"]["unexpected_changes"] == {}
     assert rep["headless"]["append_ok"] is True and rep["headless"]["match_ok"] is True
     assert (probed["root"] / "jobs" / "_setup" / "arp_probe" / "exports" / "probe_unity_humanoid.fbx").exists()

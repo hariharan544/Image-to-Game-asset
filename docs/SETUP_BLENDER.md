@@ -52,11 +52,11 @@ poles, binding and export). Run this once, in PowerShell in the Forge folder:
 ```
 
 Small Blender windows open and close by themselves for about 5 minutes; don't click in them or
-close them. A window may close suddenly at the bird step: that is a result too, and the check
-carries on. Nothing in your files or Blender settings is changed: every step uses an empty
-throwaway scene and nothing is saved. The result is `docs\research\arp_3_79_probe.json`: send
-that file back, with any lines that start with `[X]` or `[!]`. Logs and test exports are in
-`jobs\_setup\arp_probe`.
+close them. A window may close suddenly at the bird or the wings step: that is a result too, and
+the check carries on. Nothing in your files or Blender settings is changed: every step uses an
+empty throwaway scene and nothing is saved. The result is
+`jobs\_setup\arp_probe\arp_3_79_probe.json` (the last lines show the full path): send that file
+back, with any lines that start with `[X]` or `[!]`. Logs and test exports are in the same folder.
 
 ## UVPackmaster engine
 

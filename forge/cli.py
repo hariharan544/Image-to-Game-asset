@@ -321,9 +321,9 @@ def main(argv=None) -> int:
     b.set_defaults(fn=cmd_setup_blender)
 
     ap = sub.add_parser("arp-probe", help="check how your Auto-Rig Pro behaves (for Step 8) and write "
-                                          "docs/research/arp_3_79_probe.json to send back")
+                                          "jobs/_setup/arp_probe/arp_3_79_probe.json to send back")
     ap.add_argument("--blender", help="path to blender.exe (saved to .env as FORGE_BLENDER)")
-    ap.add_argument("--out", help="where to write the result (default: docs/research/arp_3_79_probe.json)")
+    ap.add_argument("--out", help="where to write the result (default: <jobs>/_setup/arp_probe/arp_3_79_probe.json)")
     ap.set_defaults(fn=cmd_arp_probe)
 
     rp = sub.add_parser("report", help="short text summary of a job, to paste into a chat")
