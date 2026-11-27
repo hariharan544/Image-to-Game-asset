@@ -620,6 +620,40 @@ def _rows(col, items):
         col.label(text=text, icon=icon)
 
 
+JOINT_WHY = {        # why a cut-off part was not joined as one skin, in plain words
+    "no plug": "its root ring was not recorded",
+    "no overlap": "it did not reach into the body",
+    "hole": "the body has an opening next to its root",
+    "island": "joining would cut away more than the root",
+    "inside": "it lies inside the body",
+    "openings": "its root did not open as one clean ring",
+    "bridge": "the two root rings could not be bridged",
+    "open edges": "joining would have left holes",
+    "thin faces": "joining would have made needle-thin faces",
+    "flipped faces": "joining would have turned faces inside out",
+    "crossing faces": "the joint faces would have crossed each other",
+    "error": "Blender refused the join",
+}
+
+
+def _joint_rows(r):
+    """How each cut-off part was joined back: one skin, or its own piece (and why)."""
+    joints = r.get("joints") or ([{"joint": r["joint"]}] if r.get("joint") else [])
+    out = []
+    for i, j in enumerate(joints):
+        name = "the cut-off part (tail...)" if len(joints) == 1 else f"cut-off part {i + 1}"
+        res = str(j.get("joint", ""))
+        if res == "welded":
+            out.append(("BLANK1", f"    {name} joined into the body as one skin"))
+        else:
+            why = res.split(":", 1)[1].strip() if ":" in res else ""
+            out.append(("BLANK1", f"    {name} kept as its own piece"))
+            if why:
+                out.append(("BLANK1", f"    ({JOINT_WHY.get(why, why)})"))
+            out.append(("BLANK1", "    its root is hidden inside the body: nothing to do"))
+    return out
+
+
 def _retopo_rows(rep):
     out = []
     for part, r in rep.get("parts", {}).items():
@@ -645,7 +679,11 @@ def _retopo_rows(rep):
                 out.append(("BLANK1", "    mirrored (symmetric)" if r["symmetry"]
                             else f"    not mirrored ({r.get('asymmetry_pct', 0)}% one-sided detail)"))
         if r.get("separate_parts"):
-            out.append(("BLANK1", f"    {r['separate_parts']} part(s) remeshed on their own, then attached"))
+            out.append(("BLANK1", f"    {r['separate_parts']} part(s) remeshed on their own, then joined"))
+            out += _joint_rows(r)
+        if r.get("over_budget"):
+            out.append((WARN, f"    {r['over_budget']:,} tris over the budget, left as is: reducing"))
+            out.append(("BLANK1", "    would crumple the joint. To fit, lower Triangles a little, run again"))
         for how in r.get("piece_fallbacks", []):
             out.append((WARN, f"    a part got no Quad Remesher result: {how} used"))
         for why in r.get("split_kept", []):
