@@ -223,7 +223,9 @@ def _seg_dist(p, a, b) -> float:
 
 
 def _classify(c, root, tip, pelvis, head, head_top, head_r, front, H, flat=False, pointed=False) -> str:
-    behind = (c[1] - pelvis[1]) * front < 0          # opposite side to the face
+    # behind = its ROOT is on the back (a tail curling round to the side has its middle
+    # beside the legs, but it still grows from the back)
+    behind = (root[1] - pelvis[1]) * front < 0
     way = (tip - root) / max(np.linalg.norm(tip - root), 1e-9)
     if _seg_dist(root, head, head_top) < 2.0 * head_r:
         if flat and abs(c[0] - head[0]) > 0.3 * head_r:

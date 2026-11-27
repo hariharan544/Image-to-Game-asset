@@ -80,6 +80,9 @@ def extract(src_me, region: np.ndarray, grow_rings: int = 2, name: str = "forge_
         ng = [f for f in res.get("faces", []) if len(f.verts) > 3]
         if ng:
             bmesh.ops.triangulate(bm, faces=ng)
+        still = [e for e in bm.edges if e.is_boundary]
+        if still:
+            _fan_fill(bm, still)                  # a loop the filler refuses: a fan
     else:
         plug = None
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
@@ -366,6 +369,9 @@ def _rim_cut(me, remove: np.ndarray, owner: np.ndarray):
     loose = [v for v in bm.verts if not v.link_faces and v[tag]]
     if loose:
         bmesh.ops.delete(bm, geom=loose, context="VERTS")
+    # scraps first (a separate inner shell of the part, left open by the cut): a filler must
+    # not close them into little lenses inside the body
+    _drop_cut_scraps(bm, tag, faces_before)
     rim_open = [e for e in bm.edges if e.is_boundary and e.verts[0][tag] and e.verts[1][tag]]
     if rim_open:
         res = bmesh.ops.holes_fill(bm, edges=rim_open, sides=100000)
@@ -383,7 +389,9 @@ def _rim_cut(me, remove: np.ndarray, owner: np.ndarray):
                 bmesh.ops.triangulate(bm, faces=ng)
         except (RuntimeError, ValueError):
             pass
-    _drop_cut_scraps(bm, tag, faces_before)
+    still = [e for e in bm.edges if e.is_valid and e.is_boundary and e.verts[0][tag] and e.verts[1][tag]]
+    if still:
+        _fan_fill(bm, still, tag)                 # any simple loop closes as a fan of triangles
     bmesh.ops.recalc_face_normals(bm, faces=bm.faces)
     bad: dict = {}
     for e in bm.edges:
@@ -391,6 +399,48 @@ def _rim_cut(me, remove: np.ndarray, owner: np.ndarray):
         if k and (e.is_boundary or len(e.link_faces) > 2):
             bad[k] = bad.get(k, 0) + 1
     return bm, bad
+
+
+def _fan_fill(bm, edges, tag=None) -> int:
+    """Close every simple boundary loop (each vertex on exactly two of its open edges) with a
+    fan of triangles around a new centre vertex: works on loops that are not flat or not
+    convex, which the hole fillers sometimes refuse. Pinched loops are left (the caller then
+    moves the cut one ring further)."""
+    from mathutils import Vector
+    adj: dict = {}
+    for e in edges:
+        for v in e.verts:
+            adj.setdefault(v, []).append(e)
+    seen: set = set()
+    made = 0
+    for start, es in list(adj.items()):
+        if start in seen or len(es) != 2:
+            continue
+        loop, v, e = [start], start, es[0]
+        seen.add(start)
+        while True:
+            w = e.other_vert(v)
+            if w is start:
+                break
+            if len(adj.get(w, [])) != 2 or w in seen:
+                loop = None
+                break
+            loop.append(w)
+            seen.add(w)
+            e = adj[w][1] if adj[w][0] is e else adj[w][0]
+            v = w
+        if not loop or len(loop) < 3:
+            continue
+        c = bm.verts.new(sum((x.co for x in loop), Vector()) / len(loop))
+        if tag is not None:
+            c[tag] = start[tag]
+        for i in range(len(loop)):
+            try:
+                bm.faces.new((loop[i], loop[(i + 1) % len(loop)], c))
+                made += 1
+            except ValueError:
+                pass
+    return made
 
 
 def _drop_cut_scraps(bm, tag, _unused=None, max_share: float = 0.05) -> int:
@@ -429,34 +479,63 @@ def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
     leaves the body closed at the cut; otherwise it stays with the body (the reason goes to
     `report` as (k, why)). One pass over the body for all parts; openings elsewhere on the
     body are not this function's business."""
-    pieces = []
-    for k in sorted(set(int(i) for i in np.unique(ids)) - {0}):
-        piece = extract(me, ids == k, grow_rings=0, name=f"forge_part_{k}")   # exact cut: no overlap band
-        d = mesh_defects(piece)
-        if d[0] or d[1] or d[2] or len(piece.polygons) < 8:
-            bpy.data.meshes.remove(piece)
-            if report is not None:
-                report.append((k, "the cut piece was not closed: kept with the body"))
-            continue
-        plug = list(piece["forge_plug"]) if "forge_plug" in piece else None
-        pieces.append((k, piece, plug))
-    while pieces:
-        keep_k = [k for k, _p, _q in pieces]
-        remove = np.isin(ids, keep_k)
-        bm, bad = _rim_cut(me, remove, np.where(remove, ids, 0).astype(np.int32))
-        failed = [k for k in keep_k if bad.get(k)]
-        if not failed:
+    regions = {k: ids == k for k in sorted(set(int(i) for i in np.unique(ids)) - {0})}
+    tries = {k: 0 for k in regions}
+    pieces: dict = {}
+
+    def refuse(k, why):
+        if k in pieces:
+            bpy.data.meshes.remove(pieces.pop(k)[0])
+        regions.pop(k, None)
+        if report is not None:
+            report.append((k, why))
+
+    def grow(k) -> bool:
+        """A ragged cut: move it one ring further into the body (at most twice)."""
+        if tries[k] >= 2:
+            return False
+        tries[k] += 1
+        others = np.zeros(len(ids), bool)
+        for j, r in regions.items():
+            if j != k:
+                others |= r
+        regions[k] = _dilate(regions[k], me, 1) & ~others
+        if k in pieces:
+            bpy.data.meshes.remove(pieces.pop(k)[0])
+        return True
+
+    while regions:
+        for k in [k for k in regions if k not in pieces]:
+            piece = extract(me, regions[k], grow_rings=0, name=f"forge_part_{k}")   # exact cut
+            d = mesh_defects(piece)
+            if d[0] or d[1] or d[2] or len(piece.polygons) < 8:
+                bpy.data.meshes.remove(piece)
+                if not grow(k):
+                    refuse(k, "the cut piece was not closed: kept with the body")
+                continue
+            plug = list(piece["forge_plug"]) if "forge_plug" in piece else None
+            pieces[k] = (piece, plug)
+        if not pieces:
+            if regions:
+                continue                          # (pieces being re-cut one ring further)
+            break
+        remove = np.zeros(len(ids), bool)
+        owner = np.zeros(len(ids), np.int32)
+        for k in pieces:
+            remove |= regions[k]
+            owner[regions[k]] = k
+        bm, bad = _rim_cut(me, remove, owner)
+        failed = [k for k in pieces if bad.get(k)]
+        if not failed and all(k in pieces for k in regions):
             bm.to_mesh(me)
             bm.free()
             me.update()
             break
         bm.free()
-        for k, piece, _q in [p for p in pieces if p[0] in failed]:
-            bpy.data.meshes.remove(piece)
-            if report is not None:
-                report.append((k, "cutting it would leave an opening in the body: kept with the body"))
-        pieces = [p for p in pieces if p[0] not in failed]
-    return pieces
+        for k in failed:
+            if not grow(k):
+                refuse(k, "cutting it would leave an opening in the body: kept with the body")
+    return [(k, pieces[k][0], pieces[k][1]) for k in sorted(pieces)]
 
 
 def attach(target, piece_obj) -> None:

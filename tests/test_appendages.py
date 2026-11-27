@@ -449,3 +449,33 @@ def test_raised_hand_is_still_an_arm():
     lab = density.region_labels(V, J)
     past = np.abs(V[:, 0]) > abs(J["upperarm_l"][0][0]) * 1.05
     assert (lab[past] == 1).sum() == 0                  # nothing past the shoulders is head
+
+
+def test_a_cut_the_hole_fillers_refuse_is_closed_by_a_fan(monkeypatch):
+    """On the director's mesh the tail-root opening was refused by Blender's fillers and the
+    body was left unmirrored. Any simple opening now closes as a fan of triangles."""
+    import bmesh
+
+    import bodies
+    from forge_bpy import parts, rescue
+    body, _P = bodies.curled_tail(1.0)
+    me = body.data
+    ids = parts.one_sided_parts(me)
+    monkeypatch.setattr(bmesh.ops, "holes_fill", lambda *a, **k: {"faces": []})
+    monkeypatch.setattr(bmesh.ops, "edgeloop_fill", lambda *a, **k: {"faces": []})
+    rep = []
+    m2 = me.copy()
+    pieces = rescue.split_off(m2, ids, rep)
+    assert len(pieces) == 1 and not rep, rep
+    assert rescue.mesh_defects(m2)[:2] == (0, 0)
+
+
+def test_tail_curling_round_to_the_side_is_still_a_tail():
+    import bodies
+    from forge_bpy import appendages, joints
+    ob = bodies.bull(tail_side=0.30)
+    for v in ob.data.vertices:                     # the curl comes round beside the leg
+        if v.co.y > 0.30 and v.co.z < 0.16:
+            v.co.y -= 0.25 * (0.16 - v.co.z) / 0.16
+    names = [a["name"] for a in appendages.from_object(ob, joints.estimate(ob))]
+    assert "tail" in names, names

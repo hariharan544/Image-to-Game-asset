@@ -650,11 +650,19 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                 shape["rescued"] = 0
                 used = "quadremesher(face-refined)" if face_only else "quadremesher(shape-fixed)"
             # the thin-part rebuild is for real thin parts only, never pieces of the face
-            if shape["lost_ratio"] >= max_lost and args.get("shape_rescue", True):
-                # still missing: retopologize each lost region on its own and fuse it back
+            is_prop = obj.get("forge_kind") == "prop"
+            if is_prop and shape["lost_ratio"] >= max_lost:
+                # a prop's lost bits are fine surface detail (curls, rope twist): the bake keeps
+                # them as a normal map. Gluing rebuilt pieces on only leaves lumps and openings
+                shape["detail_only"] = True
+            if shape["lost_ratio"] >= max_lost and args.get("shape_rescue", True) and not is_prop:
+                # still missing: retopologize each lost region on its own and fuse it back -
+                # kept only if the mesh comes out at least as clean as it went in
                 from . import rescue
                 total_area = max(rescue.area(backup), 1e-9)
                 rescued = 0
+                before_rescue = keep_tmp(obj.data.copy())
+                defects0 = rescue.mesh_defects(obj.data)
                 for ri, region in enumerate(rescue.regions(backup, shape.get("mask_thin", shape["mask"]))[:4]):
                     piece_me = rescue.extract(backup, region)
                     plug = list(piece_me["forge_plug"]) if "forge_plug" in piece_me else None
@@ -676,6 +684,11 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                         m = bpy.data.meshes.get(name)
                         if m is not None and m.users == 0:
                             bpy.data.meshes.remove(m)
+                d1 = rescue.mesh_defects(obj.data)
+                if rescued and (d1[0] > defects0[0] or d1[1] > defects0[1]):
+                    _replace_mesh(obj, before_rescue.copy())   # it made openings: undo it
+                    rescued = 0
+                    shape["rescue_undone"] = True
                 if rescued:
                     refined, shape = shape["refined"], shape_loss(backup, obj.data, tol)
                     shape["refined"], shape["rescued"] = refined, rescued
@@ -771,7 +784,8 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
             report[obj.get(C.PART_PROP)]["shape"] = {
                 "lost_pct": round(100 * shape["lost_ratio"], 2), "max_gap_pct": round(100 * shape["max_rel"], 2),
                 "face_lost_pct": round(100 * shape.get("face_lost", 0.0), 2),
-                "refined": shape["refined"], "rescued": shape.get("rescued", 0)}
+                "refined": shape["refined"], "rescued": shape.get("rescued", 0),
+                "detail_only": bool(shape.get("detail_only")), "rescue_undone": bool(shape.get("rescue_undone"))}
     finally:
         for name in temp:
             m = bpy.data.meshes.get(name)

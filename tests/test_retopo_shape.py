@@ -635,3 +635,32 @@ def test_cleanup_retires_jobs_and_late_results_are_removed_when_idle():
     bpy.context.scene.collection.objects.link(stray)
     retopo.cleanup_jobs()
     assert not retopo._QR_JOBS and "Retopo_fq001_00002z.001" not in bpy.data.objects
+
+
+def test_props_keep_fine_detail_for_the_bake_never_glued_pieces(monkeypatch):
+    """A curly hair tuft or a twisted rope loses fine detail at a few thousand triangles: the
+    bake keeps it. No rebuilt pieces are glued on (they left lumps and openings)."""
+    from forge_bpy import common, retopo
+    o = _body_with_tail()
+    o["forge_kind"] = "prop"
+    calls = []
+
+    def collapsing_qr(obj, quads, args, timeout):
+        yield 0.0
+        calls.append(len(obj.data.vertices))
+        for v in obj.data.vertices:                 # the thin part collapses every time
+            if v.co.x > 1.0:
+                v.co.x = 1.0 + 0.1 * (v.co.x - 1.0)
+        return True
+
+    monkeypatch.setattr(retopo, "_qr_part", collapsing_qr)
+    gen = retopo._run_qr({"target_tris": common.tri_count(o), "qr_timeout": 5, "carve": False})
+    try:
+        while True:
+            next(gen)
+    except StopIteration as stop:
+        rep = stop.value
+    sh = rep["parts"]["Body"]["shape"]
+    assert sh["detail_only"] and sh["rescued"] == 0
+    assert len(calls) <= 3                          # no extra rebuild jobs
+    assert rep["parts"]["Body"]["open_edges"] == 0

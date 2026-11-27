@@ -534,7 +534,7 @@ def _retopo_rows(rep):
         icon = GOOD if m.startswith("quadremesher") and "failed" not in m else (BAD if m.startswith("failed") else WARN)
         sh = r.get("shape")
         if sh and sh.get("lost_pct", 0) > 0.5:
-            icon = BAD
+            icon = WARN if sh.get("detail_only") else BAD
         out.append((icon, f"{part}: {r.get('tris_before', 0):,} > {r.get('tris_after', 0):,} tris"))
         if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
             out.append(("BLANK1", f"    method: {m}"))
@@ -561,7 +561,11 @@ def _retopo_rows(rep):
             out.append((BAD, f"    mesh not clean: {r.get('open_edges', 0)} open, {r.get('bad_edges', 0)} broken, "
                              f"{r.get('loose', 0)} loose - Undo and run again"))
         if sh:
-            if sh.get("lost_pct", 0) > 0.5:
+            if sh.get("lost_pct", 0) > 0.5 and sh.get("detail_only"):
+                out.append(("BLANK1", f"    fine detail flattened: {sh['lost_pct']}% (curls, twists)"))
+                out.append(("BLANK1", "    the bake keeps it as a normal map; for real geometry:"))
+                out.append(("BLANK1", "    raise Triangles or paint it red, run again"))
+            elif sh.get("lost_pct", 0) > 0.5:
                 out.append(("BLANK1", f"    shape lost: {sh['lost_pct']}% (gap {sh['max_gap_pct']}% of size)"))
                 out.append(("BLANK1", "    paint the lost part red (Paint), run again"))
             else:
