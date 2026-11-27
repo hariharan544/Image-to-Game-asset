@@ -276,6 +276,82 @@ def test_appendage_weight_outside_it_goes_to_its_parent_with_a_falloff(parent):
     assert max(len(r) for _i, r in rows) <= 60
 
 
+def test_a_part_kept_as_its_own_piece_is_measured_from_where_it_enters_the_body():
+    """Step 4 keeps a part as its own piece (its root plugged into the body) when it cannot join
+    it as one skin. No edge leads from it to the body, so the root check and the hand-off are
+    measured in space from where it enters the body: the root is owned by its parent, the fade
+    is as wide as on the welded tail, and the panel never says it can tear. (Before: the band
+    was empty - '0%, it can tear' - and every body point lost all its tail weight at once.)
+    Read by connectivity, not by name."""
+    import arp_like
+    import bodies
+    from forge_bpy import parts, rescue
+    bpy.ops.wm.read_homefile(use_empty=True)
+    ob = bodies.bull(voxel=0.012)
+    cap = ob.data.copy()
+    (_k, src, _plug), = rescue.split_off(cap, parts.one_sided_parts(ob.data))
+    target = bpy.data.objects.new("Body_low", cap.copy())
+    piece = bpy.data.objects.new("Body_low_part1", src.copy())
+    for o in (target, piece):
+        bpy.context.scene.collection.objects.link(o)
+    rescue.attach(target, piece)
+    bpy.data.objects.remove(piece)
+    bpy.data.objects.remove(ob)
+    bpy.context.view_layer.update()
+    target["forge_role"], target["forge_part"], target["forge_kind"] = "low", "Body", "body"
+    _arm, _J, _apps, rep = arp_like.build(target)
+    a = rep["appendages"]["tail"]
+    assert a.get("own_piece") and a["root_ok"] and a["root_owner"] == a["parent"] == "spine_01.x", a
+    assert 25.0 < a["fade_mm"] < 70.0 and a["moved_max"] < 0.95, a           # (welded: 41 mm, 0.68)
+    L = importlib.import_module("forge_send.stages_late")
+    text = " ".join(t for _i, t in L._chain_rows({"appendages": {"tail": a}}))
+    assert "tail hangs from spine 01" in text and "tear" not in text, text
+
+
+def test_the_root_row_never_says_a_bone_differs_from_itself():
+    """Under half the root skin on the parent, but no other bone moving more: not a mismatch
+    ('moves with spine 01, not spine 01'). No body skin round the root: not checked."""
+    L = importlib.import_module("forge_send.stages_late")
+    base = {"chain": ["c_tail_00.x"], "parent": "spine_01.x", "fade_mm": 40.0, "moved_points": 0}
+    rows = L._chain_rows({"appendages": {"tail": dict(base, root_share=0.4, root_owner="spine_01.x",
+                                                      root_ok=False)}})
+    text = " ".join(t for _i, t in rows)
+    assert "not spine 01" not in text and "tear" not in text and "40%" in text, text
+    assert rows[0][0] != L.WARN
+    rows = L._chain_rows({"appendages": {"tail": dict(base, root_share=0.0, root_owner="spine_01.x",
+                                                      root_ok=None)}})
+    text = " ".join(t for _i, t in rows)
+    assert "not spine 01" not in text and "0%" not in text and "check" in text, text
+    rows = L._chain_rows({"appendages": {"tail": dict(base, root_share=0.2, root_owner="root.x",
+                                                      root_ok=False)}})
+    assert "not spine 01" in " ".join(t for _i, t in rows) and rows[0][0] == L.WARN
+
+
+def test_a_part_with_no_chain_keeps_its_skin_through_another_chains_hand_off():
+    """A second tail (or a wing) found but not rigged: the first tail's bones that bone heat let
+    move it keep moving it. The hand-off must not pin it to the parent bone, frozen while the
+    checks never move it. A horn (rigid, follows its parent bone) still hands off."""
+    from forge_bpy import arp_rig
+    from forge_bpy.skin import weight_matrix
+    body = _strip()
+    rig = _armature({"spine_01.x": ((0, 0, .22), (0, 0, .44), None, True),
+                     "c_tail_00.x": ((0, .24, .3), (0, .33, .2), "spine_01.x", True)})
+    n = 10
+    tail = [1.0, 1.0, 1.0] + [0.4] * (n - 3)
+    _weights(body, {"c_tail_00.x": tail, "spine_01.x": [0.0] * 3 + [0.6] * (n - 3)})
+    stored = arp_rig.store_regions(body, [{"name": "tail", "kind": "tail", "vert_idx": np.array([0, 1, 2])},
+                                          {"name": "tail2", "kind": "tail", "vert_idx": np.array([8, 9])},
+                                          {"name": "horn_l", "kind": "horn", "vert_idx": np.array([6])}],
+                                   ["tail"])
+    assert stored == ["tail"] and "forge_free_tail2" in body.data.attributes
+    assert "forge_free_horn_l" not in body.data.attributes
+    arp_rig.settle_appendages(body, rig)
+    names, W = weight_matrix(body, {"c_tail_00.x", "spine_01.x"})
+    t = W[:, names.index("c_tail_00.x")]
+    assert np.allclose(t[8:], 0.4) and np.allclose(t[6], 0.0), t           # tail2 kept, the horn handed off
+    assert np.allclose(W.sum(axis=1), 1.0)
+
+
 def test_preserve_volume_is_turned_off_and_reported():
     from forge_bpy import arp_rig
     body = _strip()

@@ -933,8 +933,9 @@ def _chain_rows(rep):
         if isinstance(cp, dict) and cp.get("ok") is False:
             differs.add(chain)
             out.append((WARN, f"{_app_words(chain)} hangs from {_bone_words(cp.get('parent'))},"))
-            out.append(("BLANK1", f"  not {_bone_words(cp.get('wanted'))} (Auto-Rig Pro differs:"))
-            out.append(("BLANK1", "  tell Forge, the root may tear)"))
+            out.append(("BLANK1", f"  not {_bone_words(cp.get('wanted'))} (Auto-Rig Pro differs)."))
+            out.append(("BLANK1", "  Its root may tear when the body bends: send"))
+            out.append(("BLANK1", "  a screenshot of this box back to the Forge team"))
     for app, a in (rep.get("appendages") or {}).items():
         if not isinstance(a, dict):
             continue
@@ -944,9 +945,17 @@ def _chain_rows(rep):
             out.append(("BLANK1", f"  ({str(a.get('error') or a.get('skipped'))[:40]})"))
             continue
         share, parent, owner = a.get("root_share", 0.0), a.get("parent"), a.get("root_owner")
-        if a.get("root_ok", share >= 0.5):
+        ok = a.get("root_ok", share >= 0.5)
+        if ok is None:                               # no body skin round its root to read
+            out.append(("INFO", f"{name} hangs from {_bone_words(parent)}"))
+            out.append(("BLANK1", "  (no body skin round its root to check)"))
+        elif ok:
             out.append((GOOD, f"{name} hangs from {_bone_words(parent)}"))
             out.append(("BLANK1", f"  which moves {share:.0%} of the skin round its root"))
+        elif owner == parent:                        # the biggest share, though under half
+            out.append(("INFO", f"{name} hangs from {_bone_words(parent)}"))
+            out.append(("BLANK1", f"  which moves most ({share:.0%}) of the skin round"))
+            out.append(("BLANK1", "  its root; bones near it move the rest"))
         else:
             out.append((WARN, f"{name}: the skin round its root moves"))
             out.append(("BLANK1", f"  with {_bone_words(owner)}, not {_bone_words(parent)}"))
@@ -1010,6 +1019,9 @@ ANIM_ADVICE = {
              "Blend over a shorter one on the inside of the bend, or add a helper bone.",
     "deep": "Game skinning cannot hold a turn that deep: turn it less, or add a helper bone.",
     "touch": "Parts passing into each other: turn less in that pose, or move the part.",
+    "hidden": "A part Step 4 kept as its own piece has its root hidden in the body; a far turn "
+              "brings it out. Turn it less in that pose, or raise Triangles in Step 4 so it "
+              "joins the body as one skin.",
     "unity": "Unity's limit: fewer bones per point there (smoother, wider weights) helps.",
 }
 STRETCH_FAIL = 2.0                               # (motion_check.LIMITS["stretch"][1])
@@ -1073,7 +1085,9 @@ def _finding_text(where, f) -> tuple:
             text += f"; {t}" + ("" if same else f" in {_when_bent(g)}")
         return text, why
     if c == "crossing" and f.get("kind") == "touch":
-        return f"{where} in {_when_bent(f)}: {f['faces']} faces pass into each other", ["touch"]
+        return f"{where}, {_when_bent(f)}: {f['faces']} faces pass into each other", ["touch"]
+    if c == "crossing" and f.get("kind") == "hidden":
+        return f"{where}, {_when_bent(f)}: {f['faces']} faces come out through the body", ["hidden"]
     if c == "crossing":
         return f"{where}, {_when_bent(f)}: {f['faces']} faces fold through each other", ["folds"]
     if c == "unity":
