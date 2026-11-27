@@ -971,6 +971,7 @@ def attach(target, piece_obj) -> None:
 
 OPEN_LAYER = "forge_open"
 JOINT_ROOM = 1                 # rings of faces each side gives up so the bridge has room
+JOINT_CUTS = 1                 # rings put back across the bridge
 JOINT_RELAX = (4, 8, 16)       # relax + lay-on-the-original rounds for the joint band (checked after each)
 MIN_JOINT_ANGLE = 5.0          # degrees: a smaller corner is a needle that shades and skins badly
 
@@ -1224,6 +1225,13 @@ def _weld(target, piece_obj, src_me, cap_me, full_me):
         joint = [f for f in res.get("faces", []) if f.is_valid]
         if not joint:
             return "bridge", loops
+        # the room given up for the bridge comes back as one ring across it: the joint keeps
+        # about the body's quad size and follows the fillet
+        js = set(joint)
+        cross = list({e for f in joint for e in f.edges if not e[lay] and all(g in js for g in e.link_faces)})
+        if cross:
+            inner = set(bmesh.ops.subdivide_edges(bb, edges=cross, cuts=JOINT_CUTS, use_grid_fill=True)["geom_inner"])
+            joint = [f for f in bb.faces if f in js or any(v in inner for v in f.verts)]
         band = {v for f in joint for v in f.verts}
         for _ in range(2):
             band |= {e.other_vert(v) for v in list(band) for e in v.link_edges}
