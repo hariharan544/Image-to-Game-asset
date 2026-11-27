@@ -12,6 +12,14 @@ Principles:
     vertex then gives one clean loop, never a doubled one.
   - A slice is linked by the mesh edges it crosses, not by distances, so linking needs no
     tolerance. A loop that cannot close (an open mesh, a slice cut short) says so.
+  - The ball that limits a slice keeps the slice's own segments that come near its centre.
+    How big the faces are does not matter: a long face that passes close by still counts.
+  - Loops nest. A loop is a hole only when it sits straight inside a solid loop and runs the
+    other way. A limb inside a bracelet's hole is solid again.
+  - A part taken away (mask_tris) leaves its root patched over, so the body's slices there
+    still close and measure the body alone.
+  - Nothing depends on how the mesh is turned: the default body size is measured from the
+    surface's own centre, not from a box along the axes.
   - Ties go to the lowest index. No set or dict order decides a result.
 
 Inputs are world-space arrays: V is (n, 3) float, T is (m, 3) int (tris(arr) builds it from
@@ -29,6 +37,8 @@ JUMP = 1.8           # a limb meets the body where the slice area grows this man
 BALL_RADII = 3.0     # a slice looks this many local radii around its centre...
 BALL_SIZE = 0.15     # ...or this share of the body's size, whichever is larger
 PLATEAU = 0.03       # radii within 3% of the smallest count as one straight stretch
+BEND_SHARE = 0.25    # each line bend_along fits holds at least a quarter of the points (and 3)
+BEND_TIE = 0.02      # bend angles within 2% of the largest count as the same bend
 CONTACT_BAND = 0.01  # a foot touches the ground within this share of the body's height
 AUTO = "auto"        # profile_along: the ball follows the limb's own radius
 _SLACK = 1e-9        # a ray along a shared edge hits both triangles; the two hits merge after
@@ -102,13 +112,26 @@ class _Slabs:
 
 
 def body_size(V, T=None) -> float:
-    """The longest side of the bounding box of the vertices T uses (all of V without T)."""
+    """A size of the mesh that stays the same when the mesh turns: twice the largest distance
+    of a vertex T uses from the surface's area centroid. Without T (or with no area), all of
+    V and their plain mean. For an upright body it comes out close to its height.
+
+    A box along the axes would not do: the same mesh turned on its side has another box, so
+    every ball and every result built on it would change with the turn."""
     V = np.asarray(V, float)
+    c = None
     if T is not None and len(T):
-        V = V[np.unique(np.asarray(T, np.int64))]
+        T = np.asarray(T, np.int64).reshape(-1, 3)
+        A, B, C = V[T[:, 0]], V[T[:, 1]], V[T[:, 2]]
+        w = 0.5 * np.linalg.norm(np.cross(B - A, C - A), axis=1)
+        V = V[np.unique(T)]
+        if w.sum() > 0:
+            c = (w[:, None] * (A + B + C)).sum(axis=0) / (3.0 * w.sum())
     if not len(V):
         return 0.0
-    return float((V.max(axis=0) - V.min(axis=0)).max())
+    if c is None:
+        c = V.mean(axis=0)
+    return 2.0 * float(np.sqrt(_dist2(V, c).max()))
 
 
 def ball_radius(r_guess, H) -> float:
@@ -138,22 +161,97 @@ def tris(arr, with_poly: bool = False):
     return (T, poly) if with_poly else T
 
 
-def mask_tris(T, excluded) -> np.ndarray:
+def mask_tris(T, excluded, with_caps: bool = False) -> np.ndarray:
     """The triangles left when the excluded vertices are taken away (pass 2 of the joint
-    guess). Only triangles whose three corners are all excluded are dropped: a triangle on
-    the border of a removed part stays, so the body's slice there still closes.
+    guess), with the openings this leaves patched over.
 
-    `excluded` is a bool mask over the vertices, or a list of vertex ids."""
+    Every triangle with an excluded corner is dropped. A part that is its own shell just goes.
+    A part that grows out of the body (an AI mesh is one fused surface) leaves an opening at
+    its root; the opening is patched with triangles between its own border vertices, so a
+    slice of the body there closes with a straight run across the root, as if the part had
+    never been there. The patch needs no new vertices. Holes the mesh had before stay open.
+
+    `excluded` is a bool mask over the vertices (a shorter mask counts the rest as kept), or a
+    list of vertex ids. With with_caps, also returns a bool per triangle: True for a patch."""
     T = np.asarray(T, np.int64).reshape(-1, 3)
     ex = np.asarray(excluded)
     if not len(T):
-        return T
-    if ex.dtype != bool:
-        m = np.zeros(int(T.max()) + 1, bool)
+        return (T, np.zeros(0, bool)) if with_caps else T
+    size = int(T.max()) + 1
+    m = np.zeros(size, bool)
+    if ex.dtype == bool:
+        ex = ex.ravel()[:size]
+        m[:len(ex)] = ex
+    else:
         ids = ex.astype(np.int64).ravel()
-        m[ids[(ids >= 0) & (ids < len(m))]] = True
-        ex = m
-    return T[~(ex[T[:, 0]] & ex[T[:, 1]] & ex[T[:, 2]])]
+        m[ids[(ids >= 0) & (ids < size)]] = True
+    drop = m[T[:, 0]] | m[T[:, 1]] | m[T[:, 2]]
+    keep = T[~drop]
+    caps = _patch_openings(keep, T[drop], size)
+    out = np.vstack([keep, caps]) if len(caps) else keep
+    if with_caps:
+        return out, np.arange(len(out)) >= len(keep)
+    return out
+
+
+def _patch_openings(keep: np.ndarray, gone: np.ndarray, size: int) -> np.ndarray:
+    """Triangles that close the openings left where `gone` met `keep`.
+
+    An edge is on such an opening when one kept triangle and at least one dropped triangle
+    share it. The patch runs each of those edges the other way, so it winds like the faces
+    round it. Each opening is stitched like a zip, from both ends of its border toward the
+    middle, which gives a flat patch across a flat ring. Walks start at the lowest vertex id."""
+    empty = np.zeros((0, 3), np.int64)
+    if not len(keep) or not len(gone):
+        return empty
+
+    def half_edges(T):
+        return np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+
+    hk, hg = half_edges(keep), half_edges(gone)
+    code_k = np.minimum(hk[:, 0], hk[:, 1]) * size + np.maximum(hk[:, 0], hk[:, 1])
+    code_g = np.minimum(hg[:, 0], hg[:, 1]) * size + np.maximum(hg[:, 0], hg[:, 1])
+    _, inv, cnt = np.unique(code_k, return_inverse=True, return_counts=True)
+    border = (cnt[inv.reshape(-1)] == 1) & np.isin(code_k, code_g)
+    if not border.any():
+        return empty
+    # the patch's edges run against the kept faces' edges, sorted by (start, end)
+    e = hk[border][:, ::-1]
+    e = e[np.lexsort((e[:, 1], e[:, 0]))]
+    starts = e[:, 0]
+    used = np.zeros(len(e), bool)
+    tris_out = []
+    for k0 in range(len(e)):
+        if used[k0]:
+            continue
+        ring, k = [int(e[k0, 0])], k0
+        while True:
+            used[k] = True
+            v = int(e[k, 1])
+            if v == ring[0]:
+                break
+            ring.append(v)
+            lo = int(np.searchsorted(starts, v, "left"))
+            hi = int(np.searchsorted(starts, v, "right"))
+            free = [j for j in range(lo, hi) if not used[j]]
+            if not free:
+                ring = []            # the border does not come back round: leave it open
+                break
+            k = free[0]
+        if len(ring) < 3:
+            continue
+        r = int(np.argmin(ring))
+        ring = ring[r:] + ring[:r]
+        i, j, step = 0, len(ring) - 1, 0
+        while j - i > 1:
+            if step % 2 == 0:
+                tris_out.append((ring[i], ring[i + 1], ring[j]))
+                i += 1
+            else:
+                tris_out.append((ring[i], ring[j - 1], ring[j]))
+                j -= 1
+            step += 1
+    return np.array(tris_out, np.int64).reshape(-1, 3)
 
 
 # ---------------------------------------------------------------------------------------
@@ -166,23 +264,35 @@ def cut(V, T, p, n, ball=None, with_tris: bool = False):
     (k, 2, 2): the mesh edge (low vertex id, high vertex id) that each end lies on. Two
     triangles that share an edge share its key and its point exactly; loops() links on that.
 
-    With ball, only triangles with a corner within `ball` of p are used, so a slice that
-    reaches further than the ball comes out open. A vertex exactly on the plane counts as
-    below it. When the faces wind outward, each segment runs counter-clockwise around solid
-    material as seen from the side n points to. With with_tris, also returns the triangle of
-    each segment."""
+    With ball, only the segments that come within `ball` of p are kept (the nearest point of
+    the segment counts, not the triangle's corners), so a slice that reaches further than the
+    ball comes out open, however big or small the faces are. A vertex exactly on the plane
+    counts as below it. When the faces wind outward, each segment runs counter-clockwise
+    around solid material as seen from the side n points to. With with_tris, also returns the
+    triangle of each segment."""
     V = np.asarray(V, float)
     T = np.asarray(T, np.int64).reshape(-1, 3)
     p = np.asarray(p, float)
     n = _unit(n)
-    tid = np.nonzero((T[:, 0] != T[:, 1]) & (T[:, 1] != T[:, 2]) & (T[:, 2] != T[:, 0]))[0]
-    if ball is not None and len(tid):
-        Tt = T[tid]
-        get = _vertex_values(V, Tt, lambda P: _dist2(P, p))
-        r2 = float(ball) ** 2
-        tid = tid[(get(Tt[:, 0]) <= r2) | (get(Tt[:, 1]) <= r2) | (get(Tt[:, 2]) <= r2)]
-    segs, keys, tid = _cut(V, T, tid, p, n)
+    segs, keys, tid = _cut(V, T, _valid(T), p, n)
+    if ball is not None and len(segs):
+        keep = _seg_dist2(segs, p) <= float(ball) ** 2
+        segs, keys, tid = segs[keep], keys[keep], tid[keep]
     return (segs, keys, tid) if with_tris else (segs, keys)
+
+
+def _valid(T: np.ndarray) -> np.ndarray:
+    """Ids of the triangles with three different corners."""
+    return np.nonzero((T[:, 0] != T[:, 1]) & (T[:, 1] != T[:, 2]) & (T[:, 2] != T[:, 0]))[0]
+
+
+def _seg_dist2(segs: np.ndarray, p: np.ndarray) -> np.ndarray:
+    """Squared distance from p to the nearest point of each segment."""
+    A, D = segs[:, 0], segs[:, 1] - segs[:, 0]
+    L2 = (D * D).sum(axis=1)
+    w = ((p - A) * D).sum(axis=1)
+    t = np.clip(np.divide(w, L2, out=np.zeros_like(w), where=L2 > 0), 0.0, 1.0)
+    return _dist2(A + t[:, None] * D, p)
 
 
 def _vertex_values(V, Tt, f):
@@ -398,20 +508,40 @@ def loop_props(loop, n=None) -> dict:
 
 def section(V, T, p, n, ball=None) -> list:
     """Every loop of the slice through p with normal n, each loops() dict merged with its
-    loop_props() and a "hole" flag. A hole is a closed loop that lies inside another closed
-    loop and runs the other way: the inner wall of a hollow tube, not a separate shell."""
-    out = [dict(lp, **loop_props(lp, n), hole=False) for lp in loops(*cut(V, T, p, n, ball))]
+    loop_props(), a "hole" flag and a "parent".
+
+    Closed loops nest. A loop's parent is the smallest closed loop that holds it (most of its
+    points lie inside), as an index into this list, or None. A loop is a hole when its parent
+    is solid and it runs the other way: the inner wall of a hollow tube. Inside a hole a loop
+    is solid again, so an arm through a bracelet stays an arm. Loops are settled from the
+    biggest down, so a parent is always settled first; ties go to the lower index. Open loops
+    take no part in the nesting."""
+    out = [dict(lp, **loop_props(lp, n), hole=False, parent=None)
+           for lp in loops(*cut(V, T, p, n, ball))]
     ring = [i for i, lp in enumerate(out) if lp["closed"] and lp["signed_area"] != 0.0]
-    box = {i: (out[i]["pts"].min(axis=0), out[i]["pts"].max(axis=0)) for i in ring}
+    ring.sort(key=lambda i: (-out[i]["area"], i))
+    # Boxes only skip loops that are far apart. Every point lies on the plane, so each box is
+    # widened by a share of its own size: rounding along the normal must not decide.
+    box = {}
     for i in ring:
-        q = out[i]["pts"][0]
-        for j in ring:
-            if (i != j and out[j]["area"] > out[i]["area"]
-                    and (out[i]["signed_area"] > 0) != (out[j]["signed_area"] > 0)
-                    and (box[j][0] <= q).all() and (q <= box[j][1]).all()
-                    and out[j]["contains"](q)):
-                out[i]["hole"] = True
+        lo, hi = out[i]["pts"].min(axis=0), out[i]["pts"].max(axis=0)
+        pad = 1e-6 * float((hi - lo).max())
+        box[i] = (lo - pad, hi + pad)
+    for k, i in enumerate(ring):
+        P = out[i]["pts"]
+        q = P[np.unique(np.linspace(0, len(P) - 1, min(len(P), 16)).astype(np.int64))]
+        mid = 0.5 * (P.min(axis=0) + P.max(axis=0))
+        for j in reversed(ring[:k]):                 # smallest first: the first that holds it
+            if out[j]["area"] <= out[i]["area"]:
+                continue
+            if not ((box[j][0] <= mid).all() and (mid <= box[j][1]).all()):
+                continue
+            if 2 * int(np.count_nonzero(out[j]["contains"](q))) > len(q):
+                out[i]["parent"] = j
                 break
+        j = out[i]["parent"]
+        out[i]["hole"] = bool(j is not None and not out[j]["hole"]
+                              and (out[i]["signed_area"] > 0) != (out[j]["signed_area"] > 0))
     return out
 
 
@@ -422,20 +552,32 @@ def loop_at(V, T, p, n, ball=None):
     The loop is the smallest closed loop around p; else the smallest open one around p
     (measured as if closed); else, when p is in none (a bent limb leaves a straight axis),
     the loop whose centroid is nearest, closed ones first. It is a section() dict plus
-    "inside" (p is in it) and "n_inside" (how many loops have p in them: more than one
-    means the limb runs inside another shell here). (None, 0) when the slice is empty."""
-    lps = [lp for lp in section(V, T, p, n, ball) if not lp["hole"]]
-    if not lps:
+      inside     p is in it
+      enclosing  the areas of the other loops whose material is round p, biggest first: a
+                 body the limb runs into, or a sleeve over it. A loop with p in its hole (a
+                 bracelet round the limb) does not count.
+      n_inside   1 when p is in the loop, plus one per enclosing loop: more than one means
+                 the limb runs inside another shell here.
+    (None, 0) when the slice is empty."""
+    sec = section(V, T, p, n, ball)
+    solid = [k for k, lp in enumerate(sec) if not lp["hole"]]
+    if not solid:
         return None, 0
     p = np.asarray(p, float)
-    ins = [lp["contains"](p) for lp in lps]
-    pick = [i for i in range(len(lps)) if ins[i]]
+    ins = [bool(sec[k]["contains"](p)) for k in solid]
+    pick = [m for m in range(len(solid)) if ins[m]]
     if pick:
-        i = min(pick, key=lambda i: (not lps[i]["closed"], lps[i]["area"], i))
+        m = min(pick, key=lambda m: (not sec[solid[m]]["closed"], sec[solid[m]]["area"], m))
     else:
-        d = [float(np.linalg.norm(lp["centroid"] - p)) for lp in lps]
-        i = min(range(len(lps)), key=lambda i: (not lps[i]["closed"], d[i], i))
-    return dict(lps[i], inside=bool(ins[i]), n_inside=int(sum(ins))), len(lps)
+        d = [float(np.linalg.norm(sec[k]["centroid"] - p)) for k in solid]
+        m = min(range(len(solid)), key=lambda m: (not sec[solid[m]]["closed"], d[m], m))
+    # a solid loop whose hole holds p has its material round the hole, not round p
+    held = {lp["parent"] for lp in sec if lp["hole"] and lp["contains"](p)}
+    enclosing = sorted((sec[solid[o]]["area"] for o in pick if o != m and solid[o] not in held),
+                       reverse=True)
+    lp = dict(sec[solid[m]], inside=ins[m], enclosing=enclosing,
+              n_inside=int(ins[m]) + len(enclosing))
+    return lp, len(solid)
 
 
 # ---------------------------------------------------------------------------------------
@@ -445,12 +587,15 @@ def profile_along(V, T, a, b, steps: int = 24, ball=AUTO, H=None, r_guess=None) 
     """Slices across the segment a -> b, at t = 0, 1/steps, ..., 1, each with normal (b - a).
 
     Each sample is {t, s (distance from a), p (the point on the axis), found, closed, inside,
-    n_inside, n_loops, r, area, centroid, loop, ball}; `loop` is the loop_at() dict.
+    n_inside, enclosing, n_loops, end, r, area, centroid, loop, ball}; `loop` is the loop_at()
+    dict. `end` is True when the plane misses the mesh altogether (past its end, or in a gap
+    between shells), as against a slice that only runs out of the ball.
 
     ball: a number limits every slice to that radius; None does not limit; AUTO (the
-    default) uses ball_radius(r_guess, H), where r_guess follows the last closed loop around
-    the axis. Until a first loop gives a radius, the slice is not limited. H is the body's
-    size (its height when upright); it defaults to the longest side of the mesh's box."""
+    default) uses ball_radius(r_guess, H) on every slice, where r_guess follows the last
+    closed loop around the axis; before any loop gives a radius that is 0.15 H. H is the
+    body's size (its height when upright); it defaults to body_size(), which does not change
+    when the mesh turns."""
     V = np.asarray(V, float)
     T = np.asarray(T, np.int64).reshape(-1, 3)
     a, b = np.asarray(a, float), np.asarray(b, float)
@@ -467,11 +612,14 @@ def profile_along(V, T, a, b, steps: int = 24, ball=AUTO, H=None, r_guess=None) 
     for i in range(steps + 1):
         t = i / steps
         p = a + t * ax
-        bl = (ball_radius(r_guess, H) if r_guess else None) if auto else ball
-        lp, nl = loop_at(V, slabs.near(t * length), p, n, bl)
+        bl = ball_radius(r_guess, H) if auto else ball
+        near = slabs.near(t * length)
+        lp, nl = loop_at(V, near, p, n, bl)
+        end = lp is None and not len(_cut(V, near, _valid(near), p, n)[0])
         smp = {"t": t, "s": t * length, "p": p, "found": lp is not None, "closed": bool(lp and lp["closed"]),
                "inside": bool(lp and lp["inside"]), "n_inside": lp["n_inside"] if lp else 0,
-               "n_loops": nl, "r": lp["r"] if lp else 0.0, "area": lp["area"] if lp else 0.0,
+               "enclosing": lp["enclosing"] if lp else [], "n_loops": nl, "end": bool(end),
+               "r": lp["r"] if lp else 0.0, "area": lp["area"] if lp else 0.0,
                "centroid": lp["centroid"] if lp else None, "loop": lp, "ball": bl}
         if auto and smp["closed"] and smp["inside"] and smp["r"] > 0:
             r_guess = smp["r"]
@@ -487,18 +635,34 @@ def profile_centroids(profile: list):
             np.array([s["centroid"] for s in good], float).reshape(-1, 3))
 
 
+def _in_bigger_shell(smp: dict, area: float, jump: float) -> float:
+    """How many times the biggest loop round the sample's axis point outgrows `area`, when
+    that is more than `jump` times; else 0. A sleeve over a limb is only a little bigger and
+    does not count; a body the limb runs into is many times bigger."""
+    big = max(smp.get("enclosing") or [0.0])
+    if area > 0 and big > jump * area:
+        return big / area
+    return 0.0
+
+
 def crease_along(profile: list, jump: float = JUMP, skip_tip: bool = True, reverse: bool = False):
     """Where a limb merges into the body: walking the profile from its first sample (build it
     from the limb's free end toward the body; reverse walks from the last), the first place
     where
       - the slice area grows more than `jump` times from one sample to the next ("jump"),
-      - the loop stops being closed: it runs out of the ball or out of the mesh ("open"),
-      - or the axis is inside more than one loop: the limb runs on inside another shell
-        ("split").
+      - the loop stops being closed: it runs out of the ball ("open"),
+      - or the axis runs inside another shell more than `jump` times the limb's area: an arm
+        that is its own shell, pushed into the body ("split"). A shell only a little bigger
+        (a sleeve, armour, cloth over the limb) does not count; the walk keeps to the limb.
     The 1.8 matches the measured armpit and groin jumps; it is a ratio, not a size.
+
+    A slice that misses the mesh altogether (past the limb's end, or a gap between shells)
+    is skipped, so a limb that just ends has no crease.
 
     The walk starts at the first closed loop. With skip_tip it also skips the samples
     closer to that first loop than their own radius: a rounded tip grows fast too.
+
+    Works on profile_along() samples; trunk_axis() samples work too (z stands in for s).
 
     Returns {t, p, before, after, reason, ratio} or None. t (and p) lie halfway between the
     last limb sample (index `before`) and the first sample past the crease (`after`)."""
@@ -507,21 +671,26 @@ def crease_along(profile: list, jump: float = JUMP, skip_tip: bool = True, rever
     for i in order:
         smp = profile[i]
         good = smp["found"] and smp["closed"]
+        if smp.get("end"):
+            continue
         if prev is None:
-            if not good or smp["n_inside"] > 1:
+            if not good or _in_bigger_shell(smp, smp["area"], jump):
                 continue
             if skip_tip:
+                s = smp.get("s", smp.get("z", smp["t"]))
                 if tip is None:
-                    tip = smp["s"]
-                if abs(smp["s"] - tip) < smp["r"]:
+                    tip = s
+                if abs(s - tip) < smp["r"]:
                     continue
             prev = i
             continue
         last = profile[prev]
         ratio = smp["area"] / last["area"] if last["area"] > 0 else math.inf
-        why = ("open" if not good else "split" if smp["n_inside"] > 1 else
-               "jump" if ratio > jump else None)
+        shell = _in_bigger_shell(smp, last["area"], jump) if good else 0.0
+        why = ("open" if not good else "split" if shell else "jump" if ratio > jump else None)
         if why:
+            if why == "split":
+                ratio = shell
             return {"t": 0.5 * (last["t"] + smp["t"]), "p": 0.5 * (last["p"] + smp["p"]),
                     "before": prev, "after": i, "reason": why, "ratio": ratio}
         prev = i
@@ -606,22 +775,72 @@ def _direction(P: np.ndarray) -> np.ndarray:
     return d if (P[-1] - P[0]) @ d >= 0 else -d
 
 
-def bend_along(centroids):
+def bend_along(centroids, with_point: bool = False):
     """(max_angle_deg, index, direction) of a polyline of loop centroids.
 
-    For every inner point i, a line is fitted to the points before i and another to the
-    points after it (i itself is left out: a slice right at a joint mixes both sides). The
-    bend is the largest angle between such a pair of lines; index is that i; direction is
-    the unit vector the bend's corner points to, away from the straight line between the
-    ends. (0.0, None, zero vector) with fewer than 5 points."""
+    For an inner point i, a line is fitted to the points before i and another to the points
+    after it (i itself is left out: a slice right at a joint mixes both sides). Each line
+    fits at least a quarter of the points, and at least 3, so a bulge or a little noise near
+    an end cannot pass for a bend. The bend is the largest angle between such a pair of
+    lines. On a clean corner several i give the same angle: the angles within 2% of the
+    largest that run on from it count as one bend, and the middle one of that run is used.
+
+    The corner is where the two lines of that pair meet, brought to the nearest point of the
+    polyline (a smooth bend's lines meet outside it); index is the centroid nearest that
+    corner. So the answer comes from the shape, not from which samples happen to exist.
+    direction is the unit vector the corner points to, away from the straight line between
+    the ends. With with_point, the corner point is returned fourth.
+
+    (0.0, None, zero vector) with fewer than 7 points or a straight line."""
     P = np.asarray(centroids, float).reshape(-1, 3)
-    best = (0.0, None, np.zeros(3))
-    for i in range(2, len(P) - 2):
+    none = (0.0, None, np.zeros(3)) + ((None,) if with_point else ())
+    m = max(3, math.ceil(BEND_SHARE * len(P)))
+    cand = list(range(m, len(P) - m))
+    if not cand:
+        return none
+    fits = []
+    for i in cand:
         da, db = _direction(P[:i]), _direction(P[i + 1:])
-        ang = math.degrees(math.acos(float(np.clip(da @ db, -1.0, 1.0))))
-        if ang > best[0]:
-            best = (ang, i, _unit(da - db))
-    return best
+        fits.append((math.degrees(math.acos(float(np.clip(da @ db, -1.0, 1.0)))), da, db))
+    ang = np.array([f[0] for f in fits])
+    k = int(np.argmax(ang))
+    if ang[k] <= 0.0:
+        return none
+    near = ang >= ang[k] * (1.0 - BEND_TIE)
+    lo, hi = k, k
+    while lo > 0 and near[lo - 1]:
+        lo -= 1
+    while hi < len(ang) - 1 and near[hi + 1]:
+        hi += 1
+    k = (lo + hi) // 2
+    i, (_, da, db) = cand[k], fits[k]
+    corner = _nearest_on_polyline(P, _lines_meet(P[:i].mean(axis=0), da, P[i + 1:].mean(axis=0), db))
+    index = int(np.argmin(_dist2(P, corner)))
+    out = (float(ang.max()), index, _unit(da - db))
+    return out + ((corner,) if with_point else ())
+
+
+def _lines_meet(c1, d1, c2, d2) -> np.ndarray:
+    """The point halfway between the closest points of two lines (c, unit d)."""
+    w = c1 - c2
+    b, d, e = float(d1 @ d2), float(d1 @ w), float(d2 @ w)
+    den = 1.0 - b * b
+    if den <= 0.0:
+        return 0.5 * (c1 + c2)
+    s, u = (b * e - d) / den, (e - b * d) / den
+    return 0.5 * (c1 + s * d1 + c2 + u * d2)
+
+
+def _nearest_on_polyline(P: np.ndarray, q: np.ndarray) -> np.ndarray:
+    """The point of the polyline P nearest q (ties go to the first segment)."""
+    if len(P) == 1:
+        return P[0].copy()
+    seg = np.stack([P[:-1], P[1:]], axis=1)
+    k = int(np.argmin(_seg_dist2(seg, q)))
+    A, D = seg[k, 0], seg[k, 1] - seg[k, 0]
+    L2 = float(D @ D)
+    t = min(max(float((q - A) @ D) / L2, 0.0), 1.0) if L2 > 0 else 0.0
+    return A + t * D
 
 
 # ---------------------------------------------------------------------------------------

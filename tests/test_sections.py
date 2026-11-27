@@ -129,18 +129,40 @@ def _box(lo, hi, n=4):
     return _mesh(co, faces)
 
 
-def _box_arm(w=1.0, h=0.6, r=0.3, arm=2.4):
+def _box_arm(w=1.0, h=0.6, r=0.3, arm=2.4, arm_rings=10):
     """A box (x from -w to w, y and z from -h to h) with an arm of radius r fused into its +X
-    side: one closed surface. The arm ends at x = w + arm."""
+    side: one closed surface. The arm ends at x = w + arm; arm_rings=2 gives faces that run
+    its whole length."""
     phi = 2 * np.pi * np.arange(K) / K
     dirs = np.stack([np.cos(phi), np.sin(phi)], 1)
     rect = dirs / np.abs(dirs).max(axis=1, keepdims=True) * h
     rings = []
     for x in np.linspace(-w, w, 6):
         rings.append(np.column_stack([np.full(K, x), rect]))
-    for x in np.linspace(w, w + arm, 10):
+    for x in np.linspace(w, w + arm, arm_rings):
         rings.append(np.column_stack([np.full(K, x), r * dirs]))
     return _loft(rings)
+
+
+def _ring_shell(x0, x1, ri, ro):
+    """A hollow ring round the X axis (a bracelet, a belt) from x0 to x1: an outer wall of
+    radius ro and an inner wall of radius ri, joined by flat ends, all faces winding out of
+    the ring's material."""
+    e1, e2 = np.array([0.0, 1.0, 0.0]), np.array([0.0, 0.0, 1.0])
+    rings = [_ring((x, 0, 0), e1, e2, rad) for x, rad in ((x0, ro), (x1, ro), (x1, ri), (x0, ri))]
+    ids = [list(range(i * K, (i + 1) * K)) for i in range(4)]
+    faces = []
+    for a, b in zip(ids, ids[1:] + ids[:1]):
+        faces += [[a[j], a[(j + 1) % K], b[(j + 1) % K], b[j]] for j in range(K)]
+    return _mesh(np.vstack(rings), faces)
+
+
+def _rot(seed):
+    """A fixed random rotation (no mirror)."""
+    q, _ = np.linalg.qr(np.random.default_rng(seed).normal(size=(3, 3)))
+    if np.linalg.det(q) < 0:
+        q[:, 0] *= -1
+    return q
 
 
 def _bent_tube(r=0.2, length=3.0, bend=30.0, n=8):
@@ -203,12 +225,50 @@ def test_tris_fans_polygons_and_keeps_winding():
     assert (nz > 0).all()                       # same winding as the polygons
 
 
-def test_mask_tris_drops_only_fully_excluded_triangles():
+def test_mask_tris_drops_every_triangle_with_an_excluded_corner():
     T = np.array([[0, 1, 2], [2, 3, 4], [3, 4, 5]])
-    assert S.mask_tris(T, [3, 4, 5]).tolist() == [[0, 1, 2], [2, 3, 4]]
+    assert S.mask_tris(T, [3, 4, 5]).tolist() == [[0, 1, 2]]
     ex = np.zeros(6, bool)
-    ex[[2, 3, 4]] = True
-    assert S.mask_tris(T, ex).tolist() == [[0, 1, 2], [3, 4, 5]]
+    ex[[3]] = True
+    assert S.mask_tris(T, ex).tolist() == [[0, 1, 2]]
+    # a bool mask over fewer vertices than the mesh has counts the rest as kept
+    assert S.mask_tris(T, np.zeros(2, bool)).tolist() == T.tolist()
+    assert S.mask_tris(T, []).tolist() == T.tolist()
+
+
+def _edge_faces(T):
+    """For each directed edge, how many triangles run along it."""
+    he = np.concatenate([T[:, [0, 1]], T[:, [1, 2]], T[:, [2, 0]]])
+    keys, cnt = np.unique(he, axis=0, return_counts=True)
+    return {tuple(k): int(c) for k, c in zip(keys.tolist(), cnt.tolist())}
+
+
+def test_mask_tris_closes_the_root_of_a_fused_part():
+    """An arm that grows out of the body (one surface) is masked: the body's slices through
+    its root still close, measure the body alone, and the trunk axis finds every sample."""
+    w, h = 1.0, 0.6
+    V, T = _box_arm(w=w, h=h)
+    arm = V[:, 0] > w + 1e-9
+    Tm, cap = S.mask_tris(T, arm, with_caps=True)
+    assert cap.any() and not cap[:len(Tm) - int(cap.sum())].any()
+    assert not np.isin(Tm, np.nonzero(arm)[0]).any()
+    # closed and wound alike: every edge has one face each way
+    ef = _edge_faces(Tm)
+    assert all(c == 1 and ef.get((b, a)) == 1 for (a, b), c in ef.items())
+    for z in (0.0, 0.1, 0.25):
+        sec = S.section(V, Tm, (0, 0, z), (0, 0, 1))
+        assert len(sec) == 1 and sec[0]["closed"] and sec[0]["signed_area"] > 0
+        assert sec[0]["area"] == pytest.approx(2 * w * 2 * h, rel=1e-9)
+    axis = S.trunk_axis(V, Tm, -0.5, 0.5, 0.0, steps=10)
+    assert all(s["found"] and s["closed"] for s in axis)
+    assert S.inside(V, Tm, (0.9, 0.05, 0.03)) and not S.inside(V, Tm, (1.5, 0.05, 0.03))
+    # a hole the mask makes is patched; the holes the mesh had (an open tube's ends) stay open
+    Vc, Tc = _cylinder(0.5, 0.0, 2.0, caps=False)
+    Tcm = S.mask_tris(Tc, [2 * K])               # one vertex halfway up the side
+    ef = _edge_faces(Tcm)
+    open_edges = [e for e in ef if (e[1], e[0]) not in ef]
+    assert len(open_edges) == 2 * K
+    assert all(abs(Vc[a, 2] - Vc[b, 2]) < 1e-12 and Vc[a, 2] in (0.0, 2.0) for a, b in open_edges)
 
 
 def test_mask_tris_removes_an_excluded_part_from_slices():
@@ -301,6 +361,46 @@ def test_hollow_tube_inner_wall_is_a_hole():
     assert n_loops == 1 and lp["r"] == pytest.approx(1.0, rel=0.02)
 
 
+def test_limb_through_a_bracelet_stays_solid():
+    """Inside a hollow ring a loop is solid again: an arm through a bracelet is not a hole, so
+    the profile keeps the arm's radius and the armpit stays at the armpit."""
+    w, r = 1.0, 0.3
+    arm = _box_arm(w=w, r=r)
+    for ro in (0.4, 0.45, 0.6):
+        V, T = _join(arm, _ring_shell(2.6, 2.8, 0.31, ro))
+        sec = S.section(V, T, (2.7, 0, 0), (-1, 0, 0))
+        by_r = sorted(sec, key=lambda lp: lp["r"])
+        limb, inner, outer = by_r
+        assert not limb["hole"] and inner["hole"] and not outer["hole"]
+        assert sec[limb["parent"]] is inner and sec[inner["parent"]] is outer
+        assert outer["parent"] is None
+        lp, n_loops = S.loop_at(V, T, (2.7, 0, 0), (-1, 0, 0))
+        assert n_loops == 2 and lp["r"] == pytest.approx(r, rel=0.02)
+        assert lp["n_inside"] == 1 and lp["enclosing"] == []
+        a, b = np.array([w + 2.4, 0, 0]), np.zeros(3)
+        prof = S.profile_along(V, T, a, b)
+        assert max(s["r"] for s in prof if s["p"][0] > w + 0.2) == pytest.approx(r, rel=0.02)
+        c = S.crease_along(prof)
+        assert abs(c["p"][0] - w) < 0.3 * r
+        fine = S.find_crease(V, T, a, b)
+        assert abs(fine["p"][0] - w) < 0.05 * r
+
+
+def test_nesting_three_deep():
+    """A hollow rod through a hollow ring: wall, hole, solid, hole, from the outside in. The
+    same when turned: every point lies on the plane, and rounding along it must not decide."""
+    ring = _ring_shell(-0.5, 0.5, 0.6, 1.0)
+    rod = _ring_shell(-2.0, 2.0, 0.2, 0.4)
+    V, T = _join(ring, rod)
+    for seed in (None, 0, 1, 2):
+        R = np.eye(3) if seed is None else _rot(seed)
+        sec = S.section(V @ R.T, T, np.array([0.1, 0, 0]) @ R.T, np.array([1.0, 0, 0]) @ R.T)
+        order = sorted(range(len(sec)), key=lambda i: -sec[i]["r"])
+        assert [sec[i]["hole"] for i in order] == [False, True, False, True]
+        assert [round(sec[i]["r"], 1) for i in order] == [1.0, 0.6, 0.4, 0.2]
+        assert [sec[i]["parent"] for i in order] == [None] + order[:3]
+
+
 def test_ball_limit_opens_a_slice_that_reaches_further():
     assert S.ball_radius(0.1, 2.0) == pytest.approx(0.3)      # 0.15 H wins
     assert S.ball_radius(0.2, 2.0) == pytest.approx(0.6)      # 3 r wins
@@ -310,6 +410,27 @@ def test_ball_limit_opens_a_slice_that_reaches_further():
     assert lps and not any(lp["closed"] for lp in lps)
     lps = S.loops(*S.cut(V, T, (0, -1.0, 0), (0, 0, 1)))
     assert len(lps) == 1 and lps[0]["closed"]
+
+
+def test_ball_keeps_long_faces_that_pass_close_by():
+    """The ball measures the slice, not the triangle corners: a limb whose faces run its whole
+    length still closes in every slice, and its armpit is found where it is."""
+    for rings in (2, 3, 4):
+        V, T = _cylinder(0.2, 0.0, 4.0, axis="x", n=rings)
+        prof = S.profile_along(V, T, (4.0, 0, 0), (0.0, 0, 0))
+        assert all(s["closed"] for s in prof[:-1])
+        assert S.crease_along(prof) is None
+        segs, _ = S.cut(V, T, (2.0, 0, 0), (1, 0, 0), ball=0.3)
+        assert len(S.loops(segs, _)) == 1
+    w, r = 1.0, 0.3
+    for rings in (2, 3):
+        V, T = _box_arm(w=w, r=r, arm_rings=rings)
+        a, b = np.array([w + 2.4, 0, 0]), np.zeros(3)
+        prof = S.profile_along(V, T, a, b)
+        assert all(s["closed"] for s in prof)
+        c = S.crease_along(prof)
+        assert abs(c["p"][0] - w) < 0.3 * r
+        assert abs(S.find_crease(V, T, a, b)["p"][0] - w) < 0.05 * r
 
 
 # ---------------------------------------------------------------------------------------
@@ -398,6 +519,39 @@ def test_crease_arm_into_box():
     assert found[0][2] == pytest.approx(found[2][2], rel=1e-9)
 
 
+def test_crease_arm_into_box_turned():
+    """The same body turned any way gives the same crease: no size or ball depends on the
+    axes."""
+    w, r, arm = 1.0, 0.3, 2.4
+    V, T = _box_arm(w=w, r=r, arm=arm)
+    a, b = np.array([w + arm, 0, 0]), np.zeros(3)
+    ref = S.crease_along(S.profile_along(V, T, a, b))
+    for seed in range(4):
+        R = _rot(seed)
+        assert S.body_size(V @ R.T, T) == pytest.approx(S.body_size(V, T), rel=1e-9)
+        c = S.crease_along(S.profile_along(V @ R.T, T, a @ R.T, b @ R.T))
+        assert (c["t"], c["reason"], c["before"]) == (ref["t"], ref["reason"], ref["before"])
+        fine = S.find_crease(V @ R.T, T, a @ R.T, b @ R.T)
+        assert abs((fine["p"] @ R)[0] - w) < 0.05 * r
+
+
+def test_crease_ignores_a_sleeve():
+    """A loose sleeve over the upper arm (a closed shell, or a single-sided cloth tube) is only a
+    little bigger than the arm: the walk keeps to the arm and finds the armpit, not the cuff."""
+    w, r = 1.0, 0.3
+    arm = _box_arm(w=w, r=r)
+    for caps in (True, False):
+        V, T = _join(arm, _cylinder(1.2 * r, 0.95, 2.2, axis="x", n=8, caps=caps))
+        a, b = np.array([w + 2.4, 0, 0]), np.zeros(3)
+        prof = S.profile_along(V, T, a, b)
+        in_sleeve = [s for s in prof if w + 0.1 < s["p"][0] < 2.1]
+        assert in_sleeve and all(s["n_inside"] == 2 for s in in_sleeve)
+        assert all(s["r"] == pytest.approx(r, rel=0.02) for s in in_sleeve)
+        c = S.crease_along(prof)
+        assert abs(c["p"][0] - w) < 0.3 * r
+        assert abs(S.find_crease(V, T, a, b)["p"][0] - w) < 0.05 * r
+
+
 def test_crease_of_an_arm_that_is_a_separate_shell():
     """An arm pushed into the body as its own shell keeps its size inside: the crease is where
     the axis is first inside two loops."""
@@ -406,8 +560,22 @@ def test_crease_of_an_arm_that_is_a_separate_shell():
     arm = _cylinder(r, 0.2, 3.0, axis="x", n=12)
     V, T = _join(body, arm)
     c = S.crease_along(S.profile_along(V, T, (3.0, 0, 0), (0, 0, 0)))
-    assert c["reason"] == "split"
+    assert c["reason"] == "split" and c["ratio"] > S.JUMP
     assert abs(c["p"][0] - w) < 0.3 * r
+
+
+def test_a_limb_that_just_ends_has_no_crease():
+    """The last slice of a profile that runs to the mesh's end face is empty: that is the end
+    of the mesh, not a crease."""
+    V, T = _cylinder(0.2, 0.0, 4.0, axis="x", n=12)
+    prof = S.profile_along(V, T, (4.0, 0, 0), (0.0, 0, 0))
+    assert prof[-1]["end"] and not prof[-1]["found"]
+    assert S.crease_along(prof) is None and S.find_crease(V, T, (4.0, 0, 0), (0.0, 0, 0)) is None
+    # every slice is limited, the first one too: 0.15 H before any radius is known
+    assert prof[0]["ball"] == pytest.approx(S.BALL_SIZE * S.body_size(V, T))
+    # trunk_axis samples walk too
+    axis = S.trunk_axis(*_cylinder(0.5, 0.0, 2.0), 0.2, 1.8, 0.0, steps=6)
+    assert S.crease_along(axis) is None
 
 
 def test_crease_skips_a_rounded_tip():
@@ -457,6 +625,65 @@ def test_bend_along():
     V, T = _cylinder(0.2, 0.0, 4.0, axis="x", n=9)
     _, cen = S.profile_centroids(S.profile_along(V, T, (0.3, 0, 0), (3.7, 0, 0)))
     assert S.bend_along(cen)[0] < 1e-6
+
+
+def _bend_case():
+    (V, T), _, _, knee = _bent_tube(r=0.2, length=3.0, bend=30.0)
+    h = math.radians(15)
+    a = np.array([0.5 * math.cos(h), 0.5 * math.sin(h), 0])
+    b = np.array([6.0 * math.cos(h) - 0.5 * math.cos(h), 0.5 * math.sin(h), 0])
+    return V, T, a, b, knee
+
+
+def test_bend_along_corner_is_the_shape_not_the_samples():
+    """On a clean corner several line pairs give the same angle. The corner comes from where
+    the lines meet, so turning the mesh, renumbering it or losing samples does not move it."""
+    V, T, a, b, knee = _bend_case()
+    r = 0.2
+    ang, i, _, corner = S.bend_along(S.profile_centroids(S.profile_along(V, T, a, b))[1],
+                                             with_point=True)
+    assert abs(ang - 30.0) < 0.5 and i == 12
+    assert np.linalg.norm(corner - knee) < 0.05 * r
+    for seed in range(6):
+        R = _rot(seed)
+        perm = np.random.default_rng(seed).permutation(len(V))
+        inv = np.empty_like(perm)
+        inv[perm] = np.arange(len(V))
+        Vs, Ts = (V @ R.T)[perm], inv[T]
+        prof = S.profile_along(Vs, Ts, a @ R.T, b @ R.T)
+        _, cen = S.profile_centroids(prof)
+        assert len(cen) == 25
+        ang2, i2, dir2, corner2 = S.bend_along(cen, with_point=True)
+        assert abs(ang2 - 30.0) < 0.5 and i2 == i
+        assert np.linalg.norm(corner2 @ R - knee) < 0.05 * r
+        assert (dir2 @ R)[1] > 0.99
+    # samples lost round the corner (open slices) leave a gap; the corner stays put along the limb
+    _, cen = S.profile_centroids(S.profile_along(V, T, a, b))
+    gap = np.delete(cen, range(9, 16), axis=0)
+    ang3, _, _, corner3 = S.bend_along(gap, with_point=True)
+    assert abs(ang3 - 30.0) < 0.5
+    assert abs(corner3[0] - knee[0]) < 0.5 * r
+
+
+def test_bend_along_ignores_end_bulges_and_noise():
+    """A one-sided bulge near the end (a wrist bone) or a little surface noise must not read as
+    a bend past the 3.6 deg elbow rule."""
+    r, L = 0.3, 2.4
+    e1, e2 = np.array([0, 1.0, 0]), np.array([0, 0, 1.0])
+    phi = 2 * np.pi * np.arange(K) / K
+    rings = []
+    for x in np.linspace(0, L, 25):
+        c = np.array([x, 0, 0.0])
+        rad = r * (1 + 2 * 0.08 * np.clip(np.cos(phi), 0, None)) if x > L - 0.25 else np.full(K, r)
+        rings.append(c + rad[:, None] * (np.cos(phi)[:, None] * e1 + np.sin(phi)[:, None] * e2))
+    V, T = _loft(rings)
+    _, cen = S.profile_centroids(S.profile_along(V, T, (0.02, 0, 0), (L - 0.02, 0, 0)))
+    assert S.bend_along(cen)[0] < 3.6
+    for seed in range(5):
+        V, T = _cylinder(0.25, 0.0, 4.0, axis="x", n=41)
+        V = V + np.random.default_rng(seed).normal(scale=0.05 * 0.25, size=V.shape)
+        _, cen = S.profile_centroids(S.profile_along(V, T, (0.3, 0, 0), (3.7, 0, 0)))
+        assert S.bend_along(cen)[0] < 3.6
 
 
 def test_area_jumps_both_ways():
