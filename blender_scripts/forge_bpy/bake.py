@@ -446,7 +446,7 @@ def fit_cage(low, surf: _Surface, high_mw, size: int = 1024, max_rel: float = CA
     failing = bad > 0
     return {"push": push * s_h / s_l, "max_ray": reach * s_h,
             "need": need_v * s_h / s_l, "cap": cap * s_h / s_l, "failing_faces": np.unique(fidx[failing]),
-            "unenclosed": int(len(np.unique(fidx[failing]))),
+            "unenclosed": len(np.unique(fidx[failing])),
             "unenclosed_samples": int(failing.sum()), "in_neighbour_samples": int((bad == 2).sum()),
             "samples": int(S), "raised": raised, "lowered": lowered,
             "push_mm": [round(float(x) * s_h * 1000, 2) for x in (np.percentile(push, 50), np.percentile(push, 99), push.max())] if n else [0, 0, 0]}
@@ -516,7 +516,7 @@ def _bake_res(size: int) -> int:
 def _raster(low, res: int):
     """Which low triangle each texel centre of a res x res bake falls in (row 0 = v 0), where in
     it (barycentrics), and its UV island: (tri (-1 = none), bary, island (-1 = none))."""
-    tv, tl, _co, _vn, uv = _low_arrays(low)
+    _tv, tl, _co, _vn, uv = _low_arrays(low)
     key = _hash(tl, uv if uv is not None else np.zeros(0), np.array([res]))
     if key in _RASTER:
         return _RASTER[key]
@@ -584,7 +584,7 @@ def _deep_mask(solid: _Surface, pts: np.ndarray, depth: float, cell: float) -> n
     g = max(cell, 1e-9)
     lo = S.min(axis=0) - 3 * g
     dims = np.ceil((S.max(axis=0) + 3 * g - lo) / g).astype(np.int64) + 1
-    while int(np.prod(dims)) > 48_000_000:
+    while int(np.prod(dims)) > 24_000_000:            # memory: a coarser grid only trims less
         g *= 1.26
         dims = np.ceil((S.max(axis=0) + 3 * g - lo) / g).astype(np.int64) + 1
     occ = np.zeros(tuple(dims), bool)

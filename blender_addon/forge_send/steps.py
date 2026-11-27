@@ -197,7 +197,7 @@ def ensure_detail_maps(strength: float, recompute: bool = False) -> int:
 RIGID_EDGE_FACTOR = 0.7     # rigid parts (horns): edges up to 1.4x longer, about half the quads
 
 
-def _rigid_factors(p, me, co_w, regions, budget: int) -> np.ndarray:
+def _rigid_factors(p, me, co_w, regions, budget: int) -> "np.ndarray":
     """Edge factor per vertex for rigid parts (horns): fewer quads, as they never bend - but
     never so few that a face cuts the part's curve by more than half the bake cage's margin.
     A face of edge e on a curve of radius r sits e^2 / (8 r) inside it (the sagitta); past
@@ -205,10 +205,10 @@ def _rigid_factors(p, me, co_w, regions, budget: int) -> np.ndarray:
     The detail map's own value is never raised. Without a budget the edge length is unknown:
     the plain rigid factor."""
     import numpy as np
-    fac = np.minimum(_mod("density").vertex_factors(me), RIGID_EDGE_FACTOR)
+    have = _mod("density").vertex_factors(me)
+    fac = np.minimum(have, RIGID_EDGE_FACTOR)
     if budget <= 0:
         return fac
-    have = _mod("density").vertex_factors(me)
     # the edge length Quad Remesher aims for at factor 1 on this part: its share of the budget
     # spread over its surface, weighted by the detail map (factor f = f^2 the quads)
     nf, nl = len(me.polygons), len(me.loops)
