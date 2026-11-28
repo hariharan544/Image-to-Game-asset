@@ -519,6 +519,28 @@ def _poly_strict(src_me) -> "np.ndarray | None":
     return sv[lv[ls]]
 
 
+def _groove_pair(f, is_new, tree):
+    """The two crossing points of face f to join (None: fewer than two not joined yet): of every
+    pair not already joined by an edge, the one whose line runs deepest in the groove - its
+    middle nearest the original surface; a line across the face to a crossing point of another
+    groove runs above the floor. Of two as near, the pair that comes first by place. Chosen by
+    where the points are, never by where the face's corners happen to start."""
+    from mathutils import Vector
+    pts = [v for v in f.verts if v in is_new]
+    best = None
+    for i, a in enumerate(pts):
+        for b in pts[i + 1:]:
+            if any(e.other_vert(a) is b for e in a.link_edges):
+                continue                                 # already joined
+            mid = Vector((a.co + b.co) * 0.5)
+            near = tree.find_nearest(mid)
+            gap = near[3] if near[0] is not None else math.inf
+            key = (gap, sorted((tuple(a.co), tuple(b.co))))
+            if best is None or key < best[0]:
+                best = (key, a, b)
+    return None if best is None else best[1:]
+
+
 def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, samples: int = 5,
           max_add: float = 0.06, min_edge_rel: float = 0.0015, reach_rel: float = 0.02) -> dict:
     """Cut narrow creases (mouth line, lid crease, corner pocket) into the new mesh.
@@ -585,7 +607,9 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
                 marks.append((best[0], e, best[1], best[2]))
         if not marks:
             break
-        marks.sort(key=lambda m: -m[0])
+        # deepest first; of two as deep, the one whose ends come first by place (never by the
+        # order the edges happen to be in: the room below can take one and not the other)
+        marks.sort(key=lambda m: (-m[0], sorted((tuple(m[1].verts[0].co), tuple(m[1].verts[1].co)))))
         room = max(0, allowance - added) // 3          # an edge split + face splits ~ 3 triangles
         marks = marks[:room]
         if not marks:
@@ -608,14 +632,11 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
         for f in list(dict.fromkeys(f for v in new_verts for f in v.link_faces)):
             if not f.is_valid:
                 continue
-            nvs = [v for v in f.verts if v in is_new]
-            if len(nvs) < 2:
+            pair = _groove_pair(f, is_new, tree)
+            if pair is None:
                 continue
-            a, b = nvs[0], nvs[1]
-            if any(b in (e.other_vert(a),) for e in a.link_edges):
-                continue                                 # already adjacent
             try:
-                bmesh.utils.face_split(f, a, b)
+                bmesh.utils.face_split(f, *pair)
             except (ValueError, RuntimeError):
                 pass
         ng = [f for f in bm.faces if len(f.verts) > 4]
@@ -773,6 +794,142 @@ def read_split(me):
     ids = np.empty(len(me.vertices), np.int32)
     a.data.foreach_get("value", ids)
     return ids if ids.any() else None
+
+
+FINGERPRINT_STEP = 1e-6          # coordinates are compared on a grid this fine against the mesh's size
+FINGERPRINT_RINGS = 16           # points on one spot are told apart by their neighbours this many rings out
+
+
+def _mesh_arrays(me) -> tuple:
+    """The mesh as it is stored, in its own order: coordinates (float32), edges, and each face's
+    corner count and corners (the vertex of every loop, a face's corners one after another)."""
+    nv, ne, nf, nl = len(me.vertices), len(me.edges), len(me.polygons), len(me.loops)
+    co = np.empty(nv * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    ev = np.empty(ne * 2, np.int32)
+    me.edges.foreach_get("vertices", ev)
+    lt = np.empty(nf, np.int32)
+    me.polygons.foreach_get("loop_total", lt)
+    lv = np.empty(nl, np.int32)
+    me.loops.foreach_get("vertex_index", lv)
+    return co.reshape(-1, 3), ev.reshape(-1, 2), lt, lv
+
+
+def exact_hash(me) -> str:
+    """sha1 of the mesh exactly as it is stored, in its own order: every bit of every
+    coordinate, the edges and the faces. Two meshes with the same exact hash are the same mesh
+    to the last bit; one coordinate a single float step off gives another hash. fingerprint is
+    the comparison on a grid; this one shows drift in the last bits too, which a remesher can
+    turn into a different mesh."""
+    import hashlib
+    h = hashlib.sha1()
+    for a in _mesh_arrays(me):
+        h.update(np.int64(len(a)).tobytes())         # (each array's length: no two meshes read alike)
+        h.update(np.ascontiguousarray(a).tobytes())
+    return h.hexdigest()
+
+
+def _scramble(x: np.ndarray) -> np.ndarray:
+    """A fixed, well-mixed 64-bit number for each non-negative integer (splitmix64): a sum of
+    them says which numbers were summed, in any order."""
+    z = x.astype(np.uint64) + np.uint64(0x9E3779B97F4A7C15)
+    z = (z ^ (z >> np.uint64(30))) * np.uint64(0xBF58476D1CE4E5B9)
+    z = (z ^ (z >> np.uint64(27))) * np.uint64(0x94D049BB133111EB)
+    return z ^ (z >> np.uint64(31))
+
+
+def _vertex_names(q: np.ndarray, ev: np.ndarray) -> np.ndarray:
+    """One number per vertex that does not depend on the order of the vertices: the rank of its
+    place on the grid. Points on the same place (an unwelded seam, a loose copy, the two sides
+    of an exact boolean's cut) are told apart by the names of their neighbours, then of their
+    neighbours' neighbours, up to FINGERPRINT_RINGS rings out. Two still alike are joined alike
+    that far (copies of each other: a doubled sheet)."""
+    _u, name = np.unique(q, axis=0, return_inverse=True)
+    name = name.reshape(-1).astype(np.int64)
+    n = len(name)
+    count = int(name.max()) + 1 if n else 0
+    if count == n or not len(ev):
+        return name
+    a = np.concatenate([ev[:, 0], ev[:, 1]]).astype(np.int64)
+    b = np.concatenate([ev[:, 1], ev[:, 0]]).astype(np.int64)
+    for _ in range(FINGERPRINT_RINGS):
+        around = np.zeros(n, np.uint64)              # the neighbours' names, in any order
+        np.add.at(around, a, _scramble(name[b]))
+        # the name first: a new name only splits an old one, the places stay in their order
+        _u, new = np.unique(np.stack([name.astype(np.uint64), around], axis=1), axis=0, return_inverse=True)
+        new = new.reshape(-1).astype(np.int64)
+        grown = int(new.max()) + 1
+        name = new
+        if grown == count or grown == n:
+            break
+        count = grown
+    return name
+
+
+def _lowest_rotation(rows: np.ndarray) -> np.ndarray:
+    """Each row (a face's corners) read from the corner on where it reads lowest, in its own
+    winding: from its lowest corner, unless a degenerate face has that corner twice."""
+    t = rows.shape[1]
+    every = np.arange(len(rows))
+    best = rows.copy()
+    for i in range(1, t):
+        alt = np.roll(rows, -i, axis=1)
+        diff = alt != best
+        first = np.argmax(diff, axis=1)
+        lower = diff.any(axis=1) & (alt[every, first] < best[every, first])
+        best[lower] = alt[lower]
+    return best
+
+
+def fingerprint(me, ordered: bool = True) -> tuple:
+    """(vertices, faces, sha1 of where the vertices are, sha1 of the faces and edges) of a mesh:
+    two meshes with the same fingerprint are the same mesh in the same place, the same points
+    joined the same way. Used to prove that two runs did the same thing (the plan's dry run and
+    the real run, or one run and the next).
+
+    Coordinates count on a grid, so the last bits of a float do not count - unless a value sits
+    right on the middle between two grid points (exact_hash compares every bit). The grid step
+    is the power of two at or just under FINGERPRINT_STEP x the mesh's size (its largest
+    extent), and it is hashed with the points: the same mesh moved, or scaled by any factor,
+    gives another fingerprint, at any scale.
+
+    By default the mesh is hashed in its own order: vertices, faces (each from its own first
+    corner) and edges as they are numbered. The same surface in another order gives another
+    fingerprint (a remesher makes a different mesh of it).
+
+    With ordered=False the fingerprint does not depend on the order of the elements: each
+    vertex is known by its place (and where points share a place, by its neighbours: see
+    _vertex_names), each face by those names from its lowest corner on in its own winding, each
+    edge by its two names; all of them sorted."""
+    import hashlib
+    co, ev, lt, lv = _mesh_arrays(me)
+    nv, nf = len(co), len(lt)
+    co = co.astype(np.float64)
+    size = float((co.max(axis=0) - co.min(axis=0)).max()) if nv else 0.0
+    size = size or (float(np.abs(co).max()) if nv else 0.0) or 1.0     # (all on one spot)
+    # a power of two: every coordinate divides by it exactly, and the grid points are the same
+    # numbers on every machine
+    level = math.frexp(FINGERPRINT_STEP * size)[1] - 1
+    q = np.rint(co / math.ldexp(1.0, level)).astype(np.int64)
+    hv, hf = hashlib.sha1(np.int64(level).tobytes()), hashlib.sha1()
+    if ordered:                                      # (a face's corners follow each other in the loops)
+        hv.update(q.tobytes())
+        for a in (lt, lv, ev):
+            hf.update(np.int64(len(a)).tobytes())
+            hf.update(a.astype(np.int64).tobytes())
+        return nv, nf, hv.hexdigest(), hf.hexdigest()
+    hv.update(q[np.lexsort(q.T[::-1])].tobytes())
+    name = _vertex_names(q, ev)
+    ls = np.concatenate([[0], np.cumsum(lt)[:-1]]).astype(np.int64) if nf else np.zeros(0, np.int64)
+    for t in np.unique(lt).tolist():                 # faces with the same number of corners together
+        sel = np.nonzero(lt == t)[0]
+        rows = _lowest_rotation(name[lv[ls[sel][:, None] + np.arange(t)[None, :]]])
+        hf.update(np.int64(t).tobytes())
+        hf.update(rows[np.lexsort(rows.T[::-1])].tobytes())
+    pairs = np.sort(name[ev.astype(np.int64)], axis=1) if len(ev) else np.zeros((0, 2), np.int64)
+    hf.update(b"edges")
+    hf.update(pairs[np.lexsort(pairs.T[::-1])].tobytes())
+    return nv, nf, hv.hexdigest(), hf.hexdigest()
 
 
 def pick_side(me) -> str:

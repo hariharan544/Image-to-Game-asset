@@ -16,9 +16,13 @@ PANEL = {"samples": 1, "device": "CPU", "cage_extrusion_ratio": 0.01, "margin_px
 
 
 def _link(name, bm):
+    """An object of the bmesh, its faces in one fixed order (the UV sphere is built in
+    memory-address order: the same test would bake a slightly different mesh each run)."""
+    from forge_bpy.common import canonical_order
     me = bpy.data.meshes.new(name)
     bm.to_mesh(me)
     bm.free()
+    canonical_order(me)
     o = bpy.data.objects.new(name, me)
     bpy.context.scene.collection.objects.link(o)
     return o
@@ -218,6 +222,7 @@ def test_body_scale_crevice(tmp_path):
     from mathutils.bvhtree import BVHTree
 
     from forge_bpy import bake
+    from forge_bpy.common import canonical_order
     bpy.ops.wm.read_homefile(use_empty=True)
     r, gap = 0.008, 0.003
     xa = r + gap / 2
@@ -264,6 +269,7 @@ def test_body_scale_crevice(tmp_path):
                 lp[uvl].uv = (0.88 + 0.11 * (co.x + 0.45) / 0.9, 0.88 + 0.11 * (co.y + 0.45) / 0.9)
     bm.to_mesh(low.data)
     bm.free()
+    canonical_order(low.data)                      # (the ball's UV sphere: one fixed face order)
     for p in low.data.polygons:
         p.use_smooth = True
     high = _join([hand, ball], "Hand")

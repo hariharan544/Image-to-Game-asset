@@ -1053,7 +1053,7 @@ def _drop_cut_scraps(bm, tag, _unused=None, max_share: float = 0.05) -> int:
         sample = [v.co.copy() for v in verts[:: max(1, len(verts) // 7)]][:7]
         if not _inside(bm, shell, sample):
             continue
-        bmesh.ops.delete(bm, geom=list(shell), context="FACES")
+        bmesh.ops.delete(bm, geom=_in_order(bm, shell), context="FACES")
         bmesh.ops.delete(bm, geom=[v for v in verts if v.is_valid and not v.link_faces], context="VERTS")
         dropped += 1
     return dropped
@@ -1117,7 +1117,7 @@ def _hide_plugs(me, bm, pieces: dict, regions: dict) -> list:
     from mathutils.bvhtree import BVHTree
     tree = None
     folded = []
-    for k in list(pieces):
+    for k in sorted(pieces):                         # (by part id: the refusals in that order)
         piece, plug, mine = pieces[k]
         if plug is None:
             continue
@@ -1195,7 +1195,7 @@ def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
 
     while regions:
         fown = ownership()
-        for k in [k for k in regions if k not in pieces]:
+        for k in sorted(k for k in regions if k not in pieces):
             mine = fown == k
             piece = extract(me, regions[k], grow_rings=0, name=f"forge_part_{k}", faces=mine)   # exact cut
             d = mesh_defects(piece)
@@ -1213,18 +1213,21 @@ def split_off(me, ids: np.ndarray, report: list | None = None) -> list:
         if any(k not in pieces for k in regions):
             continue                              # (one is being re-cut: cut all together)
         fown = ownership()                        # a neighbour re-cut or refused since: take again
-        stale = [k for k in pieces if not np.array_equal(pieces[k][2], fown == k)]
+        stale = [k for k in sorted(pieces) if not np.array_equal(pieces[k][2], fown == k)]
         for k in stale:
             bpy.data.meshes.remove(pieces.pop(k)[0])
         if stale:
             continue
         remove = np.zeros(len(ids), bool)
         owner = np.zeros(len(ids), np.int32)
-        for k in pieces:
+        for k in sorted(pieces):
             remove |= regions[k]
             owner[regions[k]] = k
         bm, bad = _rim_cut(me, remove, owner)
-        failed = [k for k in pieces if bad.get(k)]
+        # (parts by id, never in the order they happened to be cut - a part re-cut one ring
+        # further comes back last: two neighbours grown one ring further in another order
+        # would share the faces between them differently)
+        failed = [k for k in sorted(pieces) if bad.get(k)]
         folded = [] if failed else _hide_plugs(me, bm, pieces, regions)
         if folded:
             bm.free()

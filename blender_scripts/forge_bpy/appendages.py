@@ -67,6 +67,9 @@ def _local_radius(d, which, where, nseg: int, H: float) -> np.ndarray:
 
 
 def _components(n: int, a: np.ndarray, b: np.ndarray) -> np.ndarray:
+    """Connected components of the graph of n vertices and edges (a, b): each vertex gets the
+    smallest vertex index of its component as its label. The labels depend only on the mesh,
+    never on the order the edges come in."""
     lab = np.arange(n)
     if len(a) == 0:
         return lab
@@ -112,7 +115,7 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
     keep = far[edges[:, 0]] & far[edges[:, 1]]
     lab = _components(len(V), edges[keep, 0], edges[keep, 1])
     groups = {}
-    for v in idx:
+    for v in idx:                                 # (ascending: each group's first vertex is its lowest)
         groups.setdefault(lab[v], []).append(v)
     pelvis = np.array(J["pelvis"][0][:])
     head = np.array(J["head"][0][:])
@@ -121,7 +124,9 @@ def find(V: np.ndarray, edges: np.ndarray, J: dict, segments: int = 5, min_share
     head_top = np.array(J["head"][1][:])
     head_r = max(np.linalg.norm(head - neck), 0.6 * np.linalg.norm(head_top - head), 0.05 * H)
     out = []
-    cands = [v for v in sorted(groups.values(), key=len, reverse=True) if len(v) >= 12]
+    # biggest first; of two the same size, the one with the lower first vertex (a fixed order:
+    # the parts grow together and are named in it)
+    cands = [v for v in sorted(groups.values(), key=lambda v: (-len(v), v[0])) if len(v) >= 12]
     if arr is not None:
         from .parts import grow_parts
         seeds = []

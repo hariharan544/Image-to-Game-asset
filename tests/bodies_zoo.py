@@ -713,25 +713,28 @@ class Kit:
 
     def _label(self, co, owners: list) -> tuple:
         """Ground truth: the owner whose primitives' surface is nearest each vertex, and which
-        primitive (ball, tube, plate...) of it that is."""
+        primitive (ball, tube, plate...) of it that is. A vertex as near to two primitives (on
+        the seam where a tube meets the next ball) takes the lower-numbered one: the tree may
+        return either, and which one changes from run to run."""
         from mathutils.bvhtree import BVHTree
         s = self.scale
         dist = np.full((len(owners), len(co)), np.inf)
         prim = np.full((len(owners), len(co)), -1, np.int64)
         pad = 3 * self.voxel
+        tie = 1e-6 * self.voxel
         for j, o in enumerate(owners):
             Vo = np.asarray(self.geo[o][0]) * s
             tree = BVHTree.FromPolygons(Vo.tolist(), self.geo[o][1])
             fp = self.fprim[o]
             lo, hi = Vo.min(axis=0) - pad, Vo.max(axis=0) + pad
             sel = np.nonzero(np.all((co >= lo) & (co <= hi), axis=1))[0]
-            fn = tree.find_nearest
+            fn, fr = tree.find_nearest, tree.find_nearest_range
             dj, pj = dist[j], prim[j]
             for i in sel.tolist():
                 h = fn(co[i])
                 if h[0] is not None:
                     dj[i] = h[3]
-                    pj[i] = fp[h[2]]
+                    pj[i] = min([fp[h[2]]] + [fp[g[2]] for g in fr(co[i], h[3] + tie) if g[3] <= h[3] + tie])
         lab = np.argmin(dist, axis=0)
         return lab.astype(np.int32), prim[lab, np.arange(len(co))]
 
@@ -751,6 +754,10 @@ class Kit:
         def warp(P):
             P = np.asarray(P, float).reshape(-1, 3)
             out = np.empty_like(P)
+            # the vector noise shifts each of its three parts by offsets drawn from a seed the
+            # clock gives each process, unless one is set: set it, so every process builds the
+            # same body (0 would mean the clock again)
+            noise.seed_set(1 + abs(seed))
             nv = noise.noise_vector
             for i, (x, y, z) in enumerate(P.tolist()):
                 ax = abs(x)
