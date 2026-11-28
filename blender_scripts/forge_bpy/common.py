@@ -110,10 +110,12 @@ _ATTR_FIELDS = {"FLOAT": ("value", 1, "f4"), "INT": ("value", 1, "i4"), "INT8": 
 
 def _tied_by_neighbours(me, co, order):
     """`order` (vertices sorted by place) with every run of points on the very same spot put
-    in the order of their neighbours' places: two points on one spot are then told apart by
-    the surface around them, not by the order they came in (a result built in threads can
-    give them in either order). Two that still tie have their neighbours on the same spots
-    too - copies of each other, a doubled sheet - and keep the order they came in."""
+    in the order of their neighbours' places, then of the faces around them (each face as the
+    places of its corners, from its lowest on, in its own winding): two points on one spot are
+    then told apart by the surface around them, not by the order they came in (a result built
+    in threads can give them in either order). Two that still tie have their neighbours on the
+    same spots and the same faces around them, wound the same way - copies of each other, a
+    doubled sheet - and keep the order they came in."""
     import numpy as np
     s = co[order]
     same = np.all(s[1:] == s[:-1], axis=1)
@@ -132,12 +134,29 @@ def _tied_by_neighbours(me, co, order):
     for a, b in ev.tolist():
         around.setdefault(a, []).append(int(place[b]))
         around.setdefault(b, []).append(int(place[a]))
+    # the faces with a tied corner (two back-to-back faces on the same corners differ only in
+    # their winding)
+    nf = len(me.polygons)
+    lt = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    ls = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_start", ls)
+    lv = np.empty(len(me.loops), np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    faces: dict = {}
+    for f in np.unique(np.repeat(np.arange(nf), lt)[tied[lv]]).tolist():
+        corners = lv[ls[f]:ls[f] + lt[f]].tolist()
+        pl = [int(place[v]) for v in corners]
+        key = min(tuple(pl[i:] + pl[:i]) for i in range(len(pl)))
+        for v in corners:
+            if tied[v]:
+                faces.setdefault(v, []).append(key)
     out = order.copy()
     starts = np.nonzero(np.concatenate([[True], ~same]))[0].tolist() + [len(order)]
     for i, j in zip(starts, starts[1:]):
         if j - i > 1:
             run = order[i:j].tolist()
-            out[i:j] = sorted(run, key=lambda v: sorted(around.get(v, [])))
+            out[i:j] = sorted(run, key=lambda v: (sorted(around.get(v, [])), sorted(faces.get(v, []))))
     return out
 
 
@@ -149,7 +168,7 @@ def canonical_order(me, by_position: bool = False) -> bool:
     a subdivision or a remesher makes a different mesh of it. The vertices keep their order,
     or with `by_position` are sorted by where they are (x, then y, then z: for a result whose
     vertex order itself changes from run to run - the exact boolean works in threads). Points
-    on the very same spot are told apart by where their neighbours are, never by the order
+    on the very same spot are told apart by their neighbours and faces, never by the order
     they came in (see _tied_by_neighbours). False (left as it is) for a mesh with shape keys,
     vertex weights or an attribute of a kind it cannot carry across (custom split normals,
     matrices, text): rather unordered than missing data."""
