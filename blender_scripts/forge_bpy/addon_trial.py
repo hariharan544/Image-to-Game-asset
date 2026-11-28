@@ -455,28 +455,10 @@ def _trial_uvpm(report: dict):
 
 def _uvpm_diagnose() -> dict:
     """Why does uvpackmaster4.pack.poll() fail? Read the poll source and the add-on state."""
-    import inspect
     out: dict = {"mode": bpy.context.mode}
-    cls = None
-    stack = list(bpy.types.Operator.__subclasses__())
-    while stack:
-        c = stack.pop()
-        stack.extend(c.__subclasses__())
-        if getattr(c, "bl_idname", "") == "uvpackmaster4.pack":
-            cls = c
-            break
-    if cls is None:
-        out["error"] = "operator class not found"
+    out.update(LO.operator_poll("uvpackmaster4.pack"))
+    if "class" not in out:
         return out
-    out["class"] = f"{cls.__module__}.{cls.__qualname__}"
-    out["mro"] = [f"{k.__module__}.{k.__qualname__}" for k in cls.__mro__][:12]
-    for k in cls.__mro__:
-        if "poll" in k.__dict__:
-            try:
-                out.setdefault("poll_sources", []).append(
-                    {"class": k.__qualname__, "source": inspect.getsource(k.__dict__["poll"])[:3000]})
-            except Exception as exc:
-                out.setdefault("poll_sources", []).append({"class": k.__qualname__, "error": _err(exc)})
     # add-on preferences (engine path / status live here in UVPM)
     for name, addon in bpy.context.preferences.addons.items():
         if "uvpackmaster" in name.lower():
@@ -521,13 +503,12 @@ def run_v2(args: dict):
 #     item in progress, so a Blender crash still leaves everything found before it;
 #   * scenes are throwaway (nothing is saved), the user's preferences are never written.
 
-import contextlib
 import inspect
 import io
 import json
-import math
 import traceback
-from types import SimpleNamespace
+
+from . import arp_limb_options as LO
 
 PROBE_PRESETS = ("human", "dog", "horse", "free")
 EXPECTED_LIMB_OPTIONS = (
@@ -552,8 +533,7 @@ POLE_NAMES = ("c_leg_pole.l", "c_leg_pole.r", "c_arms_pole.l", "c_arms_pole.r")
 LIMB_REFS = {"arm": ("arm_ref.l", "shoulder_ref.l"), "leg": ("thigh_ref.l", "leg_ref.l"),
              "ear": ("ear_01_ref.l",), "tail": ("tail_00_ref.x",), "neck": ("neck_ref.x",),
              "spine": ("spine_01_ref.x", "root_ref.x"), "head": ("head_ref.x",)}
-UI_ONLY = {"arm_show_part", "leg_show_part", "facial_show_part", "kilt_ui_show",
-           "reset_to_default_settings", "load_settings_when_exec"}
+UI_ONLY = LO.UI_ONLY
 SOCKET = "cc_socket_probe"
 EXPORTS = (("unity_humanoid", "UNITY", "HUMANOID", {}),
            ("unity_universal", "UNITY", "UNIVERSAL", {}),
@@ -562,95 +542,11 @@ EXPORTS = (("unity_humanoid", "UNITY", "HUMANOID", {}),
            ("unreal_universal", "UNREAL", "UNIVERSAL", {"arp_rename_for_ue": True}))
 
 
-def _js(v, depth: int = 0):
-    """JSON-safe copy of a Blender / ARP value (ID properties, vectors, sets). Never raises: a
-    value that cannot be read is recorded as such (one bad value must not end the probe)."""
-    try:
-        return _js_value(v, depth)
-    except Exception as exc:                                # noqa: BLE001
-        try:
-            return f"<could not read {type(v).__name__}: {_err(exc)}>"[:300]
-        except Exception:                                   # noqa: BLE001
-            return "<could not read this value>"
-
-
-def _js_value(v, depth: int):
-    if depth > 6:
-        return str(v)[:200]
-    if v is None or isinstance(v, (bool, int, str)):
-        return v
-    if isinstance(v, float):
-        return round(v, 6) if math.isfinite(v) else str(v)
-    if hasattr(v, "to_dict"):
-        return _js(v.to_dict(), depth + 1)
-    if hasattr(v, "to_list"):
-        return _js(v.to_list(), depth + 1)
-    if isinstance(v, dict):
-        return {str(k): _js(x, depth + 1) for k, x in list(v.items())[:2000]}
-    if isinstance(v, (set, frozenset)):
-        return sorted(str(x) for x in v)
-    if hasattr(v, "bl_rna") and hasattr(v, "name"):
-        return f"<{type(v).__name__} {v.name}>"
-    try:
-        return [_js(x, depth + 1) for x in list(v)[:2000]]
-    except TypeError:
-        return str(v)[:200]
-
-
-def _plain(v, depth: int = 0):
-    """A copy of an option value that no longer points into Blender data. ARP's
-    load_limb_settings copies ID-property arrays straight from EDIT bones (the finger and toe
-    colours); Blender frees those when Edit Mode ends, after which they read as empty or as
-    garbage, or crash. So every value is copied while still in Edit Mode."""
-    try:
-        if v is None or isinstance(v, (bool, int, float, str)):
-            return v
-        if isinstance(v, (set, frozenset)):
-            return set(v)                   # enum-flag options: the operator wants a set
-        if depth > 6 or hasattr(v, "bl_rna"):
-            return _js(v)                   # a Blender struct is not an option value: its name
-        if hasattr(v, "to_dict"):
-            return {str(k): _plain(x, depth + 1) for k, x in v.to_dict().items()}
-        if hasattr(v, "to_list"):
-            return [_plain(x, depth + 1) for x in v.to_list()]
-        if isinstance(v, dict):
-            return {str(k): _plain(x, depth + 1) for k, x in v.items()}
-        return [_plain(x, depth + 1) for x in v]
-    except Exception:                                       # noqa: BLE001
-        return _js(v)
-
-
-def _norm(v):
-    """For comparing: ID-property arrays, vectors and tuples as lists."""
-    try:
-        if hasattr(v, "to_list"):
-            v = v.to_list()
-        elif hasattr(v, "to_dict"):
-            v = v.to_dict()
-        if v is None or isinstance(v, (bool, int, float, str, bytes, dict, set, frozenset, list)):
-            return v
-        if hasattr(v, "bl_rna"):
-            return v
-        return list(v)
-    except Exception:                                       # noqa: BLE001
-        return v
-
-
-def _eq(a, b) -> bool:
-    a, b = _norm(a), _norm(b)
-    if isinstance(a, float) or isinstance(b, float):
-        try:
-            return abs(float(a) - float(b)) < 1e-6
-        except (TypeError, ValueError):
-            return False
-    if isinstance(a, list) and isinstance(b, list):
-        return len(a) == len(b) and all(_eq(x, y) for x, y in zip(a, b))
-    if isinstance(a, (set, frozenset, list)) and isinstance(b, (set, frozenset, list)):
-        return sorted(map(str, a)) == sorted(map(str, b))   # an enum-flag value against a copy
-    try:
-        return bool(a == b)
-    except Exception:                                       # noqa: BLE001
-        return False
+# the value helpers are shared with Step 8 (arp_limb_options): one copy of the 9.2 protocol
+_js, _plain, _norm, _eq = LO.js, LO.plain, LO.norm, LO.same
+_prop_default, _op_defaults = LO.prop_default, LO.op_defaults
+_captured, _tail, _is_ref, _arp_module = LO.captured, LO.tail, LO.is_ref, LO.arp_module
+_limb_state, LIVE_VALUES_NOTE = LO.limb_state, LO.LIVE_VALUES_NOTE
 
 
 def _v3(v) -> list:
@@ -700,6 +596,8 @@ def _item(rec: _Rec, key: str, fn, *a, **kw) -> dict:
     try:
         out = dict(fn(*a, **kw) or {})
         out.setdefault("status", "ok")
+        if out["status"] == "error":                        # an error found and reported, not raised
+            rec.r["errors"].append(f"{key}: {out.get('error')}"[:600])
     except Exception as exc:                                # noqa: BLE001 - recorded, never raised
         out = {"status": "error", "error": _err(exc), "trace": traceback.format_exc()[-2000:]}
         rec.r["errors"].append(f"{key}: {_err(exc)}")
@@ -724,46 +622,6 @@ def _to_object_mode() -> None:
             bpy.ops.object.mode_set(mode="OBJECT")
     except Exception:                                       # noqa: BLE001
         pass
-
-
-class _Tee(io.TextIOBase):
-    def __init__(self, buf: io.StringIO, out):
-        self.buf, self.out = buf, out
-
-    def write(self, s):
-        self.buf.write(s)
-        if self.out is not None:
-            try:
-                self.out.write(s)
-                self.out.flush()                # the log must keep it if Blender then crashes
-            except Exception:                               # noqa: BLE001
-                pass
-        return len(s)
-
-
-@contextlib.contextmanager
-def _captured(buf: io.StringIO):
-    """ARP explains itself with print(): keep what it prints while an operator runs (and still
-    write it to the log, which is all that is left when Blender crashes)."""
-    with contextlib.redirect_stdout(_Tee(buf, sys.stdout)):
-        yield
-
-
-def _tail(text: str, n: int = 25) -> list:
-    return [l[:300] for l in text.splitlines() if l.strip()][-n:]
-
-
-def _arp_module(attr: str):
-    """ARP's own module that defines `attr` (its path differs between installs and versions)."""
-    for name, mod in list(sys.modules.items()):
-        if mod is None or "auto_rig" not in name.lower():
-            continue
-        try:
-            if callable(getattr(mod, attr, None)):
-                return mod
-        except Exception:                                   # noqa: BLE001
-            continue
-    return None
 
 
 def _arp_info() -> dict:
@@ -839,10 +697,6 @@ def _clear_scene() -> None:
     bpy.context.scene.cursor.location = (0, 0, 0)
 
 
-def _is_ref(b) -> bool:
-    return "_ref" in b.name and not b.name.startswith("c_")
-
-
 def _ref_rig(objs):
     arms = [o for o in objs if o.type == "ARMATURE"]
     return next((o for o in arms if any(_is_ref(b) for b in o.data.bones)), arms[0] if arms else None)
@@ -899,30 +753,58 @@ def _rig(st: dict):
     return rig
 
 
-def _select_ref(rig, name: str) -> bool:
-    _select_only(rig)
-    if rig.mode != "EDIT":
-        bpy.ops.object.mode_set(mode="EDIT")
-    eb = rig.data.edit_bones
-    b = eb.get(name)
-    if b is None:
-        return False
-    for x in eb:
-        x.select = x.select_head = x.select_tail = False
-    b.select = b.select_head = b.select_tail = True
-    eb.active = b
-    return True
+_select_ref = LO.select_ref
 
 
-def _facial_off(rig) -> str:
-    """Forge's current head call (arp_rig.add_extras): facial bones off."""
-    if not _select_ref(rig, "head_ref.x"):
-        _to_object_mode()
-        return "head_ref.x not found"
-    with bpy.context.temp_override(**view3d_override()):
-        bpy.ops.arp.show_limb_params("EXEC_DEFAULT", limb_type="head", side=".x", facial=False)
+def _facial_off(rig) -> dict:
+    """Forge's own head call (arp_rig.add_extras, through arp_limb_options.facial_off): face
+    bones off, skipped when head_ref.x already stores them off (the human preset does). Never
+    stops a part: when Auto-Rig Pro refuses, what its check saw is recorded and the part goes on
+    (on the director's PC the refused call once ended multi_arm_export, limbs_setup and
+    build_setup before they had done anything)."""
+    try:
+        out = LO.facial_off(rig)
+    except Exception as exc:                                # noqa: BLE001 - recorded, never raised
+        out = {"facial": "not changed", "error": _err(exc)}
     _to_object_mode()
-    return "off"
+    return out
+
+
+FRESH_ANSWERS = {(True, True): "Auto-Rig Pro said yes straight away",
+                 (False, True): "Auto-Rig Pro said no until the reference bones were shown",
+                 (False, False): "Auto-Rig Pro said no, even with the reference bones shown",
+                 (True, False): "Auto-Rig Pro said yes, then no once the reference bones were shown"}
+
+
+def _fresh_rig_check(st: dict) -> dict:
+    """On the director's PC the limb options button refused the face switch as the first edit on
+    a fresh rig. The setups no longer ask (the human preset has the face off already), so they
+    cannot say why. This asks the button on purpose, on the fresh human rig before any limb is
+    added: its check (poll) and what that check sees, before and after the reference bones are
+    shown (arp_limb_options.show_ref, Step 8's fix). Nothing but what can be seen is changed."""
+    rig = _rig(st)
+    before = LO.poll_check(rig, "head_ref.x")
+    shown = LO.show_ref(rig, "head_ref.x") if rig.mode == "EDIT" else []
+    after = LO.poll_check(rig, "head_ref.x")
+    _to_object_mode()
+    answer = FRESH_ANSWERS.get((before.get("poll"), after.get("poll")),
+                               "Auto-Rig Pro could not be asked (what went wrong is in the file)")
+    return {"rig": "human, fresh", "before": before, "shown": shown, "after": after, "answer": answer}
+
+
+def _fresh_dog_face(st: dict) -> dict:
+    """Step 8's face switch where it is needed: Auto-Rig Pro's dog rig has face bones on. On a
+    fresh dog rig: the button's check before anything is shown, then the switch made exactly as
+    Step 8 makes it (arp_limb_options.facial_off: show the reference bone, send every option,
+    check). When Auto-Rig Pro says no, what its check saw is in facial.protocol.diagnostics."""
+    rig, _, _ = _append("dog")
+    st["rig"] = rig.name
+    _, stored = LO.bone_key(rig, "head_ref.x", "facial")
+    before = LO.poll_check(rig, "head_ref.x")
+    _to_object_mode()                               # Step 8 starts from Object Mode
+    facial = _facial_off(_rig(st))
+    _, now = LO.bone_key(_rig(st), "head_ref.x", "facial")
+    return {"rig": "dog, fresh", "stored_before": stored, "before": before, "facial": facial, "stored_after": now}
 
 
 def _match(rig):
@@ -939,6 +821,21 @@ def _match(rig):
     return rig, list(res), buf.getvalue()
 
 
+def _name_words(name: str) -> set:
+    """'forearm_stretch_dupli_001.l' -> {'forearm', 'stretch', 'dupli', '001'}. Bones are told
+    apart by whole words: 'ear' is in 'forearm' as letters, not as a word (the director's first
+    probe listed forearm bones as ear bones)."""
+    return set(re.split(r"[_.]+", re.sub(r"\.[lrx]$", "", name.lower()))) - {""}
+
+
+def _named(name: str, *words: str) -> bool:
+    return not _name_words(name).isdisjoint(words)
+
+
+CHAIN_WORDS = ("tail", "ear", "spline")
+WING_WORDS = ("feather", "feathers", "wing", "wings")
+
+
 def _parent_chain(rig, name: str, n: int = 10) -> list:
     b = rig.data.bones.get(name)
     out = []
@@ -949,14 +846,6 @@ def _parent_chain(rig, name: str, n: int = 10) -> list:
 
 
 # ----------------------------------------------------------------------------- limb options
-
-def _prop_default(p):
-    if getattr(p, "array_length", 0):
-        return tuple(p.default_array)
-    if p.type == "ENUM" and getattr(p, "is_enum_flag", False):
-        return set(p.default_flag)
-    return getattr(p, "default", None)
-
 
 def _rna_props(rna) -> dict:
     out = {}
@@ -976,81 +865,14 @@ def _rna_props(rna) -> dict:
     return out
 
 
-def _op_defaults() -> dict:
-    rna = bpy.ops.arp.show_limb_params.get_rna_type()
-    return {p.identifier: _prop_default(p) for p in rna.properties
-            if p.identifier != "rna_type" and p.type not in ("POINTER", "COLLECTION")}
-
-
-LIVE_VALUES_NOTE = (
-    "load_limb_settings copies some values straight from EDIT bones as ID-property arrays (finger "
-    "and toe colours: per_limb.*.edit_bone_values lists them). Blender frees those when Edit Mode "
-    "ends, so they read empty or as garbage, or crash Blender. The spec 9.2 namespace protocol must "
-    "copy every value to plain Python before leaving Edit Mode, as this probe does.")
-
-
-def _limb_state(rig, ref: str, defaults: dict):
-    """Every current option of the limb `ref` belongs to, read the way ARP's panel reads it:
-    load_limb_settings() on a namespace filled with the operator defaults (spec 9.2).
-    Returns (values, other attributes ARP set, ARP's reports, names of values that were live
-    edit-bone ID properties). Everything is copied to plain Python while still in Edit Mode."""
-    mod = _arp_module("load_limb_settings")
-    if mod is None:
-        raise RuntimeError("no Auto-Rig Pro module defines load_limb_settings")
-    if not _select_ref(rig, ref):
-        raise KeyError(f"{ref} is not in the rig")
-    ns = SimpleNamespace(**defaults)
-    notes: list = []
-    ns.report = lambda kind, msg: notes.append(str(msg))
-    with bpy.context.temp_override(**view3d_override()):
-        mod.load_limb_settings(ns)
-    raw = {k: v for k, v in vars(ns).items() if k != "report"}
-    live = sorted(k for k, v in raw.items() if hasattr(v, "to_list") or hasattr(v, "to_dict"))
-    vals = {k: _plain(raw.get(k)) for k in defaults}
-    extra = {k: _plain(v) for k, v in raw.items() if k not in defaults}
-    return vals, extra, notes, live
-
-
 def _set_limb_options(rig, ref: str, changes: dict) -> dict:
-    """Spec 9.2 protocol: read the limb's state, change only `changes`, verify the rest."""
-    defaults = _op_defaults()
-    before, _, _, _ = _limb_state(rig, ref, defaults)
-    pre = _ref_parents(rig)
-    _select_ref(rig, ref)
-    kw = {k: v for k, v in before.items() if k not in UI_ONLY}
-    kw.update(changes)
-    kw.update(limb_type=before.get("limb_type"), side=before.get("side"), load_settings_when_exec=False)
-    rep: dict = {"ref": ref, "changes": changes, "limb_type": before.get("limb_type"), "side": before.get("side")}
-    buf = io.StringIO()
-    try:
-        with _captured(buf), bpy.context.temp_override(**view3d_override()):
-            bpy.ops.arp.show_limb_params("EXEC_DEFAULT", **kw)
-        rep["call_used"] = "all_keys"
-    except Exception as exc:                                # noqa: BLE001 - try the short form
-        rep["all_keys_error"] = _err(exc)
-        keep = set(changes) | {"limb_type", "side", "load_settings_when_exec"}
-        kw2 = {k: v for k, v in kw.items() if k in keep or not _eq(v, defaults.get(k))}
-        _select_ref(rig, ref)
-        with _captured(buf), bpy.context.temp_override(**view3d_override()):
-            bpy.ops.arp.show_limb_params("EXEC_DEFAULT", **kw2)
-        rep["call_used"] = "non_default_keys"
-    rep["log_tail"] = _tail(buf.getvalue(), 10)
-    post = _ref_parents(rig)
-    ref_after = ref
-    if ref not in post:                     # renamed (a new side): the root of what appeared
-        new = {n: p for n, p in post.items() if n not in pre}
-        roots = [n for n, p in new.items() if p not in new]
-        stem = ref.split("_ref")[0]
-        ref_after = next((n for n in roots if n.startswith(stem)), roots[0] if roots else ref)
-        rep["renamed"] = {"gone": sorted(set(pre) - set(post))[:40], "new": sorted(new)[:40]}
-    rep["ref_after"] = ref_after
-    after, _, _, _ = _limb_state(rig, ref_after, defaults)
+    """Spec 9.2 protocol (the one Step 8 uses, arp_limb_options.set_limb_options): read the
+    limb's state, change only `changes`, verify the rest. A refusal is recorded as an error with
+    what Auto-Rig Pro's check saw."""
+    rep = LO.set_limb_options(rig, ref, changes)
     _to_object_mode()
-    rep["changed_ok"] = all(_eq(after.get(k), v) for k, v in changes.items())
-    rep["after"] = {k: after.get(k) for k in changes}
-    rep["unexpected_changes"] = {k: [before.get(k), after.get(k)] for k in before
-                                 if k not in changes and k not in UI_ONLY and k != "side"
-                                 and not _eq(before.get(k), after.get(k))}
+    if rep.get("error"):
+        rep["status"] = "error"
     return rep
 
 
@@ -1233,7 +1055,7 @@ def _disable_ear(st: dict) -> dict:
     rig = _rig(st)
     before = _ref_parents(rig)
     all_before = {b.name for b in rig.data.bones}
-    ears = sorted(n for n in before if n.startswith("ear") and n.endswith(".r"))
+    ears = sorted(n for n in before if _named(n, "ear") and n.endswith(".r"))
     if not ears:
         raise RuntimeError("no right ear reference bones to remove")
     target = next((n for n in ears if "dupli" not in n), ears[0])
@@ -1249,7 +1071,7 @@ def _disable_ear(st: dict) -> dict:
     stem, rest = target.split("_ref")[0].rsplit("_", 1)[0] + "_", target.split("_ref", 1)[1]
     own = [n for n in ears if n.startswith(stem) and n.split("_ref", 1)[1] == rest]   # that ear's own chain
     gone_all = sorted(all_before - {b.name for b in rig.data.bones})
-    ears_left = sorted(n for n in after if n.startswith("ear"))
+    ears_left = sorted(n for n in after if _named(n, "ear"))
     return {"selected": target, "call": list(res), "removed_ref_bones": sorted(set(before) - set(after)),
             "removed_bone_count": len(gone_all), "removed_bones": gone_all[:150], "ears_left": ears_left,
             "other_side_kept": any(n.endswith(".l") for n in ears_left),
@@ -1300,15 +1122,14 @@ def _after_match(st: dict) -> dict:
     deform = [b.name for b in rig.data.bones if b.use_deform]
     chains = {}
     for b in rig.data.bones:
-        if ("tail" in b.name or "ear" in b.name or "spline" in b.name) and \
-                (b.parent is None or not any(k in b.parent.name for k in ("tail", "ear", "spline"))):
+        if _named(b.name, *CHAIN_WORDS) and (b.parent is None or not _named(b.parent.name, *CHAIN_WORDS)):
             chains[b.name] = _parent_chain(rig, b.name)
     return {"match": res, "bones": len(names), "deform_count": len(deform), "ik_poles": _poles_or_error(st),
-            "dupli_deform": sorted(n for n in deform if "dupli" in n),
-            "tail_deform": sorted(n for n in deform if "tail" in n),
-            "ear_deform": sorted(n for n in deform if "ear" in n),
-            "spline_bones": sorted(n for n in names if "spline" in n)[:80],
-            "spline_deform": sorted(n for n in deform if "spline" in n),
+            "dupli_deform": sorted(n for n in deform if _named(n, "dupli")),
+            "tail_deform": sorted(n for n in deform if _named(n, "tail")),
+            "ear_deform": sorted(n for n in deform if _named(n, "ear")),
+            "spline_bones": sorted(n for n in names if _named(n, "spline"))[:80],
+            "spline_deform": sorted(n for n in deform if _named(n, "spline")),
             "chain_roots_parents": chains, "log_tail": _tail(log, 12)}
 
 
@@ -1586,7 +1407,7 @@ def _probe_deform_names(st: dict) -> dict:
     deform = sorted(b.name for b in rig.data.bones if b.use_deform)
     return {"deform_bones": deform, "deform_count": len(deform),
             "owner_bones": {n: n in rig.data.bones and rig.data.bones[n].use_deform for n in OWNER_BONES},
-            "twist_bones": [n for n in deform if "twist" in n][:40]}
+            "twist_bones": [n for n in deform if _named(n, "twist")][:40]}
 
 
 def _probe_poles(st: dict) -> dict:
@@ -1677,11 +1498,11 @@ def _probe_multi_arm(st: dict) -> dict:
     """A second arm pair: does HUMANOID still pass, and are the extra arm bones exported? (spec 5.4)"""
     rig, _, _ = _append("human")
     st["rig"] = rig.name
-    _facial_off(rig)
+    facial = _facial_off(rig)
     case = _add_case(st, "arm.l")
     rig, res, _ = _match(_rig(st))
-    out = {"arm_dupli_refs": case["new_ref_bones"], "match": res, "humanoid_check": _humanoid(rig)["humanoid"],
-           "ik_poles": _poles_or_error(st)}
+    out = {"facial": facial, "arm_dupli_refs": case["new_ref_bones"], "match": res,
+           "humanoid_check": _humanoid(rig)["humanoid"], "ik_poles": _poles_or_error(st)}
     body = _body_from_bones(rig)
     st["body"] = body.name
     bind, _ = _bind_once(st, "HEAT_MAP")
@@ -1700,6 +1521,9 @@ def _part_multi_arm(rec: _Rec, args: dict):
     yield 0.3
     _item(rec, "ik_poles.rigs.dog", _probe_rig_poles, st, "dog")
     yield 0.1
+    # last in the part: a Blender crash here costs nothing recorded before it
+    _item(rec, "face_switch.fresh_dog", _fresh_dog_face, st)
+    yield 0.1
     _clear_scene()
 
 
@@ -1717,14 +1541,17 @@ def _part_wings(rec: _Rec, args: dict):
         prot = _set_limb_options(_rig(st), root, {"arm_wings": True})
         out = {"arm_dupli_refs": case["new_ref_bones"], "ref": root, "protocol": prot,
                "arm_wings_set": prot.get("changed_ok")}
+        if prot.get("error"):                   # no wings: matching would test nothing
+            return {**out, "status": "error", "error": f"arm_wings not set: {prot['error']}"}
         # if match_to_rig crashes Blender, what is known so far stays in the partial file
         rec.put("wings", {"status": "partial", "reason": "match_to_rig not done yet", **out})
         rec.start("wings")
         rig, res, log = _match(_rig(st))
         names = [b.name for b in rig.data.bones]
         out.update(match_ok=True, match=res, log_tail=_tail(log, 12),
-                   feather_bones=sorted(n for n in names if "feather" in n.lower() or "wing" in n.lower())[:200],
-                   feather_deform=sorted(b.name for b in rig.data.bones if b.use_deform and "feather" in b.name.lower())[:200])
+                   feather_bones=sorted(n for n in names if _named(n, *WING_WORDS))[:200],
+                   feather_deform=sorted(b.name for b in rig.data.bones
+                                         if b.use_deform and _named(b.name, *WING_WORDS))[:200])
         return out
 
     _item(rec, "wings", wings)
@@ -1742,6 +1569,7 @@ def _part_limbs(rec: _Rec, args: dict):
         return {"rig": rig.name, "facial": _facial_off(rig)}
 
     _item(rec, "limbs_setup", setup)
+    _item(rec, "face_switch.fresh_human", _fresh_rig_check, st)     # before the first add_limb
     items: list = []
     try:
         items = [i[0] for i in bpy.types.ARP_OT_add_limb.limbs]

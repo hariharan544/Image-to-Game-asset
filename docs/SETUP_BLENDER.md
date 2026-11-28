@@ -58,6 +58,19 @@ empty throwaway scene and nothing is saved. The result is
 `jobs\_setup\arp_probe\arp_3_79_probe.json` (the last lines show the full path): send that file
 back, with any lines that start with `[X]` or `[!]`. Logs and test exports are in the same folder.
 
+You do not need `--blender`: Forge uses the Blender it already knows. If you add it, give the real
+place of blender.exe on your PC, usually
+`"C:\Program Files\Blender Foundation\Blender 5.3\blender.exe"` (the folder it is in works too).
+
+When asked to run only some parts again, name them after `--only`, for example:
+
+```powershell
+.venv\Scripts\forge.exe arp-probe --only multi_arm,limbs,build
+```
+
+That takes a few minutes and writes `jobs\_setup\arp_probe\arp_3_79_probe_rerun.json`; the first
+result, its logs and its test exports stay as they are. Send the new file back.
+
 ## UVPackmaster engine
 
 UVPackmaster 4 packs with a separate **engine** program that ships with your purchase and is

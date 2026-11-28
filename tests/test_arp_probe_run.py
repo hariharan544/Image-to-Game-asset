@@ -4,6 +4,12 @@
    is still written, every check says "skipped", and the director is told in plain words.
 2. Every probe item against tests/fake_arp_probe.py, run in the probe's own Blender processes
    (never in this one), including a Blender crash in the bird part.
+3. A rerun of three parts (`--only`) where Auto-Rig Pro refuses the face switch on a fresh rig,
+   as it did on the director's PC: every setup still runs to the end, the full result file is
+   left alone, and since the human rig has the face off already (no call), the rerun asks the
+   button on purpose on a fresh rig and records what its check saw (face_switch).
+4. The same rerun where the cause is hidden reference bones: showing them makes the button say
+   yes, and the dog rig's face switch goes through.
 """
 
 import json
@@ -292,3 +298,119 @@ def test_fake_probe_build_bind_chin_poles_sockets(probed):
     assert rep["wings"]["protocol"]["unexpected_changes"] == {}
     assert rep["headless"]["append_ok"] is True and rep["headless"]["match_ok"] is True
     assert (probed["root"] / "jobs" / "_setup" / "arp_probe" / "exports" / "probe_unity_humanoid.fbx").exists()
+
+
+def test_fake_probe_face_switch_goes_through_the_shared_protocol(probed):
+    """The human preset stores facial = 0 (as Auto-Rig Pro's does): the three setups send nothing.
+    The fresh dog rig (facial = 1) has it turned off the 9.2 way and checked, as Step 8 would."""
+    rep = probed["rep"]
+    for face in (rep["multi_arm_export"]["facial"], rep["extra"]["limbs_setup"]["facial"],
+                 rep["extra"]["build_setup"]["facial"]):
+        assert face == {"facial": "already off", "stored": 0}, face
+    fs = rep["extra"]["face_switch"]
+    dog = fs["fresh_dog"]
+    assert dog["status"] == "ok" and dog["stored_before"] == 1 and dog["stored_after"] is False, dog
+    assert dog["before"]["poll"] is True and dog["facial"]["facial"] == "off"
+    assert dog["facial"]["protocol"]["call_used"] == "all_keys" and dog["facial"]["protocol"]["unexpected_changes"] == {}
+    human = fs["fresh_human"]
+    assert human["status"] == "ok" and human["before"]["poll"] is True and human["shown"] == []
+    assert human["answer"] == "Auto-Rig Pro said yes straight away"
+    lines = arp_probe.summary_lines(rep)
+    assert "Limb options button on a fresh rig: Auto-Rig Pro said yes straight away" in lines
+    assert "Face-bones switch: already off (3 test rigs), off (1 test rig)" in lines
+
+
+def test_bones_are_told_apart_by_name_words_not_letters(probed, monkeypatch):
+    """'ear' is in 'forearm' as letters: the director's first file listed forearm bones as ear
+    deform bones and forearm_stretch as an ear chain."""
+    at = _addon_trial(monkeypatch)
+    assert not at._named("forearm_stretch_dupli_001.l", "ear") and not at._named("forearm_twist.r", "ear")
+    assert at._named("c_ear_01_dupli_001.l", "ear") and at._named("ear_02_ref.r", "ear")
+    assert at._named("c_tail_master.x", "tail") and not at._named("c_detail.x", "tail")
+    assert at._named("c_spline_curvy.x", "spline") and not at._named("c_spine_02.x", "spline")
+    assert at._named("c_hand_feather_master_dupli_001.l", *at.WING_WORDS)
+    after = probed["rep"]["add_limb"]["after_match"]
+    assert after["ear_deform"] and all(at._named(n, "ear") for n in after["ear_deform"]), after["ear_deform"]
+    assert not [n for n in after["chain_roots_parents"] if n.startswith("forearm")]
+
+
+def test_rerun_where_the_face_switch_is_refused_still_runs_every_setup(tmp_path, monkeypatch):
+    monkeypatch.setenv("FAKE_ARP_POLL", "before_add_limb")      # the fake's button says no on a fresh rig
+    work = tmp_path / "jobs" / "_setup" / "arp_probe"
+    work.mkdir(parents=True)
+    (work / arp_probe.RESULT_NAME).write_text("the full result\n", encoding="utf-8")
+    calls: list = []
+    said: list = []
+    rc = arp_probe.run([sys.executable], str(tmp_path / "jobs"), None, say=said.append,
+                       runner=_runner(_fake_arp(tmp_path / "fake"), calls), only="multi_arm,limbs,build")
+    assert rc == 0, "\n".join(said)
+    assert [c["args"]["part"] for c in calls] == ["multi_arm", "limbs", "build"]
+    assert (work / arp_probe.RESULT_NAME).read_text(encoding="utf-8") == "the full result\n"
+    rep = json.loads((work / arp_probe.RERUN_NAME).read_text(encoding="utf-8"))
+    assert arp_probe.validate(rep, require_arp=True) == []
+    assert rep["only"] == ["multi_arm", "limbs", "build"]
+    assert rep["parts"]["basics"]["status"] == "not_run" and rep["presets"]["human"]["status"] == "not_run"
+    # the human rig has the face off already: the setups send nothing and run to the end
+    m = rep["multi_arm_export"]
+    assert m["status"] == "ok" and m["exported"] and m["humanoid_check"] is True, m
+    for face in (m["facial"], rep["extra"]["limbs_setup"]["facial"], rep["extra"]["build_setup"]["facial"]):
+        assert face == {"facial": "already off", "stored": 0}, face
+    assert rep["extra"]["limbs_setup"]["status"] == "ok" and rep["extra"]["build_setup"]["status"] == "ok"
+    # so the rerun asks on purpose, on a fresh rig, and records what Auto-Rig Pro's check saw
+    fs = rep["extra"]["face_switch"]
+    human = fs["fresh_human"]
+    assert human["status"] == "ok" and human["before"]["poll"] is False and human["after"]["poll"] is False
+    assert human["shown"] == [] and human["before"]["reference_visible"] == {"Reference": {"visible": True, "seen": True}}
+    for d in (human["before"]["diagnostics"], human["after"]["diagnostics"]):
+        assert 'POLL == "before_add_limb"' in d["poll_sources"][0]["source"], d
+        assert d["active_object"] == "rig" and d["active_edit_bone"] == "head_ref.x", d
+        assert d["selected_edit_bones"] == ["head_ref.x"] and set(d["override"]) == {"window", "area", "region"}
+        assert d["mode"] == "EDIT_ARMATURE" and d["active_type"] == "ARMATURE"
+        assert d["selected_editable_bones"]["bones"] == ["head_ref.x"]
+    assert human["answer"] == "Auto-Rig Pro said no, even with the reference bones shown"
+    dog = fs["fresh_dog"]                               # Step 8's own face switch, on a dog rig
+    assert dog["status"] == "ok" and dog["stored_before"] == 1 and dog["stored_after"] == 1, dog
+    assert dog["before"]["poll"] is False and dog["facial"]["facial"] == "still on"
+    assert dog["facial"]["reason"] == "Auto-Rig Pro said no here"
+    assert "poll_sources" in dog["facial"]["protocol"]["diagnostics"]
+    # after a limb was added the same button works (as on the director's PC)
+    assert all(c["changed_ok"] for c in rep["limb_protocol"]["cases"].values())
+    for name in ("disable_limb", "chin", "bind", "socket_export", "deform_names"):
+        assert rep[name]["status"] == "ok", (name, rep[name])
+    assert rep["add_limb"]["cases"]["kilt"]["status"] == "ok"
+    lines = arp_probe.summary_lines(rep)
+    assert lines[1] == "Rerun of: multi_arm, limbs, build (the full result file stays as it was)"
+    assert lines[2] == "Checks that worked: 11 of 11"           # (1 multi_arm, 5 limbs, 5 build)
+    assert lines[-2] == "Limb options button on a fresh rig: Auto-Rig Pro said no, even with the reference bones shown"
+    assert lines[-1].startswith("Face-bones switch: Auto-Rig Pro said no on 1 of 4 test rigs")
+    assert str(work / arp_probe.RERUN_NAME) in said[-4]
+    # the rerun's logs and exports sit beside the full run's, not over them
+    assert (work / "logs" / "rerun_limbs.log").exists() and not (work / "logs" / "limbs.log").exists()
+    assert rep["parts"]["limbs"]["log"].startswith("_setup/arp_probe/logs/rerun_limbs.log")
+    assert (work / "exports" / "rerun" / "probe_multi_arm_unity_humanoid.fbx").exists()
+    assert not (work / "exports" / "probe_unity_humanoid.fbx").exists()
+
+
+def test_rerun_where_hidden_reference_bones_are_the_cause_shows_them_and_goes_through(tmp_path, monkeypatch):
+    """If the cause is the one Forge guesses (the fresh rig's reference bones cannot be seen),
+    the rerun says so, and the face switch Step 8 makes on a dog rig goes through."""
+    monkeypatch.setenv("FAKE_ARP_POLL", "hidden_refs")
+    calls: list = []
+    said: list = []
+    rc = arp_probe.run([sys.executable], str(tmp_path / "jobs"), None, say=said.append,
+                       runner=_runner(_fake_arp(tmp_path / "fake"), calls), only=["multi_arm", "limbs"])
+    assert rc == 0, "\n".join(said)
+    rep = json.loads((tmp_path / "jobs" / "_setup" / "arp_probe" / arp_probe.RERUN_NAME).read_text(encoding="utf-8"))
+    fs = rep["extra"]["face_switch"]
+    human = fs["fresh_human"]
+    assert human["before"]["poll"] is False and human["shown"] == ["Reference"] and human["after"]["poll"] is True
+    assert human["before"]["reference_visible"] == {"Reference": {"visible": False, "seen": False}}
+    assert human["before"]["diagnostics"]["selected_editable_bones"]["bones"] == []
+    assert human["answer"] == "Auto-Rig Pro said no until the reference bones were shown"
+    dog = fs["fresh_dog"]
+    assert dog["before"]["poll"] is False and dog["facial"]["facial"] == "off", dog
+    assert dog["facial"]["protocol"]["shown"] == ["Reference"] and dog["stored_after"] is False
+    assert all(c["changed_ok"] for c in rep["limb_protocol"]["cases"].values())
+    lines = arp_probe.summary_lines(rep)
+    assert "Limb options button on a fresh rig: Auto-Rig Pro said no until the reference bones were shown" in lines
+    assert "Face-bones switch: already off (2 test rigs), off (1 test rig)" in lines

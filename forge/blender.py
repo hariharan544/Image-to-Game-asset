@@ -1,7 +1,7 @@
 """Run one Blender stage headless and return its result.
 
 Blender is found via (first hit wins):
-  1. FORGE_BLENDER env var (path to blender.exe)
+  1. FORGE_BLENDER env var (path to blender.exe, or the folder it is in)
   2. newest  C:/Program Files/Blender Foundation/Blender */blender.exe  (Windows)
   3. `blender` on PATH
   4. the `bpy` pip module in the current Python (dev / CI only)
@@ -32,10 +32,30 @@ def _version_key(path: str) -> tuple:
     return (int(m.group(1)), int(m.group(2))) if m else (0, 0)
 
 
+BLENDER_NAMES = ("blender.exe", "blender")
+
+
+def blender_file(path) -> Optional[Path]:
+    """The Blender program `path` names: the file itself, or blender.exe in the folder `path`
+    (people often give the folder). None when there is no such file."""
+    try:
+        p = Path(path)
+        if p.is_file():
+            return p
+        if p.is_dir():
+            for n in BLENDER_NAMES:
+                if (p / n).is_file():
+                    return Path(os.path.abspath(p / n))
+    except (OSError, ValueError):
+        pass
+    return None
+
+
 def find_blender() -> Optional[list[str]]:
     env = os.environ.get("FORGE_BLENDER")
     if env:
-        return [env]
+        f = blender_file(env)                   # (an older Forge saved a folder as it was given)
+        return [str(f) if f is not None else env]
     candidates = glob.glob(r"C:/Program Files/Blender Foundation/Blender */blender.exe")
     if candidates:
         return [max(candidates, key=_version_key)]
@@ -49,6 +69,55 @@ def find_blender() -> Optional[list[str]]:
     except (ImportError, ValueError):
         pass
     return None
+
+
+# where the Blender installer puts it on Windows (the version number follows the release)
+USUAL_BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.3\blender.exe"
+# how the director starts Forge: in PowerShell, in the Forge folder (docs/SETUP_BLENDER.md)
+FORGE_EXE = r".venv\Scripts\forge.exe"
+
+
+def typed(command: str) -> str:
+    """A Forge command the way the director types it: 'setup-blender' -> .venv\\Scripts\\forge.exe setup-blender."""
+    return f"{FORGE_EXE} {command}"
+
+
+def known_blender() -> Optional[str]:
+    """The Blender Forge would use without --blender, if it is really there."""
+    b = find_blender()
+    return b[0] if b and Path(b[0]).is_file() else None
+
+
+def no_such_blender_lines(path: str, known: Optional[str], command: str = "arp-probe") -> list[str]:
+    """What to say when --blender names no Blender. `command` is the one being run
+    ('arp-probe', 'setup-blender'). The director once typed the example from a message,
+    C:\\path\\to\\blender.exe, word for word: say it was an example."""
+    lines = [f"[X] There is no blender.exe at {path}"]
+    if "path\\to\\" in str(path).replace("/", "\\").lower():
+        lines.append("    (That path was only an example of how to write it.)")
+    elif Path(path).is_dir():
+        lines.append("    (That is a folder, and blender.exe is not in it.)")
+    lines += ["    After --blender, give the real place of blender.exe on this PC. It is usually:",
+              f"      \"{USUAL_BLENDER}\"",
+              "      (the version number in the folder name may differ)."]
+    if known:
+        lines += ["    Or leave --blender out: Forge then uses the Blender it already knows:", f"      {known}"]
+    elif command == "setup-blender":
+        lines += ["    Or install Blender first (see docs/SETUP_BLENDER.md), then run this again without",
+                  "    --blender: Forge then looks for it by itself."]
+    else:
+        lines.append(f"    Forge does not know a Blender on this PC yet: run `{typed('setup-blender')}` first.")
+    return lines
+
+
+def blender_not_found_lines(command: str) -> list[str]:
+    """What to say when no Blender was given and none was found (the path shown is an example).
+    `command` is the one being run, e.g. 'arp-probe'."""
+    return ["[X] Forge could not find Blender on this PC.",
+            f"    Install it (see docs/SETUP_BLENDER.md), then run `{typed(command)}` again. If Blender is",
+            "    installed somewhere unusual, add --blender with the real place of blender.exe,",
+            f"    for example: --blender \"{USUAL_BLENDER}\"",
+            "    (that is an example: use the folder Blender is in on your PC)."]
 
 
 def run_stage(stage: str, args: dict, log_path: Path, timeout: float = 3600,
