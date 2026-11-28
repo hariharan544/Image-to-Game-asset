@@ -425,19 +425,210 @@ def region_tris(low_obj, J: dict) -> dict:
 
 # ----------------------------------------------------------------------------- fit to original
 
-def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
-    """Move every vertex of the new mesh onto the original surface. After a SYMMETRIC remesh
-    this puts one-sided details back (a notch in one ear) and pulls the mesh into grooves
-    (mouth line). Projection along the vertex normal (both ways) keeps the quads even; where
-    that finds nothing (the notch: there is no surface along the normal) the nearest surface
-    point is used. A light relax keeps the quads from bunching, then they are projected again."""
+FACING = 0.2         # a hit on the original counts only if its face turns at most ~78 deg from the vertex
+FIT_CHECK = 0.05     # a vertex that moved this share of its edge more than its neighbours did (on
+                     # average) bends its faces: it goes only as far as brings them closest to the
+                     # original (_keep_closer); one that moved with its neighbours only carries
+                     # its faces along, onto the surface each corner was projected to
+FIT_GRID = 3         # the gap between faces and original is measured at FIT_GRID^2 points per triangle
+FIT_STEPS = (1.0, 0.75, 0.5, 0.25)   # shares of a bending move tried (and none), longest first
+FIT_JUDGED = 3       # a vertex is judged again when a neighbour is held back, at most this many times
+
+
+def _polys(me) -> list:
+    """Every face of a mesh as a tuple of its vertex indices."""
+    nf, nl = len(me.polygons), len(me.loops)
+    ls = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_start", ls)
+    lt = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    lv = np.empty(nl, np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    return [tuple(int(x) for x in lv[s0:s0 + t]) for s0, t in zip(ls, lt)]
+
+
+def _vertex_faces(polys: list, n: int) -> list:
+    out: list = [[] for _ in range(n)]
+    for fi, f in enumerate(polys):
+        for v in f:
+            out[v].append(fi)
+    return out
+
+
+def _mean_edge(co: np.ndarray, ev: np.ndarray) -> np.ndarray:
+    """Per vertex: the mean length of its edges."""
+    n = len(co)
+    a, b = ev[:, 0], ev[:, 1]
+    deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)
+    el = np.linalg.norm(co[a] - co[b], axis=1)
+    return (np.bincount(a, weights=el, minlength=n) + np.bincount(b, weights=el, minlength=n)) / deg
+
+
+def _grid(k: int) -> list:
+    """The middles of the k x k small triangles a triangle splits into, as (s, t) shares of its
+    two sides from the first corner: every one stands for the same share of its area."""
+    up = [((i + 1 / 3) / k, (j + 1 / 3) / k) for i in range(k) for j in range(k - i)]
+    down = [((i + 2 / 3) / k, (j + 2 / 3) / k) for i in range(k - 1) for j in range(k - 1 - i)]
+    return up + down
+
+
+_FIT_SAMPLES = _grid(FIT_GRID)
+
+
+def _sag(co: np.ndarray, v: int, f, start: np.ndarray, nrm: np.ndarray) -> tuple:
+    """How far face f may lie off a smooth surface through its corners (its chord error), as
+    (inside, outside). With the surface's normal turning by angle a over a distance L between
+    two of its corners, it bends by about a / L; a flat face D across (its longest side or
+    diagonal, with v where it is and where it was) sags about (a / L) * D^2 / 8 off it - inside
+    where the surface bulges out between the corners (their normals spread apart), outside
+    where it hollows in (they close in: a fold or a join the face spans). The bend is the
+    remesher's own surface's (start, nrm: its points and normals), between the corners other
+    than v: at its quad size it is the smooth surface the faces stand for - the original's own
+    normals next to a narrow groove are its walls', a bend the faces were never meant to
+    follow."""
+    pts = [w for w in f if w != v]
+    bulge = hollow = 0.0
+    for i, p in enumerate(pts):
+        for q in pts[i + 1:]:
+            d = start[q] - start[p]
+            dist = float(np.linalg.norm(d))
+            if dist <= 0.0:
+                continue
+            bend = math.acos(float(np.clip(np.dot(nrm[p], nrm[q]), -1.0, 1.0))) / dist
+            if float(np.dot(d, nrm[q] - nrm[p])) >= 0.0:
+                bulge = max(bulge, bend)
+            else:
+                hollow = max(hollow, bend)
+    corners = [co[w] for w in pts] + [co[v], start[v]]
+    span = max(float(np.linalg.norm(x - y)) for i, x in enumerate(corners) for y in corners[i + 1:])
+    return bulge * span * span / 8.0, hollow * span * span / 8.0
+
+
+def _gap(tree, co: np.ndarray, v: int, faces: list, sags: list, reach: float) -> tuple:
+    """How far the faces round point v lie off the original beyond each face's own chord error
+    (sags: inside, outside), as (volume, deepest): at points spread evenly over each face (fanned
+    into triangles from v), the distance along the face's normal, out or in, to the original
+    surface - the nearest one met that faces the same way (from inside, the surface above; never
+    the far side of a thin part) - less the face's chord error on that side; the volume sums it
+    times the area each point stands for. Measured across the face, not to the nearest surface
+    point: a face sunk into a lip beside a narrow groove is close to the groove's wall but far
+    below the lip the eye sees. The chord error is left out because a flat face cannot follow a
+    curved surface closer than that: a remesher's point raised off a coarse sphere does narrow
+    the gap of its sagging faces - by a bump. A point with no such surface within reach (pushed
+    through a thin part) counts as reach."""
     from mathutils import Vector
-    from mathutils.bvhtree import BVHTree
-    tree = BVHTree.FromPolygons([v.co.copy() for v in src_me.vertices],
-                                [tuple(p.vertices) for p in src_me.polygons])
+    total = deepest = 0.0
+    share = 1.0 / len(_FIT_SAMPLES)
+    for f, (sag_in, sag_out) in zip(faces, sags):
+        i = f.index(v)
+        P = [Vector(co[w]) for w in f[i:] + f[:i]]
+        for B, C in zip(P[1:-1], P[2:]):
+            ab, ac = B - P[0], C - P[0]
+            nv = ab.cross(ac)
+            area = nv.length / 2.0
+            if area <= 0.0:
+                continue
+            nv /= 2.0 * area
+            for s, t in _FIT_SAMPLES:
+                p = P[0] + ab * s + ac * t
+                best, inside = None, False
+                for d, up in ((nv, True), (-nv, False)):
+                    h = tree.ray_cast(p, d, reach)
+                    if h[0] is not None and h[1].dot(nv) > 0.0 and (best is None or h[3] < best):
+                        best, inside = h[3], up             # (met going up: the face is dug in under it)
+                if best is None:
+                    h = tree.find_nearest(p, reach)
+                    if h[0] is not None and h[1].dot(nv) > 0.0:
+                        best, inside = h[3], (p - h[0]).dot(h[1]) < 0.0
+                    else:
+                        best = reach
+                off = max(0.0, best - (sag_in if inside else sag_out))
+                total += off * area * share
+                deepest = max(deepest, off)
+    return total, deepest
+
+
+def _keep_closer(tree, start: np.ndarray, nrm: np.ndarray, target: np.ndarray, polys: list, vf: list,
+                 ev: np.ndarray, edge: np.ndarray, reach: np.ndarray, tol: float, check: float = FIT_CHECK) -> tuple:
+    """Each vertex whose move bends its faces (it moves more than `check` of its edge farther
+    than its neighbours do, on average) goes only as far along its move, from where the
+    remesher left it (start) to where the fit put it (target), as brings its faces closest to
+    the original: all the way if they then lie on it within their chord error and tol
+    everywhere (_gap's deepest); else to whichever of FIT_STEPS of the way leaves the least
+    volume between faces and original beyond their chord error (_gap) - the shorter of two as
+    close, and none of the way unless some share is closer than none. One test for every case:
+    a vertex pulled into a notch at least about as wide as its faces takes them into the notch
+    (closer: a one-sided notch comes back after a mirrored run); one pulled off a ghost bump or
+    remesher noise onto the surface lands on it; one pulled into a groove narrower than its
+    faces would drag them into the material on both sides of it - more volume dug out beside
+    the groove than the groove holds: it goes only as deep as that pays, often not at all (the
+    whole way is the notch the original does not have; the same for a ridge narrower than the
+    faces, which would lift them off the skin beside it). One vertex at a time, lowest number
+    first, each judged among its neighbours as they are by then; when one is held back its
+    neighbours are judged again (at most FIT_JUDGED times each), as their faces changed.
+    Returns (coordinates, how many were held back)."""
+    import heapq
+    n = len(target)
+    out = target.copy()
+    a, b = ev[:, 0], ev[:, 1]
+    deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)[:, None]
+    nbrs: list = [[] for _ in range(n)]
+    for x, y in ev:
+        nbrs[x].append(int(y))
+        nbrs[y].append(int(x))
+    move = target - start
+    rest = np.stack([np.bincount(a, weights=move[b, k], minlength=n) + np.bincount(b, weights=move[a, k], minlength=n)
+                     for k in range(3)], axis=1) / deg
+    todo = [int(v) for v in np.nonzero(np.linalg.norm(move - rest, axis=1) > check * edge)[0]]
+    heapq.heapify(todo)
+    queued = set(todo)
+    judged = np.zeros(n, np.int64)
+    while todo:
+        v = heapq.heappop(todo)
+        queued.discard(v)
+        if not vf[v] or not nbrs[v] or judged[v] >= FIT_JUDGED or not np.any(move[v]):
+            continue
+        was = out[v].copy()
+        out[v] = target[v]                               # (judged in place: only v's faces are read)
+        best = 1.0
+        if float(np.linalg.norm(move[v] - (out[nbrs[v]] - start[nbrs[v]]).mean(axis=0))) > check * edge[v]:
+            judged[v] += 1                               # (else it moves with its neighbours: faces carried along)
+            faces = [polys[f] for f in vf[v]]
+            sags = [_sag(out, v, f, start, nrm) for f in faces]
+            lim = float(reach[v])
+            vol, deepest = _gap(tree, out, v, faces, sags, lim)
+            if deepest > tol:
+                for share in FIT_STEPS[1:] + (0.0,):     # the shorter of two as close
+                    out[v] = start[v] + share * move[v]
+                    got = _gap(tree, out, v, faces, sags, lim)[0]
+                    if got <= vol:
+                        vol, best = got, share
+        out[v] = target[v] if best == 1.0 else start[v] + best * move[v]
+        if np.any(out[v] != was):
+            for w in nbrs[v]:
+                if w not in queued:
+                    heapq.heappush(todo, w)
+                    queued.add(w)
+    return out, int(np.count_nonzero(np.any(out != target, axis=1)))
+
+
+def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2, tree=None, tol_rel: float = 0.0012) -> dict:
+    """Move every vertex of the new mesh onto the original surface. After a SYMMETRIC remesh
+    this puts one-sided details back (a notch in one ear) and pulls the mesh into grooves at
+    least about as wide as its quads. Projection along the vertex normal (both ways) keeps the
+    quads even; where that finds nothing (the notch: there is no surface along the normal) the
+    nearest surface point is used. A light relax keeps the quads from bunching, then they are
+    projected again. Last, a vertex whose move bent its faces goes only as far along it as
+    brings them closest to the original (_keep_closer): all the way where they then lie on it
+    (within their chord error and tol_rel of the size); a vertex pulled into a groove narrower
+    than its faces would sink them into the lips on both sides - a notch the original does not
+    have - so it goes only as deep as that leaves its faces closer than where the remesher put
+    it, often not at all (carve cuts such a crease in along new edges)."""
+    from mathutils import Vector
+    tree = tree or source_tree(src_me)
     n = len(low_me.vertices)
     if n == 0:
-        return {"moved": 0}
+        return {"moved": 0, "held_back": 0}
     co = np.empty(n * 3, np.float32)
     low_me.vertices.foreach_get("co", co)
     co = co.reshape(-1, 3).astype(np.float64)
@@ -445,15 +636,15 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
     limit = max_rel * size
     ev = np.empty(len(low_me.edges) * 2, np.int32)
     low_me.edges.foreach_get("vertices", ev)
-    a, b = ev[0::2].astype(np.int64), ev[1::2].astype(np.int64)
+    ev = ev.reshape(-1, 2).astype(np.int64)
+    a, b = ev[:, 0], ev[:, 1]
     deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)[:, None]
 
     # each vertex may only move onto the original surface it stands for: one that faces the
     # same way, and not farther than a few of its own edges (next to a thin ear or in the gap
     # at a horn root, the nearest hit can be the far side of the sheet or another wall)
-    elen = np.linalg.norm(co[a] - co[b], axis=1)
-    reach = (np.bincount(a, weights=elen, minlength=n) + np.bincount(b, weights=elen, minlength=n)) / deg[:, 0]
-    reach = np.minimum(4.0 * reach, limit)
+    edge = _mean_edge(co, ev)
+    reach = np.minimum(4.0 * edge, limit)
 
     def project(pts, nrm):
         out = pts.copy()
@@ -465,7 +656,7 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
             best = None
             for s in (1.0, -1.0):
                 hit = tree.ray_cast(p, d * s, lim)
-                if hit[0] is not None and hit[1].dot(d) > 0.2 and (best is None or hit[3] < best[1]):
+                if hit[0] is not None and hit[1].dot(d) > FACING and (best is None or hit[3] < best[1]):
                     best = (hit[0], hit[3])
             if best is None:
                 near = tree.find_nearest(p, lim)
@@ -483,7 +674,8 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
         low_me.vertices.foreach_get("normal", nr)
         return nr.reshape(-1, 3).astype(np.float64)
 
-    co, moved = project(co, normals(co))
+    start, nrm0 = co.copy(), normals(co)
+    co, moved = project(co, nrm0)
     for _ in range(relax):
         avg = (np.stack([np.bincount(a, weights=co[b, k], minlength=n) + np.bincount(b, weights=co[a, k], minlength=n)
                          for k in range(3)], axis=1)) / deg
@@ -492,9 +684,12 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
         delta -= nrm * (delta * nrm).sum(axis=1, keepdims=True)   # slide along the surface only
         co = co + 0.5 * delta
         co, _m = project(co, normals(co))
+    polys = _polys(low_me)
+    co, back = _keep_closer(tree, start, nrm0, co, polys, _vertex_faces(polys, n), ev, edge,
+                            np.where(reach > 0, reach, limit), tol_rel * size)
     low_me.vertices.foreach_set("co", co.astype(np.float32).ravel())
     low_me.update()
-    return {"moved": int(moved)}
+    return {"moved": int(moved), "held_back": int(back)}
 
 
 # ----------------------------------------------------------------------------- carve creases
@@ -659,34 +854,92 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
     return {"added": int(added), "splits": int(splits)}
 
 
-def crease_kept(src_me, low_me, tol_rel: float = 0.0012, max_samples: int = 200_000) -> dict:
-    """Share of the face (strict region) kept within tol_rel of size, left (+X) and right (-X)."""
+CREASE_RING = 6      # points round a face point, half a quad of the new mesh away, that say how deep it lies
+
+
+def _crease_depth(tree, p, n, r: float) -> "float | None":
+    """How far original point p (normal n) lies below the surface round it, r away: the
+    original is found along n (out or in, within 4 r) at CREASE_RING points round p on its
+    tangent plane; along each line through p (two opposite points) the valley is as deep as
+    its lower side, and p's depth is that of its deepest valley. A groove floor lies below both
+    its lips across the groove; the foot of a step or the skin on a bulge does not (None:
+    too few points found)."""
     from mathutils import Vector
+    axis = min(((1.0, 0.0, 0.0), (0.0, 1.0, 0.0), (0.0, 0.0, 1.0)), key=lambda ax: abs(n.dot(Vector(ax))))
+    u = n.cross(Vector(axis)).normalized()
+    w = n.cross(u)
+    heights = []
+    for k in range(CREASE_RING):
+        a = 2.0 * math.pi * k / CREASE_RING
+        q = p + (u * math.cos(a) + w * math.sin(a)) * r
+        best = None
+        for d in (n, -n):
+            h = tree.ray_cast(q, d, 4.0 * r)
+            if h[0] is not None and h[1].dot(n) > 0.0 and (best is None or h[3] < best[3]):
+                best = h
+        heights.append(None if best is None else (best[0] - p).dot(n))
+    half = CREASE_RING // 2
+    lines = [min(heights[k], heights[k + half]) for k in range(half)
+             if heights[k] is not None and heights[k + half] is not None]
+    return max(lines) if lines else None
+
+
+def crease_kept(src_me, low_me, tol_rel: float = 0.0012, max_samples: int = 40_000) -> dict:
+    """How much of the face's creases the new mesh keeps, left (+X) and right (-X): the share of
+    the crease-floor points that the new mesh comes within tol_rel of the size of. A crease-floor
+    point is a point of the original's face (strict region) lying deeper than tol_rel below the
+    surface round it half a quad away (_crease_depth; the face's typical quad of the new mesh,
+    the median at those points): a valley narrower than the quads, which a remesher bridges
+    unless an edge happens to run along it. A broad hollow any mesh follows is not one, nor is
+    the smooth skin round a crease - nearly all of a face, which any mesh keeps: a share of all
+    of it reads about 99% even for a mesh that lost the mouth line. Also how many crease points
+    each side has ("left_n", "right_n"); a side with none has no share, a face with none
+    returns {}."""
+    from mathutils import Vector
+    from mathutils.bvhtree import BVHTree
     a = src_me.attributes.get(STRICT_ATTR)
-    if a is None:
+    if a is None or not len(low_me.polygons):
         return {}
     n = len(src_me.vertices)
     sv = np.empty(n, np.float32)
     a.data.foreach_get("value", sv)
     co = np.empty(n * 3, np.float32)
     src_me.vertices.foreach_get("co", co)
-    co = co.reshape(-1, 3)
+    co = co.reshape(-1, 3).astype(np.float64)
+    nrm = np.empty(n * 3, np.float32)
+    src_me.vertices.foreach_get("normal", nrm)
+    nrm = nrm.reshape(-1, 3).astype(np.float64)
     size = float(np.linalg.norm(co.max(axis=0) - co.min(axis=0))) or 1.0
+    tol = tol_rel * size
     idx = np.nonzero(sv < 0.999)[0]
     if len(idx) == 0:
         return {}
     idx = idx[:: max(1, len(idx) // max_samples)]
-    tree = source_tree(low_me)
-    ok = np.zeros(len(idx), bool)
-    for j, i in enumerate(idx):
-        h = tree.find_nearest(Vector(co[i]))
-        ok[j] = h[0] is not None and h[3] <= tol_rel * size
-    left = co[idx, 0] > 0
-    out = {}
-    if left.any():
-        out["left_pct"] = round(100.0 * ok[left].mean(), 1)
-    if (~left).any():
-        out["right_pct"] = round(100.0 * ok[~left].mean(), 1)
+    polys = _polys(low_me)
+    lco = np.empty(len(low_me.vertices) * 3, np.float32)
+    low_me.vertices.foreach_get("co", lco)
+    lco = lco.reshape(-1, 3).astype(np.float64)
+    quad = np.array([np.mean([np.linalg.norm(lco[f[j]] - lco[f[j - 1]]) for j in range(len(f))]) for f in polys])
+    low = BVHTree.FromPolygons([Vector(c) for c in lco], polys)
+    src = source_tree(src_me)
+    near = [low.find_nearest(Vector(co[i])) for i in idx]
+    found = [(i, h) for i, h in zip(idx, near) if h[0] is not None and np.linalg.norm(nrm[i]) > 0.5]
+    if not found:
+        return {}
+    r = 0.5 * float(np.median([quad[h[2]] for _i, h in found]))
+    left, kept = [], []
+    for i, h in found:
+        depth = _crease_depth(src, Vector(co[i]), Vector(nrm[i]), r)
+        if depth is None or depth <= tol:
+            continue
+        left.append(co[i, 0] > 0)
+        kept.append(h[3] <= tol)
+    left, kept = np.array(left, bool), np.array(kept, bool)
+    out: dict = {}
+    for side, sel in (("left", left), ("right", ~left)):
+        if sel.any():
+            out[f"{side}_pct"] = round(100.0 * float(kept[sel].mean()), 1)
+            out[f"{side}_n"] = int(sel.sum())
     return out
 
 

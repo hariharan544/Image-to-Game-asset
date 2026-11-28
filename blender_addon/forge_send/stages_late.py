@@ -708,12 +708,17 @@ def _retopo_rows(rep):
         if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
             out += _row("BLANK1", f"method: {m}")
         cr = r.get("creases") or {}
-        if "left_pct" in cr or "right_pct" in cr:
+        sides = [f"{side} {cr[side + '_pct']}%" for side in ("left", "right") if side + "_pct" in cr]
+        if sides:
+            # (measured on the creases' floors: the share of the face's narrow valleys - mouth
+            # line, lid crease - the new mesh reaches; the smooth skin round them does not count)
             low_side = min(cr.get("left_pct", 100), cr.get("right_pct", 100))
             out += _row("BLANK1" if low_side >= 80 else WARN,
-                        f"face creases kept: left {cr.get('left_pct', '-')}%, "
-                        f"right {cr.get('right_pct', '-')}%"
+                        "face creases kept: " + ", ".join(sides)
                         + (f" (+{cr.get('carved_tris', 0)} tris carved)" if cr.get("carved_tris") else ""))
+            if low_side < 80:
+                out += _row("BLANK1", "they are narrower than the quads there: paint them red (Paint) "
+                                      "for smaller quads, run again")
         if "symmetry" in r:
             if r["symmetry"] and r.get("asymmetry_pct", 0) >= 1:
                 out += _row("BLANK1", f"mirrored, then fitted ({r['asymmetry_pct']}% one-sided)")

@@ -781,11 +781,11 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         def _fit():
             """Fit to the original, then cut narrow face creases in (local, adds only)."""
             from .density import carve, conform, source_tree
+            if fit["tree"] is None:
+                fit["tree"] = source_tree(backup)
             if args.get("conform", True):
-                conform(obj.data, backup, relax=int(args.get("conform_relax", 2)))
+                conform(obj.data, backup, relax=int(args.get("conform_relax", 2)), tree=fit["tree"])
             if args.get("carve", True):
-                if fit["tree"] is None:
-                    fit["tree"] = source_tree(backup)
                 fit["carve"] = carve(obj.data, backup, fit["tree"])
             fit["fitted"] = True
         STATUS["text"] = f"{_short(obj.name)}: Quad Remesher"
