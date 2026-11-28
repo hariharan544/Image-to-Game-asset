@@ -20,18 +20,20 @@ Per body:
     rigid and how much of each limb that region holds
   - mode "fast": a dry run of each plan with the product's own executor: ledger.prepare on the
     ledger the plan stored, once the product has one (forge_bpy.ledger); until then today's
-    rescue.split_off, then density.symmetrize for a side, as retopo._qr_one does them. Cut,
-    lost, copied and torn shares come from what the executor actually returned, never from the
-    plan. Auto's Quad Remesher X-symmetry flag is read from the product (the ledger's
+    rescue.split_off, then density.symmetrize for a side unless a cut failed or the plan blocked
+    it (what the plan says). Cut, lost, copied and torn shares come from what the executor
+    actually returned, never from the plan. Auto's Quad Remesher X-symmetry flag is read from the product (the ledger's
     qr_symmetry, else the forge_symmetry_x steps.prepare_retopo writes on the new mesh).
   - mode "real": steps.run_retopo itself (prepare_maps, prepare_retopo, retopo._run_qr with its
     split_off, mirror, piece remesh and weld) with tests/fake_qr.py as Quad Remesher (it returns
     the input reduced to the asked size; fitting, carving and the shape check are off), and the
     final mesh measured against the original.
   - per run, label-free: the unplanned change (surface lost or added between the original and
-    the result, beyond the harness's tolerance, in islands, outside what the product allowed),
-    plan drift (the executor's fingerprints at plan time against the run's) and the mirror
-    residual on the matched core.
+    the result, beyond the harness's tolerance - the body's noise floor, never under a quarter of
+    the coarser mesh's edge - in islands, outside what the product allowed), plan drift (the
+    executor's fingerprints at plan time against the run's: in fast mode a second run that
+    decides the mirror as retopo._qr_one does, in real mode the real run) and the mirror residual
+    on the matched core.
 Scores (higher = worse) and plain-language problems per body; baseline.json and summary.txt in
 --out. Three totals, kept apart:
   - old total: the first zoo (BODIES) plain and +ai, scored by score(). Its lines never change,
@@ -270,6 +272,48 @@ def dilate(mask, ev, rings: int):
     return m
 
 
+def _polys(me) -> list:
+    """A mesh's faces as lists of vertex indices."""
+    import bodies_zoo as Z
+    lv, ls, lt = Z._faces(me)
+    return [lv[ls[i]:ls[i] + lt[i]].tolist() for i in range(len(ls))]
+
+
+def on_pieces(P, pieces, faces, shift: float = 0.0):
+    """How far each point lies from the cut-off pieces as split_off returned them (their surface,
+    the plug that reaches back into the body included); the pieces may be in the mirror frame,
+    `shift` along x. Infinite without pieces."""
+    import numpy as np
+    from mathutils.bvhtree import BVHTree
+    if not pieces:
+        return np.full(len(P), np.inf)
+    V, F = [], []
+    for co, fs in zip(pieces, faces):
+        off = len(V)
+        V += (np.asarray(co, float) + [shift, 0.0, 0.0]).tolist()
+        F += [[i + off for i in f] for f in fs]
+    return surface_distances(P, BVHTree.FromPolygons(V, F))
+
+
+def cut_piece_shells(me, from_cut):
+    """The result vertices of every shell (connected piece) of `me` made mostly, by area, of
+    surface the cut took (from_cut: per result vertex, its nearest original vertex was cut off):
+    a cut piece the run keeps as a shell of its own inside a mesh, its plug included (the hidden
+    part that reaches back into the body, far from any cut-off surface). All of it is planned."""
+    import numpy as np
+
+    import bodies_zoo as Z
+    ev = Z.edges(me)
+    comp = Z._components(len(me.vertices), ev[:, 0], ev[:, 1])
+    area = vertex_area(me)
+    out = np.zeros(len(me.vertices), bool)
+    for c in np.unique(comp).tolist():
+        g = comp == c
+        if float(area[g & from_cut].sum()) >= 0.5 * float(area[g].sum()):
+            out |= g
+    return out
+
+
 def fingerprint(me) -> str:
     """The product's fingerprint of a mesh (density.fingerprint) when it has one, else this
     harness's own: a hash of the vertex and face counts and of the positions in sorted order, so
@@ -316,15 +360,25 @@ class Original:
         self.lab, self.labels, self.flab, self.apps = lab, labels, np.asarray(flab), apps
         self.area = vertex_area(me)
         self.tree, self.kd = _tree(me), _kd(self.co)
-        # the mesh's own edge: the harness's tolerance is 2.5 of them (about the 2.5 voxels the
-        # old lines use); the smallest island that counts is (2 e_ref)^2, e_ref the quad edge of
-        # the finest export target (Unreal 30k triangles over this area), as in the plan
+        # the mesh's own edge; the smallest island that counts is (2 e_ref)^2, e_ref the quad
+        # edge of the finest export target (Unreal 30k triangles over this area), as in the plan
         self.edge = float(np.median(np.linalg.norm(self.co[self.ev[:, 0]] - self.co[self.ev[:, 1]], axis=1)))
-        self.tau = 2.5 * self.edge
         self.e_ref = math.sqrt(float(self.area.sum()) / 15000.0)
         self.min_area = (2 * self.e_ref) ** 2
         self.plane = float(density.mirror_plane(me))
         self.gaps = mirror_gaps(self.co, self.tree, self.plane)
+        # the noise floor (the plan's principle 7): 3 x the body's own median mirror gap. Below
+        # it a difference cannot be told from the surface's own asymmetry
+        self.noise = 3.0 * float(np.median(self.gaps[np.isfinite(self.gaps)]))
+        self.tau = self.change_tau(self.edge)
+
+    def change_tau(self, res_edge: float) -> float:
+        """The tolerance of the label-free change against a result whose median edge is
+        `res_edge`: the noise floor, never under a quarter of the coarser mesh's edge (two
+        samplings of the same smooth surface stay within a quarter edge of each other wherever
+        it curves less sharply than half an edge, so a smaller difference cannot be told from
+        the resampling)."""
+        return max(self.noise, 0.25 * max(self.edge, float(res_edge)))
 
     def gap_summary(self) -> dict:
         import numpy as np
@@ -334,22 +388,36 @@ class Original:
                 "plane": round(self.plane, 5)}
 
 
-def compare(O, res_me, res_co, res_tree, d0, tau: float, allow0, tau_product=None, allowance: str = "",
-            allow1=None) -> dict:
+def median_edge(me) -> float:
+    """A mesh's median edge length (0 for a mesh without edges)."""
+    import numpy as np
+
+    import bodies_zoo as Z
+    co, ev = Z.coords(me), Z.edges(me)
+    return float(np.median(np.linalg.norm(co[ev[:, 0]] - co[ev[:, 1]], axis=1))) if len(ev) else 0.0
+
+
+def compare(O, res_me, res_co, res_tree, d0, allow0, tau_product=None, allowance: str = "", allow1=None,
+            near=None) -> dict:
     """The label-free change between the original and a result: original vertices farther than
-    `tau` from the result (lost) and result vertices farther than `tau` from the original (added),
+    tau from the result (lost) and result vertices farther than tau from the original (added),
     as islands of at least O.min_area, outside what the product allowed to change (allow0: a mask
     on the original; a result vertex is allowed where its nearest original vertex is, or where
-    allow1, a mask on the result, says so). Also the
-    mirror residual on the matched core (result vertices whose nearest original vertex has its
-    mirror image on the surface): how far their own mirror image lies from the result.
-    Truth labels only name where an island is."""
+    allow1, a mask on the result, says so). tau is O.change_tau of the result's own edge: the
+    body's noise floor, never under a quarter of the coarser mesh's edge; a smaller change is
+    not measured. Also the mirror residual on the matched core (result vertices whose nearest
+    original vertex has its mirror image on the surface within tau): how far their own mirror
+    image lies from the result. Truth labels only name where an island is. near: each result
+    vertex's nearest original vertex, when already looked up."""
     import numpy as np
 
     import bodies_zoo as Z
     from mathutils import Vector
     d1 = surface_distances(res_co, O.tree)
-    near = np.array([O.kd.find(p)[1] for p in res_co.tolist()], np.int64)
+    if near is None:
+        near = np.array([O.kd.find(p)[1] for p in res_co.tolist()], np.int64)
+    res_edge = median_edge(res_me)
+    tau = O.change_tau(res_edge)
     lost = d0 > tau
     added = d1 > tau
     if allow0 is not None:
@@ -365,7 +433,8 @@ def compare(O, res_me, res_co, res_tree, d0, tau: float, allow0, tau_product=Non
         vals, cnt = np.unique(lab_of, return_counts=True)
         o = np.lexsort((vals, -cnt))
         return {O.labels[int(vals[i])]: round(float(cnt[i] / cnt.sum()), 2) for i in o[:3]}
-    out = {"tau_mm": round(1000 * tau, 2),
+    out = {"tau_mm": round(1000 * tau, 2), "noise_floor_mm": round(1000 * O.noise, 2),
+           "resolution_mm": round(250 * max(O.edge, res_edge), 2),
            "tau_product_mm": "n/a" if tau_product is None else round(1000 * tau_product, 2),
            "min_area_cm2": round(1e4 * O.min_area, 2), "allowance": allowance or "none",
            "lost": [{"area_cm2": round(1e4 * float(O.area[g].sum()), 1), "verts": int(len(g)), "where": where(O.lab[g])}
@@ -392,10 +461,9 @@ def part_scale_lost_copied(O, d0, d1, res_co, tol: float) -> tuple:
     3 x the body's own mirror gap (its noise floor: below it a difference cannot be told from the
     surface's own asymmetry). A copy is a result vertex off the original whose mirror image lands
     on the part's own faces."""
-    import numpy as np
     from mathutils import Vector
     lo, co, tols = {}, {}, {}
-    noise = 3 * float(np.median(O.gaps[np.isfinite(O.gaps)]))
+    noise = O.noise
     for name in sorted(O.apps):
         e = O.apps[name]
         if not e.get("proud") or name not in O.labels:
@@ -448,14 +516,18 @@ def _ledger_qr(ledger):
     return q.get("on") if isinstance(q, dict) else q
 
 
-def execute(me, ids, side, ledger=None) -> dict:
+def execute(me, ids, side, ledger=None, as_run: bool = False) -> dict:
     """Step 4's executor once, on a copy of `me`. With the product's ledger (forge_bpy.ledger
     and a ledger its plan stored): ledger.prepare(copy, ledger), which this harness expects to
     return {'fit_target', 'qr_input', 'pieces': [(k, mesh, plug)], 'refused': [(k, why)], 'mode',
     'qr_symmetry', 'fps', 'allow'} in the copy's own frame (anything missing reads as not
-    reported). Until then today's executor, as retopo._qr_one runs it: split_off the planned
-    parts in the mirror frame, then (for a side) mirror the body unless a cut failed or the plan
-    blocked it. Fingerprints are taken in the frame the executor works in."""
+    reported); the plan and the run then share it. Until then today's executor: split_off the
+    planned parts in the mirror frame, then (for a side) mirror the body unless a cut failed or
+    the plan blocked it - what the plan says. as_run: decide the mirror again the way
+    retopo._qr_one does at run time, with its own helpers when the product has them (a refused
+    part that is its own mirror image does not stop the mirror, retopo._symmetric_part; a cut
+    whose lid would be copied onto bare skin does, retopo._lids_mirror_onto_skin). Fingerprints
+    are taken in the frame the executor works in. 'executor' says which one ran."""
     import numpy as np
     from mathutils import Matrix
     from forge_bpy import density, rescue
@@ -478,17 +550,33 @@ def execute(me, ids, side, ledger=None) -> dict:
                 "refused": [(int(k), str(w)) for k, w in res.get("refused", [])], "mirrored": mirrored, "mode": mode,
                 "why_not": why, "shift": 0.0, "fps": res.get("fps") or {}, "allow": allow,
                 "qr_symmetry": None if qr is None else bool(qr), "tau": (ledger.get("frame") or {}).get("tau_keep"),
-                "spare": [m for m in (m2,) if m is not body]}
+                "spare": [m for m in (m2,) if m is not body], "executor": "ledger"}
     m2 = me.copy()
     mirror = side in ("left", "right") and density.straddles_middle(me)
     shift = density.mirror_plane(m2) if mirror else 0.0
     if abs(shift) > 1e-6:
         m2.transform(Matrix.Translation((-shift, 0, 0)))
+    full = m2.copy() if as_run else None           # (the whole body before the cut, as the run keeps it)
     rep: list = []
     pieces = rescue.split_off(m2, ids, rep) if ids is not None else []
     blocked = me.get("forge_mirror_blocked")
-    why = ""
-    if mirror and (rep or blocked):
+    why = note = ""
+    if as_run:
+        from forge_bpy import retopo
+        symmetric = getattr(retopo, "_symmetric_part", None)
+        lids = getattr(retopo, "_lids_mirror_onto_skin", None)
+        lopsided = [k for k, _w in rep if k and not (symmetric is not None and symmetric(full, ids, k))]
+        if mirror and (lopsided or blocked):
+            mirror = False
+            why = f"not mirrored: {blocked or 'a one-sided part could not be cut off'}"
+        elif mirror and rep:
+            note = "still mirrored: the part kept with the body is its own mirror image"
+        uneven = lids(m2, side) if mirror and pieces and lids is not None else []
+        if uneven:
+            mirror = False
+            why = f"not mirrored: the cut for part(s) {uneven} sits to one side of the middle"
+        bpy_remove(full)
+    elif mirror and (rep or blocked):
         mirror = False
         why = f"not mirrored: {blocked or 'a cut failed'}"
     if mirror:
@@ -500,7 +588,8 @@ def execute(me, ids, side, ledger=None) -> dict:
             pm.transform(Matrix.Translation((shift, 0, 0)))
     return {"body": m2, "qr_input": None, "pieces": [(int(k), pm) for k, pm, _p in pieces],
             "refused": [(int(k), w) for k, w in rep], "mirrored": bool(mirror), "mode": None, "why_not": why,
-            "shift": float(shift), "fps": fps, "allow": None, "qr_symmetry": None, "tau": None, "spare": []}
+            "shift": float(shift), "fps": fps, "allow": None, "qr_symmetry": None, "tau": None, "spare": [],
+            "executor": "shim, deciding as the run" if as_run else "shim", "note": note}
 
 
 def _free(ex) -> None:
@@ -511,7 +600,7 @@ def _free(ex) -> None:
 
 def plan_prints(me, ids, side, ledger=None) -> dict:
     """The executor's fingerprints for this plan, as the plan would see them: the ledger's own
-    (its dry run) when the product has one, else one run of the executor on a copy."""
+    (its dry run) when the product has one, else one run of the plan's executor on a copy."""
     if ledger is not None and (ledger.get("dry") or {}).get("fps"):
         return dict(ledger["dry"]["fps"])
     ex = execute(me, ids, side, ledger)
@@ -524,7 +613,9 @@ def dry_run(me, ids, side, lab, labels, voxel, qr_sym_auto, O=None, ledger=None)
     """Step 4 before remeshing, with the product's executor (execute), measured against the
     original: what was cut, refused, lost and copied (the old columns), then the label-free
     unplanned change, the mirror residual on the matched core, pads and reliefs at their own
-    scale, and plan drift (the plan's fingerprints against a second, independent run)."""
+    scale, and plan drift: the plan's fingerprints against a second, independent run that
+    decides as the product's run does (the ledger's own prints once it has one). A second run
+    also shows an executor that does not repeat itself (hidden non-determinism is drift too)."""
     import numpy as np
 
     import bodies_zoo as Z
@@ -534,7 +625,8 @@ def dry_run(me, ids, side, lab, labels, voxel, qr_sym_auto, O=None, ledger=None)
     planned = sorted(set(int(i) for i in (ids if ids is not None else [])) - {0})
     names = _plan_names(me)
     got = [int(k) for k, _pm in pieces]
-    out = {"mirrored": bool(ex["mirrored"]), "why_not": ex["why_not"], "plane": round(float(shift), 4),
+    out = {"executor": ex["executor"], "mirrored": bool(ex["mirrored"]), "why_not": ex["why_not"],
+           "plane": round(float(shift), 4),
            "planned": [names.get(k, str(k)) for k in planned], "cut": [names.get(k, str(k)) for k in got],
            "refused": [(names.get(int(k), str(k)), w) for k, w in ex["refused"]],
            "qr_symmetry": (bool(ex["qr_symmetry"]) if ex["qr_symmetry"] is not None else
@@ -562,7 +654,7 @@ def dry_run(me, ids, side, lab, labels, voxel, qr_sym_auto, O=None, ledger=None)
                                         + [np.ones(len(pm.vertices), bool) for _k, pm in pieces])
             else:
                 allow, how = None, "none"
-            c = compare(O, tmp, Z.coords(tmp), tree, d0, O.tau, allow, ex["tau"], how, allow1)
+            c = compare(O, tmp, Z.coords(tmp), tree, d0, allow, ex["tau"], how, allow1)
             out["unplanned_change"], out["mirror_residual"] = c["unplanned_change"], c["mirror_residual"]
             lo, co, tols = part_scale_lost_copied(O, d0, c["d1"], Z.coords(tmp), 2.5 * voxel)
             if tols:
@@ -571,10 +663,21 @@ def dry_run(me, ids, side, lab, labels, voxel, qr_sym_auto, O=None, ledger=None)
                 out["part_scale_mm"] = tols
             out["fps"] = ex["fps"]
             if ledger is not None and (ledger.get("dry") or {}).get("fps"):
-                plan, how = dict(ledger["dry"]["fps"]), "the product's plan prints against this run"
+                pd = {"plan": dict(ledger["dry"]["fps"]), "run": ex["fps"],
+                      "how": "the product's plan prints against this run"}
             else:
-                plan, how = plan_prints(me, ids, side, ledger), "the executor run twice on the same plan"
-            out["plan_drift"] = {"drift": plan != ex["fps"], "how": how, "plan": plan, "run": ex["fps"]}
+                # the plan's executor (what the plan says) against a second run that decides
+                # the mirror again as retopo._qr_one does
+                run = execute(me, ids, side, None, as_run=True)
+                pd = {"plan": ex["fps"], "run": run["fps"],
+                      "how": "the plan's executor against a second run deciding as the product's run does"}
+                if bool(run["mirrored"]) != bool(ex["mirrored"]):
+                    pd["why"] = (f"the run {'mirrors' if run['mirrored'] else 'does not mirror'}: "
+                                 f"{run['why_not'] or run.get('note') or 'its own mirror decision'}")[:120]
+                elif run["fps"] != ex["fps"]:
+                    pd["why"] = "the same decisions made another mesh (the executor does not repeat itself)"
+                _free(run)
+            out["plan_drift"] = {"drift": pd["plan"] != pd["run"], **pd}
         except Exception as exc:                                     # noqa: BLE001
             out["new_errors"] = [f"{type(exc).__name__}: {exc}"[:300]]
     _free(ex)
@@ -634,6 +737,7 @@ def real_run(gen, kw, side, budget, voxel, plan_fps=None) -> dict:
         out = saved[2](me, ids, rep)
         cuts.append({"planned": sorted(set(int(i) for i in np.unique(ids)) - {0}), "cut": [int(k) for k, _m, _p in out],
                      "refused": [(int(k), w) for k, w in rep[n0:]], "pieces": [Z.coords(pm) for _k, pm, _p in out],
+                     "piece_faces": [_polys(pm) for _k, pm, _p in out],
                      "fps": {"body": fingerprint(me), "pieces": {str(int(k)): fingerprint(pm) for k, pm, _p in out}}})
         return out
 
@@ -683,16 +787,18 @@ def real_run(gen, kw, side, budget, voxel, plan_fps=None) -> dict:
         names = _plan_names(ob.data)
         plan = dict(ob.get("forge_plan", {}))
         mode = (r.get("mirror") or {}).get("mode") if isinstance(r.get("mirror"), dict) else None
-        out.update({"plan": plan, "blocked": ob.data.get("forge_mirror_blocked"), "jobs": jobs,
+        out.update({"executor": "the product's run", "plan": plan, "blocked": ob.data.get("forge_mirror_blocked"),
+                    "jobs": jobs,
                     "method": r.get("method"), "split_kept": r.get("split_kept", []),
                     "separate_parts": r.get("separate_parts", 0), "joints": r.get("joints", []),
                     "open_edges": r.get("open_edges"),
-                    "mirrored": ((mode in MIRROR_MODES if mode else bool(body.get("forge_symmetry_x")))
-                                 if body else None),
+                    # (the product's mode when it reports one, else whether its symmetrize ran:
+                    # forge_symmetry_x is Quad Remesher's flag, on in Auto for a body never mirrored)
+                    "mirrored": (mode in MIRROR_MODES if mode else bool(mirrored_fp)) if body else None,
                     "why_not": next((w for w in r.get("split_kept", []) if w.startswith("not mirrored")), "")})
         if mode:
             out["mode"] = mode
-        c = cuts[0] if cuts else {"planned": [], "cut": [], "refused": [], "pieces": [], "fps": None}
+        c = cuts[0] if cuts else {"planned": [], "cut": [], "refused": [], "pieces": [], "piece_faces": [], "fps": None}
         out["planned"] = [names.get(k, str(k)) for k in c["planned"]]
         out["cut"] = [names.get(k, str(k)) for k in c["cut"]]
         out["refused"] = [(names.get(k, str(k)), w) for k, w in c["refused"]]
@@ -707,7 +813,7 @@ def real_run(gen, kw, side, budget, voxel, plan_fps=None) -> dict:
             out["final_tris"] = sum(len(p.vertices) - 2 for p in body.data.polygons)
         try:
             # ---- the new columns: the whole result (every new mesh, cut-off pieces kept apart
-            # included) against the original, at 2.5 x the coarser of the two meshes' edges
+            # included) against the original (compare: its tolerance from both meshes' edges)
             lows = [o for o in S.lows() if o.type == "MESH"]
             if lows:
                 parts_w = []
@@ -720,19 +826,23 @@ def real_run(gen, kw, side, budget, voxel, plan_fps=None) -> dict:
                     bpy.data.meshes.remove(m)
                 wco = Z.coords(whole)
                 wtree = _tree(whole)
-                wev = Z.edges(whole)
-                w_edge = float(np.median(np.linalg.norm(wco[wev[:, 0]] - wco[wev[:, 1]], axis=1))) if len(wev) else 0.0
-                tau = 2.5 * max(O.edge, w_edge)
+                w_edge = median_edge(whole)
                 d0w = surface_distances(co0, wtree)
                 taken = taken_by(co0, c["pieces"], plane, O.kd)
+                near = np.array([O.kd.find(p)[1] for p in wco.tolist()], np.int64)
                 allow, how = ((dilate(taken, O.ev, 2), "harness: cut pieces and their lids") if taken.any()
                               else (None, "none"))
                 # (a cut-off piece the run did not weld back stays a new mesh of its own: planned)
                 allow1 = np.concatenate([np.full(len(o.data.vertices), o != body and taken.any())
                                          for o in sorted(lows, key=lambda o: o.name)])
-                cmp_ = compare(O, whole, wco, wtree, d0w, tau, allow, None, how, allow1)
+                if taken.any():
+                    allow1 |= cut_piece_shells(whole, taken[near])
+                    # (and wherever the result lies on a piece as it was cut, plug included, also
+                    # when the run attaches it to the body: the plug stays hidden inside)
+                    allow1 |= on_pieces(wco, c["pieces"], c["piece_faces"], plane) <= O.change_tau(w_edge)
+                cmp_ = compare(O, whole, wco, wtree, d0w, allow, None, how, allow1, near=near)
                 out["unplanned_change"], out["mirror_residual"] = cmp_["unplanned_change"], cmp_["mirror_residual"]
-                lo, co, tols = part_scale_lost_copied(O, d0w, cmp_["d1"], wco, max(2.5 * voxel, 0.02))
+                lo, co, tols = part_scale_lost_copied(O, d0w, cmp_["d1"], wco, 2.5 * max(O.edge, w_edge))
                 if tols:
                     out.setdefault("lost", {}).update(lo)
                     out.setdefault("copied", {}).update(co)
@@ -795,10 +905,20 @@ def product_protected(me, rows):
 def action_regions(me, rows, lab, labels, limbs) -> list:
     """Every region the product's plan acts on: each part it cuts (forge_split), each part it
     makes rigid and paints lighter (forge_horn_plan), each region it protects or gives a row
-    (the ledger's rows), with the share of each limb and of the body that lies inside it."""
+    (the ledger's rows), and each island it keeps as modelled (forge_keep, also without rows),
+    with the share of each limb and of the body that lies inside it."""
     import numpy as np
+
+    import bodies_zoo as Z
     from forge_bpy import density
     regions = []
+    keep = _int_attr(me, "forge_keep")
+    if keep is not None and (keep > 0).any():
+        for i, g in enumerate(sorted(islands(keep > 0, Z.edges(me), np.ones(len(me.vertices)), 0.0),
+                                     key=lambda g: int(g[0])), start=1):
+            m = np.zeros(len(me.vertices), bool)
+            m[g] = True
+            regions.append(("protect", f"kept island {i}", m))
     ids = density.read_split(me)
     names = _plan_names(me)
     if ids is not None:
@@ -940,8 +1060,8 @@ def run_body(key, gen, kw, args) -> dict:
              errors="errors_new")
     if O is not None:
         rec["symmetry"]["mirror_gap"] = O.gap_summary()
-        rec["tolerances"] = {"tau_mm": round(1000 * O.tau, 2), "edge_mm": round(1000 * O.edge, 2),
-                             "min_island_cm2": round(1e4 * O.min_area, 2)}
+        rec["tolerances"] = {"tau_mm": round(1000 * O.tau, 2), "noise_floor_mm": round(1000 * O.noise, 2),
+                             "edge_mm": round(1000 * O.edge, 2), "min_island_cm2": round(1e4 * O.min_area, 2)}
     # ---- the Step 4 plans and their dry runs
     S = as_forge_body(ob)
     rec["plan"], rec["dry"] = {}, {}
@@ -962,6 +1082,11 @@ def run_body(key, gen, kw, args) -> dict:
         led = stored_ledger(ob, me)
         ledgers[side] = led
         pr = rec["plan"][side]
+        if led is None and _ledger_module() is not None:
+            # (the product has a ledger but this plan stored none: the dry run falls back to the
+            # old executor, which must not pass unnoticed)
+            rec["errors_new"].append({"step": f"plan[{side}]", "error": "forge_bpy.ledger exists but the plan "
+                                      "stored no forge_ledger: the dry run used the old executor"})
 
         def plan_columns():
             rows = product_rows(me, led)
@@ -1198,7 +1323,8 @@ def score_new(rec) -> tuple:
         pd = r.get("plan_drift") or {}
         if pd.get("drift"):
             add("plan fingerprint != run", 3, f"{tag} the run's executor made another mesh than the plan's "
-                                              f"({pd.get('how', '')})")
+                                              f"({pd.get('how', '')}" + (f": {pd['why']}" if pd.get("why") else "")
+                + ")")
         lost, cop = r.get("lost", {}), r.get("copied", {})
         for n in sorted(set(lost) | set(cop)):
             if n.startswith("shell_loose_") and (lost.get(n, 0.0) > 0.05 or cop.get(n, 0.0) > 0.05):
@@ -1293,7 +1419,7 @@ def scored_fields(rec) -> dict:
                 u = r["unplanned_change"]
                 q["unplanned_change"] = {k: u[k] for k in ("islands", "lost", "added", "lost_cm2", "added_cm2")}
             if r.get("plan_drift"):
-                q["plan_drift"] = {k: r["plan_drift"][k] for k in ("drift", "how")}
+                q["plan_drift"] = {k: r["plan_drift"][k] for k in ("drift", "how", "why") if k in r["plan_drift"]}
             out[kind][side] = q
     out["plan"] = {side: {k: p[k] for k in ("blocked", "regions") if k in p} for side, p in rec.get("plan", {}).items()}
     return out
@@ -1326,6 +1452,16 @@ def totals(bodies: dict) -> dict:
     out["old_total"] = out["v1"]["old_lines"]
     out["new_lines_total"] = out["v1"]["new_lines"]
     out["zoo_v2_total"] = round(out["v2"]["old_lines"] + out["v2"]["new_lines"], 2)
+    # the plan's acceptance 'on +ain every symmetric body shows asymmetry > 0', read two ways:
+    # the product's own measure (density.asymmetry) and this harness's mirror gap
+    ain = [r for k, r in sorted(bodies.items()) if k.endswith("+ain") and r.get("parts")
+           and all(v.get("symmetry") in ("pair", "centre") for v in r["parts"].values())]
+    gaps = [float((r.get("symmetry", {}).get("mirror_gap") or {}).get("median_mm") or 0.0) for r in ain]
+    out["ain_symmetric"] = {
+        "bodies": len(ain),
+        "asymmetry_above_0": sum(1 for r in ain if float(r.get("symmetry", {}).get("asymmetry") or 0.0) > 0),
+        "mirror_gap_above_0": sum(1 for g in gaps if g > 0),
+        "mirror_gap_median_mm": [round(min(gaps), 3), round(max(gaps), 3)] if gaps else None}
     return out
 
 
@@ -1339,8 +1475,9 @@ def _fmt_runs(rec, kind: str) -> list:
         out.append(f"   {kind:4s} {side:5s} mirrored={r.get('mirrored')} qr={r.get('qr_symmetry')} cut={r.get('cut')} "
                    f"refused={[x[0] for x in r.get('refused', [])]} | unplanned: {u.get('islands', '-')} island(s) "
                    f"lost {u.get('lost_cm2', '-')} / added {u.get('added_cm2', '-')} cm2 "
-                   f"(tau {u.get('tau_mm', '-')} mm, "
-                   f"product's {u.get('tau_product_mm', '-')}) | drift {pd.get('drift', '-')} | residual "
+                   f"(tau {u.get('tau_mm', '-')} mm: noise floor {u.get('noise_floor_mm', '-')}, resolution "
+                   f"{u.get('resolution_mm', '-')}; product's {u.get('tau_product_mm', '-')}) | drift "
+                   f"{pd.get('drift', '-')}{(' (' + pd['why'] + ')') if pd.get('why') else ''} | residual "
                    f"{m.get('median_mm', '-')} / p95 {m.get('p95_mm', '-')} mm"
                    + (f" | loose {loose}" if loose else "") + (f" | part scale {r['part_scale_mm']} mm" if r.get(
                        "part_scale_mm") else ""))
@@ -1360,7 +1497,21 @@ def write_summary(doc: dict, path: Path) -> str:
          f"{v1['new_by']}",
          f"  zoo v2 ({v2['records']} records: the new bodies and every +ain variant): {t['zoo_v2_total']:g} = "
          f"old lines {v2['old_lines']:g} (step4 {v2['by']['step4']:g} / rig {v2['by']['rig']:g} / detect "
-         f"{v2['by']['detect']:g}) + new lines {v2['new_lines']:g} {v2['new_by']}", ""]
+         f"{v2['by']['detect']:g}) + new lines {v2['new_lines']:g} {v2['new_by']}"]
+    a = t.get("ain_symmetric") or {}
+    if a.get("bodies"):
+        L.append(f"  +ain, {a['bodies']} bodies built symmetric: the product's asymmetry() > 0 on "
+                 f"{a['asymmetry_above_0']} (acceptance 'asymmetry > 0' "
+                 f"{'met' if a['asymmetry_above_0'] == a['bodies'] else 'NOT met'} for the product's measure), "
+                 f"the harness's mirror gap > 0 on {a['mirror_gap_above_0']} (median {a['mirror_gap_median_mm']} mm)")
+    L += ["",
+          "HOW TO READ",
+          "  unplanned change: label-free, original against result; tau = the body's noise floor (3 x its median "
+          "mirror gap), never under a quarter of the coarser mesh's edge (logged per run). A change smaller than "
+          "tau, or an island smaller than the smallest island, is not measured.",
+          "  plan drift (fast): the plan's executor against a second run that decides the mirror as the product's "
+          "run does (retopo's own helpers); an executor that does not repeat itself drifts too. Real: the plan's "
+          "executor against what the real run made.", ""]
     for k in sorted(b, key=lambda k: (b[k].get("zoo", "v1"), b[k].get("generator", k), k)):
         r = b[k]
         sym = r.get("symmetry", {})

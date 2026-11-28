@@ -22,9 +22,12 @@ preset="ain" the same with skew):
           (volume-keeping smoothing of a band around the junction after the remesh)
   noise:  low-frequency displacement (m, a smooth mirror-symmetric warp: lumps, nothing
           perfectly round) plus a small random jitter of the vertices
-  skew:   amplitude (m) of a second low-frequency displacement along x that is EVEN in x (a
-          point and its mirror image move the same way), so a body built symmetric is up to a
-          few millimetres off its own mirror image, as an AI mesh is (preset "ain": SKEW)
+  skew:   typical size (m) of a second low-frequency displacement along x that is EVEN in x (a
+          point and its mirror image move the same way), so a body built symmetric is a few
+          millimetres off its own mirror image, as an AI mesh is (preset "ain": SKEW). Sized
+          from the field's own measured spread: at SKEW = 3 mm about 7 points in 10 move
+          2-4 mm (median 3 mm), none more than 4 mm, the rest less near where the field
+          changes sign
   tris:   triangulate; with a count, decimate to about that many triangles (irregular, dense)
   colour: "vertex" (a colour attribute) or "texture" (UVs + an image): one flat colour per
           ground-truth part, with a material, so a Step 6 bake can measure colour bleeding
@@ -101,7 +104,7 @@ SYMMETRY = {
 }
 RIGS = ("chain", "wing", "cloth", "rigid", "limb", "prop", "skin")
 AI_LIKE = {"blend": 0.03, "noise": 0.004, "tris": 0, "colour": "texture"}
-SKEW = 0.003            # the "ain" preset's skew amplitude (m): 3 mm, of the order of the noise warp
+SKEW = 0.003            # the "ain" preset's skew (m): a median displacement of 3 mm, capped at 4 mm
 
 
 # ----------------------------------------------------------------------------- small helpers
@@ -778,10 +781,17 @@ class Kit:
     def _warp_fn(self):
         """The low-frequency displacement (None when noise and skew are off): a smooth vector
         field, mirror-symmetric in x (AI meshes are nearly symmetric), so thin sheets bend but
-        keep their thickness. With skew, a second smooth field of that amplitude moves every
-        point along x by the same amount as its mirror image (even in x: one side bulges where
-        the other is pulled in), so a body built symmetric is no longer exactly its own mirror
-        image, as no real AI mesh is. Works on world coordinates before grounding."""
+        keep their thickness. With skew, a second smooth field moves every point along x by the
+        same amount as its mirror image (even in x: one side bulges where the other is pulled
+        in), so a body built symmetric is no longer exactly its own mirror image, as no real AI
+        mesh is. Its size is set from its own measured spread, not from the noise's nominal
+        range (half its points stay under a fifth of that range): a point where the field is at its
+        median size moves exactly `skew`, and a soft cap (tanh) at 4/3 of `skew` keeps the rest
+        near that size, so most points move between 2/3 and 4/3 of it and none moves more; only
+        near the field's zero crossings, where it changes sign, does a point move less. The
+        spread is measured once per warp on a fixed grid over a body's span, so the mesh and the
+        design points (roots, tips) move by the same field. Works on world coordinates before
+        grounding."""
         A = float(self.opts.get("noise") or 0.0)
         S = float(self.opts.get("skew") or 0.0)
         if A <= 0 and S <= 0:
@@ -793,14 +803,27 @@ class Kit:
         o2 = np.array([3.7, 1.9, 9.2]) + 1.7 * seed
         o3 = np.array([6.1, 13.7, 2.9]) + 2.3 * seed
         o4 = np.array([8.3, 4.4, 15.1]) + 1.3 * seed
+        nv = noise.noise_vector
+
+        def skew_raw(ax, y, z):                           # the skew field before it is sized
+            v3 = nv(Vector((ax * f1 + o3[0], y * f1 + o3[1], z * f1 + o3[2])))
+            v4 = nv(Vector((ax * f2 + o4[0], y * f2 + o4[1], z * f2 + o4[2])))
+            return v3[0] + 0.35 * v4[0]
+        k_s = 0.0
+        if S > 0:
+            # (mathutils.noise seeds itself from the clock when it is first imported: unseeded,
+            # the same body comes out a few millimetres different in every Blender process)
+            noise.seed_set(1 + abs(seed))
+            G = np.stack(np.meshgrid(np.linspace(0.0, 1.0, 11), np.linspace(-0.5, 0.5, 11),
+                                     np.linspace(0.0, 2.0, 21), indexing="ij"), -1).reshape(-1, 3) * self.scale
+            med = float(np.median(np.abs([skew_raw(x, y, z) for x, y, z in G.tolist()])))
+            k_s = math.atanh(0.75) / max(med, 1e-9)      # the median size -> 0.75 of the cap = skew
+        cap = 4.0 / 3.0 * S
 
         def warp(P):
-            # mathutils.noise seeds itself from the clock when it is first imported: unseeded, the
-            # same body comes out a few millimetres different in every Blender process
             noise.seed_set(1 + abs(seed))
             P = np.asarray(P, float).reshape(-1, 3)
             out = np.zeros_like(P)
-            nv = noise.noise_vector
             for i, (x, y, z) in enumerate(P.tolist()):
                 ax = abs(x)
                 if A > 0:
@@ -810,9 +833,7 @@ class Kit:
                               A * v1[2] + 0.35 * A * v2[2])
                     out[i, 0] *= math.tanh(x / 0.02)      # odd in x: the warp keeps the mirror symmetry
                 if S > 0:                                 # even in x: the skew breaks it
-                    v3 = nv(Vector((ax * f1 + o3[0], y * f1 + o3[1], z * f1 + o3[2])))
-                    v4 = nv(Vector((ax * f2 + o4[0], y * f2 + o4[1], z * f2 + o4[2])))
-                    out[i, 0] += S * v3[0] + 0.35 * S * v4[0]
+                    out[i, 0] += cap * math.tanh(k_s * skew_raw(ax, y, z))
             return out
         return warp
 
