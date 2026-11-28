@@ -16,21 +16,29 @@ one Kit-level function each, part(k, side=..., **shape)) attach to the anchors, 
 fits every base that has the anchor (horns on a humanoid or a dragon). compose(name, base,
 parts=[...]) builds any combination; the ZOO generators are named compositions.
 
-AI-like surface (generator options, all off by default; preset="ai" turns on a typical set):
+AI-like surface (generator options, all off by default; preset="ai" turns on a typical set,
+preset="ain" the same with skew):
   blend:  smooth-union radius (m) at every junction: the seam between parts is rounded off
           (volume-keeping smoothing of a band around the junction after the remesh)
   noise:  low-frequency displacement (m, a smooth mirror-symmetric warp: lumps, nothing
           perfectly round) plus a small random jitter of the vertices
+  skew:   typical size (m) of a second low-frequency displacement along x that is EVEN in x (a
+          point and its mirror image move the same way), so a body built symmetric is a few
+          millimetres off its own mirror image, as an AI mesh is (preset "ain": SKEW). Sized
+          from the field's own measured spread: at SKEW = 3 mm about 7 points in 10 move
+          2-4 mm (median 3 mm), none more than 4 mm, the rest less near where the field
+          changes sign
   tris:   triangulate; with a count, decimate to about that many triangles (irregular, dense)
   colour: "vertex" (a colour attribute) or "texture" (UVs + an image): one flat colour per
           ground-truth part, with a material, so a Step 6 bake can measure colour bleeding
           across junctions (info["colours"])
-  seed:   noise seed (everything else is deterministic)
+  seed:   noise seed, >= 0 (everything else is deterministic, also from one Blender process to
+          the next: the warp seeds mathutils.noise itself)
 
 Every generator returns (object, info):
   info["appendages"][name] = {
       "kind":      wing, fin, cannon, pauldron, tail, trunk, cape, tentacle, horn, ear, antler,
-                   spike, hair, sash, skirt, arm, weapon, shield, blade, staff, halo
+                   spike, hair, sash, skirt, arm, weapon, shield, blade, staff, halo, pouch, scar
       "side":      "l" (+X), "r" (-X) or "c" (its root on the centre line)
       "symmetry":  one of SYMMETRY; "twin": its mirror partner (pairs only)
       "root":      the root ring's centre MEASURED on the fused mesh (where it leaves what it grows
@@ -53,7 +61,9 @@ Every generator returns (object, info):
       "mirror_on_surface", "mirror_on_self", "mirror_on_twin": share of its vertices whose mirror
                    image (x -> -x) lies on the rest of the surface / on itself / on its twin,
                    within max(1.5 voxels, a quarter of the local radius)
-      "separate":  True for a part that is its own closed shell (held staff, halo) }
+      "separate":  True for a part that is its own closed shell (held staff, halo)
+      "proud":     for a part lying on the body (a pad, a relief): how far it stands out of the
+                   body, measured on the fused mesh ("proud_design" the designed height) }
   info["limbs"]: the same for arms and legs (covered by a humanoid / quadruped skeleton).
   info["bones"]: the base's skeleton {name: (head, tail)}; info["joints_hint"]: where the main
   joints belong (pelvis, spine, chest, neck, head, shoulders, elbows, wrists, hands, hips, knees,
@@ -66,6 +76,10 @@ Every generator takes voxel (remesh size), scale (overall size), shells (extra s
 inside the trunk / loose beside the body, alternating), the options above and its own shape
 parameters. Thin features never go under 2.2 voxels (they would break apart): info["clamped"]
 lists any that were thickened for the chosen voxel.
+
+ZOO_V2 holds the bodies the first zoo could not test (one raised arm: a posed pair of limbs; a
+small pad on the hip; a 3 mm relief), kept apart from ZOO so the first zoo's totals stay
+comparable.
 """
 
 from __future__ import annotations
@@ -90,6 +104,7 @@ SYMMETRY = {
 }
 RIGS = ("chain", "wing", "cloth", "rigid", "limb", "prop", "skin")
 AI_LIKE = {"blend": 0.03, "noise": 0.004, "tris": 0, "colour": "texture"}
+SKEW = 0.003            # the "ain" preset's skew (m): a median displacement of 3 mm, capped at 4 mm
 
 
 # ----------------------------------------------------------------------------- small helpers
@@ -662,11 +677,14 @@ class Kit:
                           "path": [tuple(map(float, p)) for p in (path if path is not None else (root, tip))],
                           **extra}
 
-    def limb(self, name, kind, side, tip, path, parent=None) -> None:
+    def limb(self, name, kind, side, tip, path, parent=None, symmetry: str = "pair") -> None:
+        """Register an arm or a leg; symmetry "pair_posed" for a limb whose twin is in another
+        pose (one arm raised)."""
+        assert symmetry in ("pair", "pair_posed"), symmetry
         tw = {"l": "r", "r": "l"}
         twin = name[:-1] + tw[name[-1]]
         root = self.root_of(name, path, ["body"])
-        self.limbs[name] = {"kind": kind, "side": side, "symmetry": "pair", "twin": twin,
+        self.limbs[name] = {"kind": kind, "side": side, "symmetry": symmetry, "twin": twin,
                             "root_design": tuple(map(float, root)), "tip_design": tuple(map(float, tip)),
                             "path": [tuple(map(float, p)) for p in path], "parent": parent, "thickness": 0.0}
 
@@ -738,34 +756,87 @@ class Kit:
         lab = np.argmin(dist, axis=0)
         return lab.astype(np.int32), prim[lab, np.arange(len(co))]
 
+    def _proud_heights(self, co, lab, owners: list) -> dict:
+        """How far each part that lies on the body (a pad, a relief: designed with `proud`)
+        really stands out of it on the fused mesh: the 95th percentile, over the part's
+        vertices outside the body and limbs, of their distance to the nearest body or limb
+        primitive (metres, before the AI-like surface options). A remesh rounds a low relief
+        off: what the tests judge it by is this measured height, not the designed one."""
+        want = [n for n, d in self.app.items() if d.get("proud") and n in owners]
+        if not want:
+            return {}
+        from mathutils.bvhtree import BVHTree
+        s = self.scale
+        V, F = [], []
+        for o in ["body"] + [n for n in self.limbs if n in self.geo]:
+            off = len(V)
+            V += self.geo[o][0]
+            F += [[i + off for i in f] for f in self.geo[o][1]]
+        tree = BVHTree.FromPolygons((np.asarray(V) * s).tolist(), F)
+        out = {}
+        for n in want:
+            P = co[lab == owners.index(n)]
+            P = P[~self.inside_many(P / s)]
+            d = [tree.find_nearest(p)[3] for p in P.tolist()]
+            out[n] = float(np.percentile(d, 95)) if d else 0.0
+        return out
+
     def _warp_fn(self):
-        """The low-frequency displacement (None when noise is off): a smooth vector field,
-        mirror-symmetric in x (AI meshes are nearly symmetric), so thin sheets bend but keep
-        their thickness. Works on world coordinates before grounding."""
+        """The low-frequency displacement (None when noise and skew are off): a smooth vector
+        field, mirror-symmetric in x (AI meshes are nearly symmetric), so thin sheets bend but
+        keep their thickness. With skew, a second smooth field moves every point along x by the
+        same amount as its mirror image (even in x: one side bulges where the other is pulled
+        in), so a body built symmetric is no longer exactly its own mirror image, as no real AI
+        mesh is. Its size is set from its own measured spread, not from the noise's nominal
+        range (half its points stay under a fifth of that range): a point where the field is at its
+        median size moves exactly `skew`, and a soft cap (tanh) at 4/3 of `skew` keeps the rest
+        near that size, so most points move between 2/3 and 4/3 of it and none moves more; only
+        near the field's zero crossings, where it changes sign, does a point move less. The
+        spread is measured once per warp on a fixed grid over a body's span, so the mesh and the
+        design points (roots, tips) move by the same field. Works on world coordinates before
+        grounding."""
         A = float(self.opts.get("noise") or 0.0)
-        if A <= 0:
+        S = float(self.opts.get("skew") or 0.0)
+        if A <= 0 and S <= 0:
             return None
         from mathutils import Vector, noise
         seed = int(self.opts.get("seed", 0))
         f1, f2 = 1 / 0.22, 1 / 0.07
         o1 = np.array([11.3, 5.1, 7.7]) + 3.1 * seed
         o2 = np.array([3.7, 1.9, 9.2]) + 1.7 * seed
+        o3 = np.array([6.1, 13.7, 2.9]) + 2.3 * seed
+        o4 = np.array([8.3, 4.4, 15.1]) + 1.3 * seed
+        nv = noise.noise_vector
+
+        def skew_raw(ax, y, z):                           # the skew field before it is sized
+            v3 = nv(Vector((ax * f1 + o3[0], y * f1 + o3[1], z * f1 + o3[2])))
+            v4 = nv(Vector((ax * f2 + o4[0], y * f2 + o4[1], z * f2 + o4[2])))
+            return v3[0] + 0.35 * v4[0]
+        k_s = 0.0
+        if S > 0:
+            # (mathutils.noise seeds itself from the clock when it is first imported: unseeded,
+            # the same body comes out a few millimetres different in every Blender process)
+            noise.seed_set(1 + abs(seed))
+            G = np.stack(np.meshgrid(np.linspace(0.0, 1.0, 11), np.linspace(-0.5, 0.5, 11),
+                                     np.linspace(0.0, 2.0, 21), indexing="ij"), -1).reshape(-1, 3) * self.scale
+            med = float(np.median(np.abs([skew_raw(x, y, z) for x, y, z in G.tolist()])))
+            k_s = math.atanh(0.75) / max(med, 1e-9)      # the median size -> 0.75 of the cap = skew
+        cap = 4.0 / 3.0 * S
 
         def warp(P):
-            P = np.asarray(P, float).reshape(-1, 3)
-            out = np.empty_like(P)
-            # the vector noise shifts each of its three parts by offsets drawn from a seed the
-            # clock gives each process, unless one is set: set it, so every process builds the
-            # same body (0 would mean the clock again)
             noise.seed_set(1 + abs(seed))
-            nv = noise.noise_vector
+            P = np.asarray(P, float).reshape(-1, 3)
+            out = np.zeros_like(P)
             for i, (x, y, z) in enumerate(P.tolist()):
                 ax = abs(x)
-                v1 = nv(Vector((ax * f1 + o1[0], y * f1 + o1[1], z * f1 + o1[2])))
-                v2 = nv(Vector((ax * f2 + o2[0], y * f2 + o2[1], z * f2 + o2[2])))
-                out[i] = (A * v1[0] + 0.35 * A * v2[0], A * v1[1] + 0.35 * A * v2[1],
-                          A * v1[2] + 0.35 * A * v2[2])
-                out[i, 0] *= math.tanh(x / 0.02)          # odd in x: the warp keeps the mirror symmetry
+                if A > 0:
+                    v1 = nv(Vector((ax * f1 + o1[0], y * f1 + o1[1], z * f1 + o1[2])))
+                    v2 = nv(Vector((ax * f2 + o2[0], y * f2 + o2[1], z * f2 + o2[2])))
+                    out[i] = (A * v1[0] + 0.35 * A * v2[0], A * v1[1] + 0.35 * A * v2[1],
+                              A * v1[2] + 0.35 * A * v2[2])
+                    out[i, 0] *= math.tanh(x / 0.02)      # odd in x: the warp keeps the mirror symmetry
+                if S > 0:                                 # even in x: the skew breaks it
+                    out[i, 0] += cap * math.tanh(k_s * skew_raw(ax, y, z))
             return out
         return warp
 
@@ -779,6 +850,7 @@ class Kit:
         owners = fused + [ow for ow in self.loose if ow in self.geo]
         me = self._remesh(fused, self.name)
         lab, prim = self._label(coords(me), fused)
+        proud = self._proud_heights(coords(me), lab, fused)
         if len(owners) > len(fused):
             parts = [(me, lab)]
             prims = [prim]
@@ -796,7 +868,8 @@ class Kit:
         warp = self._warp_fn()
         if warp is not None:
             co = co + warp(co)
-            co = _jitter(co, me, 0.15 * self.voxel, int(o.get("seed", 0)))
+            if float(o.get("noise") or 0.0) > 0:
+                co = _jitter(co, me, 0.15 * self.voxel, int(o.get("seed", 0)))
         me.vertices.foreach_set("co", co.astype(np.float32).ravel())
         me.update()
 
@@ -876,6 +949,9 @@ class Kit:
             e["path"] = [W(p) for p in d["path"]]
             e["root_size"] = tuple(float(x) * s for x in d["root_size"])
             e["thickness"] = d["thickness"] * s
+            if d.get("proud"):                      # a pad or a relief: designed and measured height
+                e["proud_design"] = float(d["proud"]) * s
+                e["proud"] = proud.get(name, e["proud_design"])
             for key in ("contact_design", "root_line_design"):
                 if key in e:
                     e[key] = [W(p) for p in e[key]]
@@ -927,7 +1003,7 @@ class Kit:
                 "appendages": app, "limbs": limbs, "shells": shell_info, "separate": [x for x in self.loose],
                 "bones": bones, "joints_hint": {j: W(p) for j, p in self.joints.items()},
                 "clamped": sorted(set(self.clamped)), "params": dict(params or {}), "notes": self.notes,
-                "options": {k: o.get(k) for k in ("blend", "noise", "tris", "colour", "seed")},
+                "options": {k: o.get(k) for k in ("blend", "noise", "skew", "tris", "colour", "seed")},
                 "colours": colours}
         ob["zoo_body"] = self.name
         return ob, info
@@ -1225,8 +1301,9 @@ def _start(name, kind, voxel, scale, reset, opts=None):
     if reset:
         bpy.ops.wm.read_homefile(use_empty=True)
     o = dict(opts or {})
-    if o.pop("preset", None) == "ai":
-        o = {**AI_LIKE, **{k: v for k, v in o.items() if v is not None}}
+    preset = o.pop("preset", None)
+    if preset in ("ai", "ain"):
+        o = {**AI_LIKE, **({"skew": SKEW} if preset == "ain" else {}), **{k: v for k, v in o.items() if v is not None}}
     return Kit(name, kind, voxel, scale, o)
 
 
@@ -1245,9 +1322,12 @@ CHIBI = {"pelvis": ((0, 0, 0.47), (0.14, 0.11, 0.09)), "torso": ((0, 0, 0.62), (
          "foot": ((0.075, -0.04, 0.038), (0.045, 0.09, 0.038))}
 
 
-def humanoid_base(k: Kit, P: dict | None = None, head=None, head_c=None, legs: bool = True) -> None:
+def humanoid_base(k: Kit, P: dict | None = None, head=None, head_c=None, legs: bool = True,
+                  arm_dz: float = 0.0, raised: str = "l") -> None:
     """A plain T-pose humanoid (ADULT: 1.8 m; CHIBI: a big head): trunk + head in "body", arms
-    and legs as limbs; anchors for the parts and a skeleton."""
+    and legs as limbs; anchors for the parts and a skeleton. arm_dz: the `raised` arm turns up
+    about its shoulder until its wrist is that much higher (m): both arms are then a posed pair
+    (same shape, another pose), and the joints, bones and anchors of that arm turn with it."""
     P = dict(P or ADULT)
     if head is not None:
         P["head"] = head
@@ -1270,6 +1350,20 @@ def humanoid_base(k: Kit, P: dict | None = None, head=None, head_c=None, legs: b
     k.ells = [(pc, pr), (tc, tr)]
     ax, ar, hx, hd = P["arm_x"], P["arm_r"], P["hand_x"], P["hand"]
     hand_tip = hx + hd[0]
+
+    def turn_of(s, x):
+        """(rotation, pivot) of a raised arm about its shoulder; None for an arm in T-pose."""
+        if not arm_dz or s != raised:
+            return None
+        a = math.asin(min(1.0, arm_dz / (ax[2] - ax[0])))
+        return _rot("y", -a * x), np.array([ax[0] * x, 0.0, sz])
+
+    def turn(p, s, x) -> tuple:
+        T = turn_of(s, x)
+        if T is None:
+            return tuple(map(float, p))
+        R, c = T
+        return tuple(map(float, c + R @ (np.asarray(p, float) - c)))
     k.anchor.update({"head": (np.asarray(hc, float), np.asarray(hr, float)), "front": np.array([0, -1.0, 0]),
                      "back": {"axis": 1, "sign": 1.0, "n": np.array([0, 1.0, 0]), "a": np.array([0, 0, 1.0]),
                               "along_axis": 2, "along_sign": 1.0, "t": (pc[2] + 0.03, sz + 0.07)},
@@ -1277,15 +1371,17 @@ def humanoid_base(k: Kit, P: dict | None = None, head=None, head_c=None, legs: b
                      "rump": lambda x, z=pc[2] + 0.01: np.array([x, k.surface(1, 1.0, x, z), z]),
                      "shoulder": {}, "arm": {}, "hand": {}, "leg": {}, "P": P})
     for x, s in ((1, "l"), (-1, "r")):
-        arm = [(ax[0] * x, 0, sz), (ax[1] * x, 0, sz), (ax[2] * x, 0, sz)]
+        T = turn_of(s, x)
+        arm = [turn(p, s, x) for p in ((ax[0] * x, 0, sz), (ax[1] * x, 0, sz), (ax[2] * x, 0, sz))]
         k.path(f"arm_{s}", arm, list(ar))
-        hcen = (hx * x, -0.005, sz)
-        k.ball(f"arm_{s}", hcen, 1.0, hd)
-        k.limb(f"arm_{s}", "arm", s, (hand_tip * x, -0.005, sz), arm + [(hand_tip * x, -0.005, sz)],
-               parent=f"clavicle_{s}")
+        hcen = turn((hx * x, -0.005, sz), s, x)
+        k.ball(f"arm_{s}", hcen, 1.0, hd, rot=None if T is None else T[0])
+        tip = turn((hand_tip * x, -0.005, sz), s, x)
+        k.limb(f"arm_{s}", "arm", s, tip, arm + [tip], parent=f"clavicle_{s}",
+               symmetry="pair_posed" if arm_dz else "pair")
         k.anchor["shoulder"][s] = (np.array([sx * x, 0, sz]), P["sh_r"])
         k.anchor["arm"][s] = ([np.asarray(p, float) for p in arm], list(ar))
-        k.anchor["hand"][s] = (np.asarray(hcen, float), np.asarray(hd, float), np.array([hand_tip * x, -0.005, sz]))
+        k.anchor["hand"][s] = (np.asarray(hcen, float), np.asarray(hd, float), np.asarray(tip, float))
         if legs:
             lx, lz, lr = P["leg_x"], P["leg_z"], P["leg_r"]
             fc, fr = P["foot"]
@@ -1301,8 +1397,10 @@ def humanoid_base(k: Kit, P: dict | None = None, head=None, head_c=None, legs: b
     k.joints = {"pelvis": pc, "spine": (0, 0, (pc[2] + tc[2]) / 2), "chest": (0, 0, tc[2] + 0.08),
                 "neck": (0, 0, n0 + 0.03), "head": (0, hc[1], hb), "head_top": (0, hc[1], hc[2] + hr[2])}
     for x, s in ((1, "l"), (-1, "r")):
-        k.joints.update({f"shoulder_{s}": ((ax[0] + 0.02) * x, 0, sz), f"elbow_{s}": (ax[1] * x, 0, sz),
-                         f"wrist_{s}": (ax[2] * x, 0, sz), f"hand_{s}": (hand_tip * x, -0.005, sz)})
+        k.joints.update({f"shoulder_{s}": turn(((ax[0] + 0.02) * x, 0, sz), s, x),
+                         f"elbow_{s}": turn((ax[1] * x, 0, sz), s, x),
+                         f"wrist_{s}": turn((ax[2] * x, 0, sz), s, x),
+                         f"hand_{s}": turn((hand_tip * x, -0.005, sz), s, x)})
         if legs:
             lx, lz = P["leg_x"], P["leg_z"]
             k.joints.update({f"hip_{s}": (lx[0] * x, 0, lz[0] - 0.05), f"knee_{s}": (lx[1] * x, 0, lz[1]),
@@ -1315,9 +1413,9 @@ def humanoid_base(k: Kit, P: dict | None = None, head=None, head_c=None, legs: b
                "head": ((0, hc[1], hb), (0, hc[1], hc[2] + hr[2]))}
     for x, s in ((1, "l"), (-1, "r")):
         k.bones.update({f"clavicle_{s}": ((0.02 * x, 0, sz + 0.01), (sx * x, 0, sz)),
-                        f"upperarm_{s}": ((sx * x, 0, sz), (ax[1] * x, 0, sz)),
-                        f"forearm_{s}": ((ax[1] * x, 0, sz), (ax[2] * x, 0, sz)),
-                        f"hand_{s}": ((ax[2] * x, 0, sz), (hand_tip * x, -0.005, sz))})
+                        f"upperarm_{s}": (turn((sx * x, 0, sz), s, x), turn((ax[1] * x, 0, sz), s, x)),
+                        f"forearm_{s}": (turn((ax[1] * x, 0, sz), s, x), turn((ax[2] * x, 0, sz), s, x)),
+                        f"hand_{s}": (turn((ax[2] * x, 0, sz), s, x), turn((hand_tip * x, -0.005, sz), s, x))})
         if legs:
             lx, lz = P["leg_x"], P["leg_z"]
             fc, fr = P["foot"]
@@ -1838,6 +1936,67 @@ def pauldron(k: Kit, side: str = "l", name: str = "pauldron") -> None:
                 path=[root, c, tip], group=name, shape=())
 
 
+# ----------------------------------------------------------------------------- parts: pads and reliefs
+
+def pouch(k: Kit, side: str = "l", width: float = 0.08, height: float = 0.06, proud: float = 0.025,
+          name: str = "pouch") -> None:
+    """A small pad fused on one hip (humanoid), towards the front: a rounded block `width` x
+    `height` standing `proud` out of the body, its back buried in the hip. One-sided, thick for
+    its size, not a limb and not thin: mirroring would copy or delete it, cutting it gains
+    nothing."""
+    x = 1 if side == "l" else -1
+    nm = f"{name}_{side}"
+    pc, _pr = k.anchor["P"]["pelvis"]
+    c = np.array([0.0, 0.0, pc[2] + 0.03])
+    a = math.radians(55.0)
+    d = np.array([math.cos(a) * x, -math.sin(a), 0.0])           # out of the hip, towards the front
+    on = c + d * k.ray_out(c, d, ["body"])
+    up = np.array([0, 0, 1.0])
+    u = _unit(np.cross(up, d))                                     # along the belt
+    bury = 0.012
+    t = max(proud + bury, k.tmin)
+    mid = on + d * (proud - t / 2)                                 # the outer face `proud` out
+    w, h, rc = width / 2, height / 2, 0.015
+    outline = []
+    for cx, cy, a0 in ((w - rc, h - rc, 0.0), (-w + rc, h - rc, 90.0), (-w + rc, -h + rc, 180.0),
+                       (w - rc, -h + rc, 270.0)):
+        for q in np.linspace(a0, a0 + 90.0, 5):
+            outline.append((cx + rc * math.cos(math.radians(q)), cy + rc * math.sin(math.radians(q))))
+    k.plate(nm, outline, t, mid, u, up)
+    tip = on + d * proud
+    root = k.root_of(nm, [on - d * bury, tip], hint=on)
+    k.appendage(nm, "pouch", side, root, tip, "oval", (width, height), False, proud, "rigid",
+                path=[root, tip], group=name, shape=(width, height, proud), parent="pelvis", proud=proud,
+                lies_on="hip")
+
+
+def relief(k: Kit, side: str = "l", length: float = 0.16, width: float = 0.024, height: float = 0.003,
+           name: str = "scar") -> None:
+    """A low raised scar across one side of the chest (humanoid): a ridge `height` high and
+    `width` wide along a short diagonal. A small one-sided difference: mirroring changes it by
+    only `height`, so it belongs with the small differences, not with the parts."""
+    x = 1 if side == "l" else -1
+    nm = f"{name}_{side}"
+    tc, _tr = k.anchor["P"]["torso"]
+    r = max((width * width / 4 + height * height) / (2 * height), k.tmin / 2)   # a tube that shows `height`
+    a = np.array([0.045 * x, tc[2] + 0.11])
+    b = a + np.array([0.6 * x, -0.8]) * length
+    pts, ons = [], []
+    for f in np.linspace(0.0, 1.0, 7):
+        px, pz = a + f * (b - a)
+        py, nrm = k.surface(1, -1.0, px, pz, normal=True)       # the front of the torso
+        on = np.array([px, py, pz])
+        ons.append(on)
+        pts.append(on + nrm * (height - r))
+    k.path(nm, pts, [r] * len(pts), seg=16)
+    along = _unit(ons[-1] - ons[0])
+    tip = ons[-1] + along * math.sqrt(max(r * r - (r - height) ** 2, 0.0))   # where the ridge ends
+    root = k.root_of(nm, [ons[0], ons[-1]], hint=ons[3])
+    k.appendage(nm, "scar", side, root, tip, "line", (length, width), True, height, "skin",
+                path=[root, ons[-1], tip], group=name, shape=(length, width, height), parent="chest",
+                proud=height, lies_on="chest", relief=True)
+
+
 def extra_arms(k: Kit, drop: float = 0.17, reach: float = 0.92, name: str = "arm2") -> None:
     """A second pair of arms below the first (humanoid), also in T-pose: limbs a humanoid
     skeleton does not have."""
@@ -2151,7 +2310,7 @@ PARTS = {"bat_wing": bat_wing, "bird_wing": bird_wing, "dorsal_fin": dorsal_fin,
          "back_hair": back_hair, "sash": sash, "skirt": skirt, "cannon": cannon, "pauldron": pauldron,
          "extra_arms": extra_arms, "weapon": weapon, "shield": shield, "arm_blade": arm_blade,
          "held_weapon": held_weapon, "halo": halo, "horn": horn, "antlers": antlers, "ears": ears, "trunk": trunk,
-         "ponytail": ponytail, "tail": tail, "tentacles": tentacles}
+         "ponytail": ponytail, "tail": tail, "tentacles": tentacles, "pouch": pouch, "relief": relief}
 
 
 def compose(name: str = "composed", base: str = "humanoid", parts=(), voxel: float = 0.008, scale: float = 1.0,
@@ -2449,4 +2608,42 @@ ZOO = {
     "naga": naga,
     "chibi": chibi,
     "back_hair": back_hair_body,
+}
+
+
+# ----------------------------------------------------------------------------- zoo v2: what the first zoo cannot test
+
+def humanoid_raised_arm(voxel: float = 0.008, scale: float = 1.0, shells: int = 0, arm_dz: float = 0.2,
+                        side: str = "l", reset: bool = True, **opts):
+    """30. A plain humanoid with one arm raised (its wrist arm_dz higher than T-pose): a pair
+    of the same shape in another pose, fused like every limb. Mirroring from one side may make
+    both arms match (the chosen side wins); keeping both poses is the other choice."""
+    return compose("humanoid_raised_arm", "humanoid", [], voxel, scale, shells, reset,
+                   base_kw={"arm_dz": arm_dz, "raised": side},
+                   notes="One raised arm: a posed pair of limbs, not a one-sided part.", **opts)
+
+
+def pouch_small(voxel: float = 0.008, scale: float = 1.0, shells: int = 0, side: str = "l", width: float = 0.08,
+                height: float = 0.06, proud: float = 0.025, reset: bool = True, **opts):
+    """31. A small pouch fused on one hip (8 x 6 cm, 25 mm proud): a one-sided pad lying on the
+    body, too small and too flat to be a part worth cutting."""
+    return compose("pouch_small", "humanoid", [("pouch", dict(side=side, width=width, height=height, proud=proud))],
+                   voxel, scale, shells, reset,
+                   notes="A one-sided pad on the hip: kept as modelled, never copied, never cut.", **opts)
+
+
+def relief_scar(voxel: float = 0.008, scale: float = 1.0, shells: int = 0, side: str = "l", height: float = 0.003,
+                reset: bool = True, **opts):
+    """32. A raised scar 3 mm high across one side of the chest: a one-sided difference far
+    below a part's size, one of the small differences the mirror must keep without a part of
+    its own."""
+    return compose("relief_scar", "humanoid", [("relief", {"side": side, "height": height})], voxel, scale,
+                   shells, reset, notes="A low one-sided relief: grouped with the small differences.", **opts)
+
+
+# the bodies the first zoo could not test, kept apart so its totals stay comparable
+ZOO_V2 = {
+    "humanoid_raised_arm": humanoid_raised_arm,
+    "pouch_small": pouch_small,
+    "relief_scar": relief_scar,
 }
