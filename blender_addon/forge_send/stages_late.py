@@ -263,7 +263,6 @@ class FORGE_OT_step(bpy.types.Operator):
                     rep["regions"] = S._mod("density").region_tris(body, J)
                 except Exception as exc:              # noqa: BLE001
                     print(f"[forge] region report skipped: {exc}")
-            _name_dent_places(rep)
             for o in S.lows():                    # show whether mirror symmetry was used
                 r = rep.get("parts", {}).get(o.get("forge_part"))
                 if r is not None:
@@ -299,7 +298,6 @@ class FORGE_OT_step(bpy.types.Operator):
                 if r is not None:
                     r["symmetry"] = bool(o.get("forge_symmetry_x"))
                     r["asymmetry_pct"] = round(100 * float(o.get("forge_asymmetry", 1.0)), 1)
-            _name_dent_places(rep)
             parts.update(rep.get("parts", {}))
             have = {o.get("forge_part") for o in S.lows()}
             merged["parts"] = {k: v for k, v in parts.items() if k in have}
@@ -674,58 +672,6 @@ def _row(icon, text):
     return _wrapped(icon, text, first="    ", rest="     ", width=PANEL_WIDTH)
 
 
-def _name_dent_places(rep) -> None:
-    """The body region (head, arms...) of each dent the dent gate found on the body, in the
-    panel's own region words. Other parts keep no place: their part name says where."""
-    body = S.body_low()
-    if body is None:
-        return
-    r = rep.get("parts", {}).get(body.get("forge_part"))
-    d = (r or {}).get("dents")
-    if not d or not d.get("at"):
-        return
-    try:
-        import numpy as np
-        dens = S._mod("density")
-        J = S._mod("joints").estimate(body)
-        for key, out in (("at", "where"), ("left_at", "left_where")):
-            pts = np.asarray(d.get(key) or [], np.float64).reshape(-1, 3)
-            names = [dens.REGION_NAMES[int(k)] for k in dens.region_labels(pts, J)] if len(pts) else []
-            d[out] = list(dict.fromkeys(names))
-    except Exception as exc:                          # noqa: BLE001
-        print(f"[forge] dent places skipped: {exc}")
-
-
-def _places(names) -> str:
-    """'the head', 'the head and arms', 'the head, arms and feet' ('' without a place)."""
-    names = [n for n in names or [] if n]
-    if not names:
-        return ""
-    return "the " + (names[0] if len(names) == 1 else ", ".join(names[:-1]) + " and " + names[-1])
-
-
-def _dent_rows(r) -> list:
-    """What the dent gate found where Forge's fit left the new mesh off a smooth original (sunk:
-    a dent, raised: a bump), and what it did: found, smoothed, left, and where."""
-    d = r.get("dents") or {}
-    found, fixed, left = int(d.get("found", 0)), int(d.get("fixed", 0)), int(d.get("left", 0))
-    if not found:
-        return []
-    kinds = set(d.get("kinds") or ["dent"])
-    what = "dents and bumps" if len(kinds) > 1 else ("bumps" if kinds == {"bump"} else "dents")
-    if found == 1 and len(kinds) == 1:
-        what = what[:-1]
-    where = _places(d.get("where"))
-    on = f" on {where}" if where else ""
-    if not left:
-        return _row("BLANK1", f"smoothed {fixed} small {what} Forge had made{on} (found {found}, none left)")
-    left_on = _places(d.get("left_where")) or where
-    out = _row(WARN, f"{what} Forge made{on}: found {found}, smoothed {fixed}, {left} left")
-    out += _row("BLANK1", f"look at {left_on or 'it'} in the viewport; to fix: paint the spot red (Paint), "
-                          "run again")
-    return out
-
-
 def _joint_rows(r):
     """How each cut-off part was joined back: one skin, or its own piece (why, what to do)."""
     joints = r.get("joints") or ([{"joint": r["joint"]}] if r.get("joint") else [])
@@ -762,13 +708,17 @@ def _retopo_rows(rep):
         if icon != GOOD and not (sh and sh.get("lost_pct", 0) > 0.5):
             out += _row("BLANK1", f"method: {m}")
         cr = r.get("creases") or {}
-        if "left_pct" in cr or "right_pct" in cr:
+        sides = [f"{side} {cr[side + '_pct']}%" for side in ("left", "right") if side + "_pct" in cr]
+        if sides:
+            # (measured on the creases' floors: the share of the face's narrow valleys - mouth
+            # line, lid crease - the new mesh reaches; the smooth skin round them does not count)
             low_side = min(cr.get("left_pct", 100), cr.get("right_pct", 100))
             out += _row("BLANK1" if low_side >= 80 else WARN,
-                        f"face creases kept: left {cr.get('left_pct', '-')}%, "
-                        f"right {cr.get('right_pct', '-')}%"
+                        "face creases kept: " + ", ".join(sides)
                         + (f" (+{cr.get('carved_tris', 0)} tris carved)" if cr.get("carved_tris") else ""))
-        out += _dent_rows(r)
+            if low_side < 80:
+                out += _row("BLANK1", "they are narrower than the quads there: paint them red (Paint) "
+                                      "for smaller quads, run again")
         if "symmetry" in r:
             if r["symmetry"] and r.get("asymmetry_pct", 0) >= 1:
                 out += _row("BLANK1", f"mirrored, then fitted ({r['asymmetry_pct']}% one-sided)")

@@ -264,7 +264,8 @@ def _taubin(me, passes: int, lam: float = 0.5, mu: float = -0.53) -> None:
 
 
 def mouth_head(depth: float = 0.005, width: float = 0.003, voxel: float = 0.004, refine: int = 2,
-               phi=(12.0, 112.0), elev=(-62.0, -32.0), fade: float = 0.25, narrow: float = 0.4):
+               phi=(12.0, 112.0), elev=(-62.0, -32.0), fade: float = 0.25, narrow: float = 0.4,
+               profile: str = "v"):
     """bull() (belly, neckless head, muzzle, horns, ears, arms, legs, tail) with a lower lip
     under the muzzle, fused, its joins softened to fillets and the mouth made finer (an AI mesh
     is dense everywhere). A mouth line on each side: a V groove `depth` deep and `width` wide each
@@ -272,7 +273,10 @@ def mouth_head(depth: float = 0.005, width: float = 0.003, voxel: float = 0.004,
     and from `elev[0]` (deg below the muzzle's middle: its front end runs into the concave join
     of lip and muzzle, under the nostril) to `elev[1]` (its back end rises to the mouth corner).
     It fades to nothing over the last `fade` of its length at both ends, narrowing to `narrow`
-    of its width. Returns (object, the same mesh without the mouth line, groove depth per vertex)."""
+    of its width. `profile`: the groove's cross-section - "v" (straight walls to a sharp floor),
+    "u" (a flat floor between steep walls) or "over" (the upper lip's side steep, almost an
+    overhang, the lower side a long slope). Returns (object, the same mesh without the mouth
+    line, groove depth per vertex)."""
     import math
 
     import bmesh
@@ -367,13 +371,19 @@ def mouth_head(depth: float = 0.005, width: float = 0.003, voxel: float = 0.004,
     kd.balance()
     off = np.zeros(len(co))
     for i in np.nonzero(np.linalg.norm(co - mc, axis=1) < 0.2)[0]:
-        _p, j, d = kd.find(Vector(co[i]))
+        q, j, d = kd.find(Vector(co[i]))
         u = dense_u[j]
         taper = float(np.clip(min(u, 1.0 - u) / fade, 0.0, 1.0))
         taper = taper * taper * (3 - 2 * taper)
         w = width * (narrow + (1.0 - narrow) * taper)
-        if d < w:
-            off[i] = depth * taper * (1.0 - d / w)
+        if profile == "u":
+            x = (d / w) ** 4
+        elif profile == "over":
+            x = d / (0.35 * w) if co[i][2] > q[2] else d / (2.0 * w)
+        else:
+            x = d / w
+        if x < 1.0:
+            off[i] = depth * taper * (1.0 - x)
     me.vertices.foreach_set("co", (co - nr * off[:, None]).astype(np.float32).ravel())
     me.update()
     return ob, smooth, off
