@@ -7,8 +7,10 @@ director's PC (outside git); once sent back it is committed as docs/research/arp
 - `forge.arp_probe.validate` really catches missing keys, and the command's merging turns a
   Blender crash or a timeout into recorded results instead of losing the rest.
 - Paths are shortened however they are written (Python-printed paths come doubled-escaped).
-- `--only` reruns some parts into their own file; the full result is never overwritten.
-- A --blender path that is not there is explained in plain words. Pure Python.
+- `--only` reruns some parts into their own file; no file holding a full result is ever
+  overwritten, and the full run's logs stay as they were.
+- A --blender path that is not there is explained in plain words, with commands written the way
+  the director types them; a Blender folder is taken as the blender.exe in it. Pure Python.
 """
 
 import json
@@ -284,6 +286,53 @@ def test_a_rerun_runs_only_the_parts_asked_and_never_replaces_the_full_result(tm
     assert json.loads((work / arp_probe.RERUN_NAME).read_text(encoding="utf-8"))["only"] == ["headless"]
 
 
+def test_a_rerun_never_writes_over_any_full_result(tmp_path):
+    """--out may name the committed copy (docs/research/arp_3_79_probe.json) or a full result
+    saved under another name: the rerun goes next to it."""
+    research = tmp_path / "docs" / "research" / arp_probe.RESULT_NAME
+    research.parent.mkdir(parents=True)
+    research.write_text("the committed full result", encoding="utf-8")
+    said: list = []
+    assert arp_probe.run(["blender"], str(tmp_path / "jobs"), research, say=said.append,
+                         runner=_parts_runner([], {}), only="build") == 0
+    assert research.read_text(encoding="utf-8") == "the committed full result"
+    assert json.loads((research.parent / arp_probe.RERUN_NAME).read_text(encoding="utf-8"))["only"] == ["build"]
+    assert f"A rerun does not write over {arp_probe.RESULT_NAME}" in said[0]
+    mine = tmp_path / "mine.json"                           # a full result under another name
+    full = arp_probe.assemble(_all_ok(), {k: {"status": "ok"} for k in arp_probe.PART_KEYS})
+    mine.write_text(json.dumps(full), encoding="utf-8")
+    assert arp_probe.run(["blender"], str(tmp_path / "jobs"), mine, say=said.append,
+                         runner=_parts_runner([], {}), only="build") == 0
+    assert json.loads(mine.read_text(encoding="utf-8")) == full
+    assert json.loads((tmp_path / arp_probe.RERUN_NAME).read_text(encoding="utf-8"))["only"] == ["build"]
+    # a rerun file named by --out is simply written
+    other = tmp_path / "rerun_again.json"
+    assert arp_probe.run(["blender"], str(tmp_path / "jobs"), other, say=said.append,
+                         runner=_parts_runner([], {}), only="build") == 0
+    assert json.loads(other.read_text(encoding="utf-8"))["only"] == ["build"]
+    # the full run's logs stay: a rerun logs to rerun_<part>.log
+    logs = tmp_path / "jobs" / "_setup" / "arp_probe" / "logs"
+    assert not (logs / "build.log").exists()
+
+
+def test_only_takes_the_part_names_however_the_console_splits_them():
+    assert arp_probe.parse_only("multi_arm,limbs,build") == ["multi_arm", "limbs", "build"]
+    assert arp_probe.parse_only(" multi_arm, limbs ,build ") == ["multi_arm", "limbs", "build"]
+    assert arp_probe.parse_only(["multi_arm", "limbs", "build"]) == ["multi_arm", "limbs", "build"]
+    assert arp_probe.parse_only(["multi_arm,limbs", "build"]) == ["multi_arm", "limbs", "build"]
+    assert arp_probe.parse_only(None) == [] and arp_probe.parse_only("") == []
+
+
+def test_only_on_the_command_line_with_commas_or_spaces(tmp_path, monkeypatch):
+    from forge import cli
+    got: list = []
+    monkeypatch.setattr(arp_probe, "run", lambda blender, jobs, out, only=None: got.append(only) or 0)
+    monkeypatch.chdir(tmp_path)
+    assert cli.main(["arp-probe", "--only", "multi_arm,limbs,build"]) == 0
+    assert cli.main(["arp-probe", "--only", "multi_arm", "limbs", "build"]) == 0
+    assert [arp_probe.parse_only(o) for o in got] == [["multi_arm", "limbs", "build"]] * 2
+
+
 def test_a_rerun_with_a_wrong_part_name_says_which_names_work(tmp_path):
     seen, said = [], []
     assert arp_probe.run(["blender"], str(tmp_path / "jobs"), None, say=said.append,
@@ -311,11 +360,52 @@ def test_a_blender_path_that_is_not_there_is_explained(tmp_path, monkeypatch, ca
     assert r"C:\Program Files\Blender Foundation\Blender 5.3\blender.exe" in said
     assert "leave --blender out" in said and str(known) in said
     assert not (tmp_path / ".env").exists()                     # a wrong path is not remembered
-    # no Blender known either: say how to get one
+    # no Blender known either: say how to get one, the way the director types it
     monkeypatch.setattr("forge.blender.find_blender", lambda: None)
     assert cli(["arp-probe", "--blender", r"D:\Apps\blender.exe"]) == 1
     said = capsys.readouterr().out
-    assert "only an example" not in said and "run `forge setup-blender` first" in said
+    assert "only an example" not in said and r"run `.venv\Scripts\forge.exe setup-blender` first" in said
+
+
+def test_setup_blender_with_a_wrong_path_does_not_send_the_director_round_in_a_circle(tmp_path, monkeypatch, capsys):
+    from forge.cli import main as cli
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setattr("forge.blender.find_blender", lambda: None)
+    assert cli(["setup-blender", "--blender", r"D:\Apps\Blender\blender.exe"]) == 1
+    said = capsys.readouterr().out
+    assert "run `forge setup-blender` first" not in said and "setup-blender` first" not in said
+    assert "install Blender first (see docs/SETUP_BLENDER.md), then run this again without" in said
+    assert not (tmp_path / ".env").exists()
+
+
+def test_a_blender_folder_is_taken_as_the_blender_exe_in_it(tmp_path, monkeypatch, capsys):
+    """The likely next slip after the example path: pasting the folder Blender is in."""
+    from forge import blender as B
+    from forge.cli import main as cli
+    monkeypatch.chdir(tmp_path)
+    got: list = []
+    monkeypatch.setattr(arp_probe, "run", lambda blender, jobs, out, only=None: got.append(blender) or 0)
+    folder = tmp_path / "Blender 5.3"
+    folder.mkdir()
+    # a folder without blender.exe in it is not a Blender: said, and not saved
+    assert cli(["arp-probe", "--blender", "Blender 5.3"]) == 1
+    said = capsys.readouterr().out
+    assert "There is no blender.exe at Blender 5.3" in said and "That is a folder, and blender.exe is not in it" in said
+    assert not got and not (tmp_path / ".env").exists()
+    # with blender.exe in it: that file is used and saved, and the director is told
+    (folder / "blender.exe").write_bytes(b"")
+    assert cli(["arp-probe", "--blender", "Blender 5.3"]) == 0
+    exe = str(folder / "blender.exe")
+    assert got == [[exe]] and f"using the blender.exe in it, {exe}" in capsys.readouterr().out
+    assert (tmp_path / ".env").read_text(encoding="utf-8").strip() == f"FORGE_BLENDER={exe}"
+    assert cli(["arp-probe", "--blender", exe]) == 0                  # the file itself: no note
+    assert got[-1] == [exe] and "That is the Blender folder" not in capsys.readouterr().out
+    # a folder saved by an older Forge is read as the blender.exe in it, and a folder is never "known"
+    monkeypatch.setenv("FORGE_BLENDER", str(folder))
+    assert B.find_blender() == [exe] and B.known_blender() == exe
+    (folder / "blender.exe").unlink()
+    assert B.known_blender() is None
+    assert B.blender_file(tmp_path / "nothing here") is None
 
 
 def test_blender_not_found_says_the_path_shown_is_an_example(tmp_path, monkeypatch):

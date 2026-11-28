@@ -8,7 +8,10 @@ default (as Auto-Rig Pro's does).
 - a call with only the new count loses another setting; the protocol keeps it
 - Auto-Rig Pro refusing the face switch (as it did on the director's PC) is reported in plain
   words with what its check saw, and the tail and ears are still added
-- reference bones hidden after a fresh rig are shown first (the likely cause on that PC)
+- reference bones hidden after a fresh rig are shown first (the likely cause on that PC), and
+  poll_check (what the probe rerun asks on purpose) sees the button say no, then yes
+- an option Auto-Rig Pro changes without being asked is named on the panel
+- the poll diagnostics never raise, even when the active object cannot be read
 - without Auto-Rig Pro's settings reader nothing is changed blind
 """
 
@@ -39,10 +42,12 @@ def arp():
     A.register()
     A.HIDE_REFS = A.POLL_SAYS_NO = A.IGNORE_TAIL_PARENT = False
     A.SEEN.clear()
+    A.ALSO_RESET.clear()
     try:
         yield A
     finally:
         A.HIDE_REFS = A.POLL_SAYS_NO = False
+        A.ALSO_RESET.clear()
         A.unregister()
 
 
@@ -156,6 +161,60 @@ def test_hidden_reference_bones_are_shown_before_auto_rig_pro_is_asked(arp):
     assert out["facial"] == "off" and out["protocol"]["shown"] == ["Reference"], out
 
 
+def test_poll_check_sees_the_button_say_no_then_yes_once_the_reference_bones_show(arp):
+    """What the probe rerun asks on purpose on a fresh rig (addon_trial._fresh_rig_check)."""
+    from forge_bpy import arp_limb_options as LO
+    arp.HIDE_REFS = True
+    rig = _rig()
+    before = LO.poll_check(rig, "head_ref.x")
+    assert before["poll"] is False, before
+    assert before["reference_visible"] == {"Reference": {"visible": False, "seen": False}}
+    d = before["diagnostics"]
+    assert d["selected_edit_bones"] == ["head_ref.x"] and d["selected_editable_bones"]["bones"] == []
+    assert d["ref_collections"] == {"Reference": False} and "poll_sources" in d
+    assert LO.show_ref(rig, "head_ref.x") == ["Reference"]
+    after = LO.poll_check(rig, "head_ref.x")
+    assert after["poll"] is True and after["reference_visible"]["Reference"]["seen"] is True, after
+    assert after["diagnostics"]["selected_editable_bones"]["bones"] == ["head_ref.x"]
+    assert rig.data.bones["head_ref.x"]["facial"] == 0 and "limb_calls" not in arp.SEEN   # nothing changed
+    assert LO.poll_check(rig, "no_such_ref.x") == {"ref": "no_such_ref.x", "error": "no_such_ref.x is not in the rig"}
+
+
+def test_an_option_auto_rig_pro_changes_unasked_is_named_on_the_panel(arp):
+    """The protocol sends every option back, yet Auto-Rig Pro may still reset one: Step 8 must
+    not lose that setting without a word."""
+    from forge_bpy import arp_rig
+    L = importlib.import_module("forge_send.stages_late")
+    arp.ALSO_RESET.update(head={"skull_bones": False}, tail={"tail_master_at_root": False})
+    rig = _rig(face_on=True)
+    rig.data.bones["head_ref.x"]["skull_bones"] = True
+    rep = arp_rig.add_extras(rig, [TAIL], {"tail_bones": 6})
+    assert rep["facial"] == "off" and rep["added"] == {"tail": 6}
+    assert rep["limb_options"]["facial"]["unexpected_changes"] == {"skull_bones": [True, False]}
+    assert rep["errors"] == ["face bones: Auto-Rig Pro also changed skull bones",
+                             "tail: Auto-Rig Pro also changed tail master at root"], rep["errors"]
+    rows = [t for _i, t in L._rig_rows({"extras": rep})]
+    assert "face bones: Auto-Rig Pro also changed skull bones" in rows
+
+
+def test_poll_diagnostics_never_raise_when_the_active_object_cannot_be_read(monkeypatch):
+    from types import SimpleNamespace
+
+    from forge_bpy import arp_limb_options as LO
+
+    class Gone:                                     # what a removed object does when read
+        def __getattr__(self, name):
+            raise ReferenceError("StructRNA of type Object has been removed")
+
+    ctx = SimpleNamespace(mode="EDIT_ARMATURE", view_layer=SimpleNamespace(objects=SimpleNamespace(active=Gone())))
+    monkeypatch.setattr(LO, "bpy", SimpleNamespace(context=ctx, types=bpy.types, ops=bpy.ops))
+    d = LO.poll_diagnostics(None, "head_ref.x")
+    assert d["mode"] == "EDIT_ARMATURE" and "has been removed" in d["active_object_error"], d
+    assert "active_type" not in d and "has been removed" in d["active_type_error"]
+    monkeypatch.setattr(LO, "_what_poll_sees", lambda *a: 1 / 0)
+    assert "ZeroDivisionError" in LO.poll_diagnostics(None, "head_ref.x")["diagnostics_error"]
+
+
 def test_without_auto_rig_pros_settings_reader_nothing_is_changed_blind(arp):
     from forge_bpy import arp_rig
     sys.modules.pop("fake_auto_rig")                          # (the fixture puts nothing back)
@@ -172,3 +231,11 @@ def test_every_reason_fits_on_one_panel_row():
     for why in LO.WORDS.values():
         assert len(f"right ear: 2 bones, not 12: {why.format(ref='ear_01_ref.r')}") <= 60, why
         assert len(f"face bones stay on: {why.format(ref='head_ref.x')}") <= 60, why
+    ears = {"unexpected_changes": {"ear_twist": [False, True], "ear_count": [3, 2]}}
+    assert LO.also_changed(ears, "right ear") == "right ear: Auto-Rig Pro also changed ear count and 1 more"
+    two = {"unexpected_changes": {"tail_master_at_root": [True, False], "tail_side": [".x", ".l"]}}
+    assert LO.also_changed(two, "tail") == "tail: Auto-Rig Pro also changed 2 other options"   # (too long)
+    long = {"unexpected_changes": {"a_very_long_option_name_from_auto_rig_pro": [1, 2]}}
+    assert LO.also_changed(long, "right ear") == "right ear: Auto-Rig Pro also changed 1 other option"
+    assert LO.also_changed({"unexpected_changes": {}}, "tail") == ""
+    assert LO.also_changed(None, "tail") == "" and LO.also_changed("not a report", "tail") == ""

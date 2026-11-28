@@ -20,13 +20,18 @@ Measured on the director's PC (Auto-Rig Pro 3.79.17, Blender 5.3, docs/research/
 arp_3_79_probe.json): this changed fingers, neck count, tail count, tail side and wings with
 nothing else changing. The same PC refused the face switch right after a fresh rig was added
 ("poll() failed, context is incorrect"), while every call after an added limb went through.
-Auto-Rig Pro's check wants a selected reference bone that can be seen, and adding a limb shows
-the reference bones, so the reference bone is made visible first (`show_ref`, what Auto-Rig
-Pro's own Edit Reference Bones does). When Auto-Rig Pro still says no, the report carries what
-its check saw (`poll_diagnostics`).
+Why is not known yet. The likely reason, read in Auto-Rig Pro's source and not yet seen on
+that PC: its check wants a selected reference bone that can be seen, and adding a limb shows the
+reference bones. So the reference bone is made visible first (`show_ref`, what Auto-Rig Pro's
+own Edit Reference Bones does). The `forge arp-probe` rerun tests this on purpose
+(`poll_check` on a fresh rig, before and after `show_ref`). When Auto-Rig Pro still says no,
+the report carries what its check saw (`poll_diagnostics`).
 
-Nothing here raises from `set_limb_options` or `facial_off`: every problem comes back in the
-report, in plain words.
+Auto-Rig Pro may still change an option nobody asked for; the report lists it
+(`unexpected_changes`) and `also_changed` names it in plain words for the panel.
+
+Nothing here raises from `set_limb_options`, `facial_off`, `poll_check` or `poll_diagnostics`:
+every problem comes back in the report, in plain words.
 """
 
 from __future__ import annotations
@@ -432,6 +437,20 @@ def facial_off(rig) -> dict:
     return out
 
 
+def also_changed(rep, who: str) -> str:
+    """One panel row (60 characters at most) naming the options Auto-Rig Pro changed that
+    nobody asked for, from a set_limb_options report: "tail: Auto-Rig Pro also changed tail
+    master at root". '' when there are none."""
+    keys = sorted((rep.get("unexpected_changes") or {}) if isinstance(rep, dict) else {})
+    if not keys:
+        return ""
+    more = f" and {len(keys) - 1} more" if len(keys) > 1 else ""
+    line = f"{who}: Auto-Rig Pro also changed {keys[0].replace('_', ' ')}{more}"
+    if len(line) > 60:
+        line = f"{who}: Auto-Rig Pro also changed {len(keys)} other option{'s' if len(keys) > 1 else ''}"
+    return line
+
+
 # ----------------------------------------------------------------------------- why ARP says no
 
 def operator_poll(idname: str) -> dict:
@@ -480,6 +499,14 @@ def poll_diagnostics(rig=None, ref: str = "", idname: str = OP) -> dict:
         out.update(operator_poll(idname))
     except Exception as exc:                                # noqa: BLE001
         out["poll_error"] = err(exc)
+    try:
+        _what_poll_sees(out, rig, ref)
+    except Exception as exc:                                # noqa: BLE001 - a removed object, say
+        out["diagnostics_error"] = err(exc)
+    return out
+
+
+def _what_poll_sees(out: dict, rig, ref: str) -> None:
     ov: dict = {}
     try:
         ov = view3d()
@@ -493,19 +520,20 @@ def poll_diagnostics(rig=None, ref: str = "", idname: str = OP) -> dict:
         ob = ctx.view_layer.objects.active
     except Exception as exc:                                # noqa: BLE001
         out["active_object_error"] = err(exc)
-    out["active_object"] = ob.name if ob is not None else None
     if ob is None:
-        return out
+        out["active_object"] = None
+        return
+    _try(out, "active_object", lambda: ob.name)
     _try(out, "active_type", lambda: ob.type)
     _try(out, "active_mode", lambda: ob.mode)
     if rig is not None:
         _try(out, "active_is_rig", lambda: ob is rig)
-    if ob.type != "ARMATURE":
-        return out
+    if out.get("active_type") != "ARMATURE":
+        return
     # Auto-Rig Pro's own is-this-a-rig test looks for the c_pos bone
     _try(out, "has_c_pos", lambda: ob.pose is not None and ob.pose.bones.get("c_pos") is not None)
-    if ob.mode != "EDIT":
-        return out
+    if out.get("active_mode") != "EDIT":
+        return
     eb = ob.data.edit_bones
     _try(out, "active_edit_bone", lambda: eb.active.name if eb.active is not None else None)
     _try(out, "selected_edit_bones", lambda: sorted(b.name for b in eb if b.select)[:40])
@@ -519,4 +547,39 @@ def poll_diagnostics(rig=None, ref: str = "", idname: str = OP) -> dict:
             return {"mode": bpy.context.mode,
                     "bones": None if sel is None else sorted(b.name for b in sel)[:40]}
     _try(out, "selected_editable_bones", editable)
+
+
+def reference_visible(rig) -> dict:
+    """The bone collections Auto-Rig Pro keeps reference bones in ("Reference"), and whether
+    each can be seen: {name: {"visible": its own switch, "seen": with its parents and solo}}."""
+    data = rig.data
+    out: dict = {}
+    for c in list(getattr(data, "collections_all", None) or data.collections):
+        if "reference" in c.name.lower():
+            out[c.name] = {"visible": bool(c.is_visible),
+                           "seen": bool(getattr(c, "is_visible_effectively", c.is_visible))}
+    return out
+
+
+def poll_check(rig, ref: str = "head_ref.x", idname: str = OP) -> dict:
+    """Would the limb options button take a call on `ref` right now? Selects `ref` alone in Edit
+    Mode (left on) and records Auto-Rig Pro's own check (poll: True or False), whether the
+    reference bones can be seen, and what the check sees (poll_diagnostics). Changes nothing
+    else. Never raises."""
+    out: dict = {"ref": ref}
+    try:
+        if not select_ref(rig, ref):
+            out["error"] = f"{ref} is not in the rig"
+            return out
+    except Exception as exc:                                # noqa: BLE001
+        out["error"] = err(exc)
+        return out
+    _try(out, "reference_visible", lambda: reference_visible(rig))
+    ns, name = idname.split(".")
+
+    def ask():
+        with bpy.context.temp_override(**view3d()):
+            return bool(getattr(getattr(bpy.ops, ns), name).poll())
+    _try(out, "poll", ask)
+    out["diagnostics"] = poll_diagnostics(rig, ref, idname)
     return out

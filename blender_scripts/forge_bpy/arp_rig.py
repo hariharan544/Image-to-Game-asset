@@ -860,7 +860,8 @@ def add_extras(rig, appendages: list, args: dict) -> dict:
     is skipped when the head already has it off (Auto-Rig Pro's human preset does), and a bone
     count is changed with every other setting of that limb sent back as it was. When Auto-Rig
     Pro refuses, the panel gets a plain reason, the report keeps what its check saw
-    (limb_options, for the log), and the tail and ears are still added with the bones it made."""
+    (limb_options, for the log), and the tail and ears are still added with the bones it made.
+    When it changes an option nobody asked for, the panel names it."""
     rep: dict = {"added": {}, "skipped": {}, "errors": [], "limb_options": {}}
     C.select_only(rig)
     bpy.ops.object.mode_set(mode="EDIT")
@@ -873,12 +874,15 @@ def add_extras(rig, appendages: list, args: dict) -> dict:
         LO.edit_mode(rig)                                 # (the chain's bones are read in Edit Mode)
         return res
 
-    def count(ref: str, key: str, n: int, label: str, words) -> None:
-        """Auto-Rig Pro's bone count for a chain; when it says no, its own count stays."""
+    def count(ref: str, key: str, n: int, label: str, who: str, words) -> None:
+        """Auto-Rig Pro's bone count for a chain; when it says no, its own count stays. An
+        option it changed without being asked is named on the panel too."""
         r = LO.set_limb_options(rig, ref, {key: n})
         rep["limb_options"][label] = r
         if not r.get("ok"):
             rep["errors"].append(words(r.get("reason") or LO.WORDS["failed"]))
+        if LO.also_changed(r, who):
+            rep["errors"].append(LO.also_changed(r, who))
         LO.edit_mode(rig)
 
     if not args.get("facial", False):
@@ -889,6 +893,8 @@ def add_extras(rig, appendages: list, args: dict) -> dict:
                 rep["limb_options"]["facial"] = f["protocol"]
             if f["facial"] == "still on":
                 rep["errors"].append(f"face bones stay on: {f.get('reason')}")
+            if LO.also_changed(f.get("protocol"), "face bones"):
+                rep["errors"].append(LO.also_changed(f.get("protocol"), "face bones"))
             LO.edit_mode(rig)
         except Exception as exc:                          # noqa: BLE001
             rep["errors"].append(f"face bones: {exc}")
@@ -904,7 +910,7 @@ def add_extras(rig, appendages: list, args: dict) -> dict:
             names = _chain_refs(rig, "tail", ".x", 0)
             if names and len(names) != n:
                 have = len(names)
-                count("tail_00_ref.x", "tail_count", n, "tail_count",
+                count("tail_00_ref.x", "tail_count", n, "tail_count", "tail",
                       lambda why: f"tail: {have} bones, not {n}: {why}")
                 names = _chain_refs(rig, "tail", ".x", 0)
             rep["added"]["tail"] = _place_chain(rig, names, _resample(tail["chain"], len(names))) if names else 0
@@ -921,7 +927,7 @@ def add_extras(rig, appendages: list, args: dict) -> dict:
                 names = _chain_refs(rig, "ear", "." + s, 1)
                 if names and len(names) != n:
                     have, side = len(names), {"l": "left", "r": "right"}[s]
-                    count(f"ear_01_ref.{s}", "ear_count", n, f"ear_count_{s}",
+                    count(f"ear_01_ref.{s}", "ear_count", n, f"ear_count_{s}", f"{side} ear",
                           lambda why, h=have, w=side: f"{w} ear: {h} bones, not {n}: {why}")
                     names = _chain_refs(rig, "ear", "." + s, 1)
                 if names:

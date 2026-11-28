@@ -60,7 +60,7 @@ back, with any lines that start with `[X]` or `[!]`. Logs and test exports are i
 
 You do not need `--blender`: Forge uses the Blender it already knows. If you add it, give the real
 place of blender.exe on your PC, usually
-`"C:\Program Files\Blender Foundation\Blender 5.3\blender.exe"`.
+`"C:\Program Files\Blender Foundation\Blender 5.3\blender.exe"` (the folder it is in works too).
 
 When asked to run only some parts again, name them after `--only`, for example:
 
@@ -69,7 +69,7 @@ When asked to run only some parts again, name them after `--only`, for example:
 ```
 
 That takes a few minutes and writes `jobs\_setup\arp_probe\arp_3_79_probe_rerun.json`; the first
-result stays as it is. Send the new file back.
+result, its logs and its test exports stay as they are. Send the new file back.
 
 ## UVPackmaster engine
 

@@ -166,16 +166,19 @@ def cmd_setup_blender(a) -> int:
 
 def cmd_arp_probe(a) -> int:
     from .arp_probe import run
-    from .blender import known_blender, no_such_blender_lines
+    from .blender import blender_file, known_blender, no_such_blender_lines
     from .setup_blender import _remember_blender
     blender = None
     if a.blender:
-        if not Path(a.blender).exists():
-            for line in no_such_blender_lines(a.blender, known_blender()):
+        exe = blender_file(a.blender)
+        if exe is None:
+            for line in no_such_blender_lines(a.blender, known_blender(), "arp-probe"):
                 print(line)
             return 1
-        _remember_blender(a.blender, Path.cwd() / ".env")
-        blender = [a.blender]
+        if Path(a.blender).is_dir():
+            print(f"[OK] That is the Blender folder: using the blender.exe in it, {exe}")
+        _remember_blender(str(exe), Path.cwd() / ".env")
+        blender = [str(exe)]
     return run(blender, a.jobs, Path(a.out) if a.out else None, only=a.only)
 
 
@@ -231,11 +234,11 @@ def cmd_report(a) -> int:
 
 def cmd_install_addon(a) -> int:
     """Install + enable the "Send to Forge" panel in the user's Blender."""
-    from .blender import BlenderError, find_blender, run_stage
+    from .blender import BlenderError, find_blender, run_stage, typed
     root = Path(__file__).resolve().parent.parent
     blender = [a.blender] if a.blender else find_blender()
     if not blender:
-        print("Blender not found (run `forge setup-blender` first)", file=sys.stderr)
+        print(f"Blender not found (run `{typed('setup-blender')}` first)", file=sys.stderr)
         return 1
     venv = root / ".venv" / ("Scripts/forge.exe" if os.name == "nt" else "bin/forge")
     print("Close every Blender window first - an open Blender overwrites the preferences when it quits.")
@@ -326,7 +329,7 @@ def main(argv=None) -> int:
                                           "jobs/_setup/arp_probe/arp_3_79_probe.json to send back")
     ap.add_argument("--blender", help="path to blender.exe (saved to .env as FORGE_BLENDER)")
     ap.add_argument("--out", help="where to write the result (default: <jobs>/_setup/arp_probe/arp_3_79_probe.json)")
-    ap.add_argument("--only", help="run only these parts again, e.g. multi_arm,limbs,build (parts: basics, bird, "
+    ap.add_argument("--only", nargs="+", help="run only these parts again, e.g. multi_arm,limbs,build (parts: basics, bird, "
                                    "wings, multi_arm, limbs, build, headless); writes arp_3_79_probe_rerun.json "
                                    "and leaves the full result as it is")
     ap.set_defaults(fn=cmd_arp_probe)

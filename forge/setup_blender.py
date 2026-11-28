@@ -16,8 +16,8 @@ import time
 from pathlib import Path
 from typing import Optional
 
-from .blender import (USUAL_BLENDER, BlenderError, find_blender, known_blender, no_such_blender_lines,
-                      run_stage)
+from .blender import (USUAL_BLENDER, BlenderError, blender_file, find_blender, known_blender,
+                      no_such_blender_lines, run_stage, typed)
 
 MIN_VERSION = (4, 2)
 WINGET = "winget install --id BlenderFoundation.Blender -e"
@@ -167,11 +167,13 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
         addon_trial: bool = False, addon_trial2: bool = False) -> int:
     report: dict = {"time": time.time()}
     if blender_path:
-        p = Path(blender_path)
-        if not p.exists():
-            for line in no_such_blender_lines(str(p), known_blender()):
+        p = blender_file(blender_path)
+        if p is None:
+            for line in no_such_blender_lines(str(blender_path), known_blender(), "setup-blender"):
                 say(line)
             return 1
+        if Path(blender_path).is_dir():
+            say(f"[OK] That is the Blender folder: using the blender.exe in it, {p}")
         blender = [str(p)]
         _remember_blender(str(p), env_file)
         say(f"[OK] saved FORGE_BLENDER={p} to {env_file}")
@@ -180,7 +182,7 @@ def run(blender_path: Optional[str], jobs_dir: str, env_file: Path, skip_smoke: 
     if not blender:
         say("[X] Blender not found.\n  Install it with:\n"
             f"      {WINGET}\n  or download it from {DOWNLOAD}\n"
-            "  Then run `forge setup-blender` again. If Blender is installed somewhere unusual, add\n"
+            f"  Then run `{typed('setup-blender')}` again. If Blender is installed somewhere unusual, add\n"
             f"  --blender with the real place of blender.exe, for example --blender \"{USUAL_BLENDER}\"\n"
             "  (that is an example: use the folder Blender is in on your PC).")
         return 1

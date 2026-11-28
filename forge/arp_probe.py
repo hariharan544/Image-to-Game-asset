@@ -15,9 +15,13 @@ item; when its Blender dies, the item it was busy with is recorded as "crashed".
 The Blender side is `blender_scripts/forge_bpy/addon_trial.py` (`run_rig_probe`).
 
 `--only multi_arm,limbs,build` runs just those parts again and writes
-jobs/_setup/arp_probe/arp_3_79_probe_rerun.json; the full result is never overwritten. The
-director's first run (committed) lost three setups to a refused face switch; the rerun is for
-those three parts.
+jobs/_setup/arp_probe/arp_3_79_probe_rerun.json (its logs are logs/rerun_<part>.log, its test
+exports exports/rerun/); a file that holds a full result is never overwritten. The director's
+first run (committed) lost three setups to a refused face switch; the rerun is for those three
+parts. Their setups no longer ask for the face switch (the human rig has the face off already),
+so two items ask on purpose, to find out why it was refused: face_switch.fresh_human (the
+button's check on a fresh human rig, before and after the reference bones are shown) and
+face_switch.fresh_dog (the face switch on a fresh dog rig, made as Step 8 makes it).
 """
 
 from __future__ import annotations
@@ -30,7 +34,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from .blender import blender_not_found_lines, find_blender, run_stage
+from .blender import blender_not_found_lines, find_blender, run_stage, typed
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULT_NAME = "arp_3_79_probe.json"         # written to <jobs>/_setup/arp_probe/ (gitignored)
@@ -95,7 +99,10 @@ PART_STATUSES = {"ok", "error", "crashed", "timeout", "skipped", "not_run"}
 NO_ARP = "Auto-Rig Pro is not loaded in this Blender"
 NOT_IN_RERUN = "not part of this rerun (see 'only')"
 # where each test rig's face switch is recorded (arp_limb_options.facial_off)
-FACIAL_AT = (("multi_arm_export", "facial"), ("extra", "limbs_setup", "facial"), ("extra", "build_setup", "facial"))
+FACIAL_AT = (("multi_arm_export", "facial"), ("extra", "limbs_setup", "facial"), ("extra", "build_setup", "facial"),
+             ("extra", "face_switch", "fresh_dog", "facial"))
+# the limb options button asked on purpose on a fresh rig (addon_trial._fresh_rig_check)
+FRESH_AT = ("extra", "face_switch", "fresh_human")
 
 WORDS = {"ok": "worked", "error": "failed", "skipped": "skipped", "crashed": "Blender closed (crash)",
          "not_run": "not reached", "timeout": "took too long", "partial": "partly recorded"}
@@ -326,13 +333,20 @@ def summary_lines(rep: dict) -> list[str]:
            if (rep.get(s) or {}).get("status") != "ok"]
     if bad:
         out.append("Checks that did not work (that is useful to know too): " + ", ".join(bad))
+    fresh = _dig(rep, *FRESH_AT)
+    if isinstance(fresh, dict) and fresh.get("answer"):
+        out.append(f"Limb options button on a fresh rig: {fresh['answer']}")
     faces = [f for f in (_dig(rep, *at) for at in FACIAL_AT) if isinstance(f, dict)]
     said_no = [f for f in faces if f.get("facial") == "still on"]
     if said_no:
         out.append(f"Face-bones switch: Auto-Rig Pro said no on {len(said_no)} of {len(faces)} test rigs "
                    "(what it saw is in the file)")
     elif faces:
-        out.append("Face-bones switch: " + ", ".join(sorted({str(f.get("facial")) for f in faces})))
+        counts: dict = {}
+        for f in faces:
+            counts[str(f.get("facial"))] = counts.get(str(f.get("facial")), 0) + 1
+        out.append("Face-bones switch: " + ", ".join(f"{v} ({n} test rig{'' if n == 1 else 's'})"
+                                                     for v, n in sorted(counts.items())))
     return out
 
 
@@ -380,9 +394,19 @@ def _write(targets: list, text: str, say: Callable[[str], None]) -> Optional[Pat
 
 
 def parse_only(text) -> list[str]:
-    """'multi_arm, limbs,build' -> ['multi_arm', 'limbs', 'build'] (a list is taken as it is)."""
-    items = text if isinstance(text, (list, tuple)) else str(text or "").split(",")
-    return [str(x).strip() for x in items if str(x).strip()]
+    """'multi_arm, limbs,build' -> ['multi_arm', 'limbs', 'build']. A list is read the same way,
+    item by item (['multi_arm,limbs', 'build'] too: a console may split the names up)."""
+    items = text if isinstance(text, (list, tuple)) else [text]
+    return [x.strip() for item in items for x in str(item or "").split(",") if x.strip()]
+
+
+def _is_full_result(path: Path) -> bool:
+    """True when `path` holds a full probe result (one that is not a rerun)."""
+    try:
+        rep = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False
+    return isinstance(rep, dict) and rep.get("schema") == SCHEMA_ID and not rep.get("only")
 
 
 def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = None,
@@ -394,21 +418,25 @@ def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = 
     if only is not None and (not chosen or set(chosen) - set(PART_KEYS)):
         wrong = ", ".join(sorted(set(chosen or []) - set(PART_KEYS))) or "nothing"
         say(f"[X] --only takes part names from this list: {','.join(PART_KEYS)} (it got: {wrong}).")
-        say("    For example: --only multi_arm,limbs,build")
+        say(f"    For example: {typed('arp-probe --only multi_arm,limbs,build')}")
         return 1
     if chosen:
         chosen = [k for k in PART_KEYS if k in chosen]          # in the probe's own order
     blender = blender or find_blender()
     if not blender:
-        for line in blender_not_found_lines("forge arp-probe"):
+        for line in blender_not_found_lines("arp-probe"):
             say(line)
         return 1
     work = (Path(jobs_dir) / "_setup" / "arp_probe").resolve()     # Blender must never see relative paths
     name = RERUN_NAME if chosen else RESULT_NAME
     out = Path(out_path) if out_path else work / name
-    if chosen and out.resolve() == (work / RESULT_NAME).resolve():
-        out = work / RERUN_NAME                                     # a rerun never replaces the full result
-    logs, exports = work / "logs", work / "exports"
+    if chosen and (out.name == RESULT_NAME or _is_full_result(out)):
+        out = out.with_name(RERUN_NAME)                             # a rerun never replaces a full result
+        if out_path:
+            say(f"[!] A rerun does not write over {Path(out_path).name}: it goes next to it, as {RERUN_NAME}.")
+    # a rerun keeps the full run's logs and test exports too
+    logs = work / "logs"
+    exports = work / "exports" / "rerun" if chosen else work / "exports"
     exports.mkdir(parents=True, exist_ok=True)
     logs.mkdir(parents=True, exist_ok=True)
     todo = [p for p in PARTS if not chosen or p[0] in chosen]
@@ -431,9 +459,10 @@ def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = 
             continue
         n += 1
         say(f"  [{n}/{len(todo)}] {label} ...")
-        partial = work / f"{key}.partial.json"
+        stem = f"rerun_{key}" if chosen else key
+        partial = work / f"{stem}.partial.json"
         partial.unlink(missing_ok=True)
-        log = logs / f"{key}.log"
+        log = logs / f"{stem}.log"
         t0 = time.time()
         try:
             rep = runner("arp_probe", {"part": key, "partial": str(partial), "out_dir": str(exports),
@@ -467,7 +496,7 @@ def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = 
             st = {**st, "status": "error" if st["status"] == "ok" else st["status"],
                   "message": st.get("message") or f"its result could not be read: {type(exc).__name__}: {exc}"[:300]}
         st["seconds"] = round(time.time() - t0, 1)
-        st["log"] = f"_setup/arp_probe/logs/{key}.log (in the jobs folder)"
+        st["log"] = f"_setup/arp_probe/logs/{stem}.log (in the jobs folder)"
         parts[key] = st
         if st["status"] == "ok":
             say(f"        ok ({st['seconds']:.0f} s)")

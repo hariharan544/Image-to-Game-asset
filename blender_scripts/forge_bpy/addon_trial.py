@@ -770,6 +770,43 @@ def _facial_off(rig) -> dict:
     return out
 
 
+FRESH_ANSWERS = {(True, True): "Auto-Rig Pro said yes straight away",
+                 (False, True): "Auto-Rig Pro said no until the reference bones were shown",
+                 (False, False): "Auto-Rig Pro said no, even with the reference bones shown",
+                 (True, False): "Auto-Rig Pro said yes, then no once the reference bones were shown"}
+
+
+def _fresh_rig_check(st: dict) -> dict:
+    """On the director's PC the limb options button refused the face switch as the first edit on
+    a fresh rig. The setups no longer ask (the human preset has the face off already), so they
+    cannot say why. This asks the button on purpose, on the fresh human rig before any limb is
+    added: its check (poll) and what that check sees, before and after the reference bones are
+    shown (arp_limb_options.show_ref, Step 8's fix). Nothing but what can be seen is changed."""
+    rig = _rig(st)
+    before = LO.poll_check(rig, "head_ref.x")
+    shown = LO.show_ref(rig, "head_ref.x") if rig.mode == "EDIT" else []
+    after = LO.poll_check(rig, "head_ref.x")
+    _to_object_mode()
+    answer = FRESH_ANSWERS.get((before.get("poll"), after.get("poll")),
+                               "Auto-Rig Pro could not be asked (what went wrong is in the file)")
+    return {"rig": "human, fresh", "before": before, "shown": shown, "after": after, "answer": answer}
+
+
+def _fresh_dog_face(st: dict) -> dict:
+    """Step 8's face switch where it is needed: Auto-Rig Pro's dog rig has face bones on. On a
+    fresh dog rig: the button's check before anything is shown, then the switch made exactly as
+    Step 8 makes it (arp_limb_options.facial_off: show the reference bone, send every option,
+    check). When Auto-Rig Pro says no, what its check saw is in facial.protocol.diagnostics."""
+    rig, _, _ = _append("dog")
+    st["rig"] = rig.name
+    _, stored = LO.bone_key(rig, "head_ref.x", "facial")
+    before = LO.poll_check(rig, "head_ref.x")
+    _to_object_mode()                               # Step 8 starts from Object Mode
+    facial = _facial_off(_rig(st))
+    _, now = LO.bone_key(_rig(st), "head_ref.x", "facial")
+    return {"rig": "dog, fresh", "stored_before": stored, "before": before, "facial": facial, "stored_after": now}
+
+
 def _match(rig):
     name = rig.name
     _select_only(rig)
@@ -1484,6 +1521,9 @@ def _part_multi_arm(rec: _Rec, args: dict):
     yield 0.3
     _item(rec, "ik_poles.rigs.dog", _probe_rig_poles, st, "dog")
     yield 0.1
+    # last in the part: a Blender crash here costs nothing recorded before it
+    _item(rec, "face_switch.fresh_dog", _fresh_dog_face, st)
+    yield 0.1
     _clear_scene()
 
 
@@ -1529,6 +1569,7 @@ def _part_limbs(rec: _Rec, args: dict):
         return {"rig": rig.name, "facial": _facial_off(rig)}
 
     _item(rec, "limbs_setup", setup)
+    _item(rec, "face_switch.fresh_human", _fresh_rig_check, st)     # before the first add_limb
     items: list = []
     try:
         items = [i[0] for i in bpy.types.ARP_OT_add_limb.limbs]

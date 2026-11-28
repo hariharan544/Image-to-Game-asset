@@ -22,7 +22,8 @@ What it copies from Auto-Rig Pro (read in its 3.77.33 source):
 Switches for the tests: IGNORE_TAIL_PARENT = True mimics a version that always hangs the tail
 from root.x; HIDE_REFS = True hides the "Reference" collection after append_arp (add_limb shows
 it, like Auto-Rig Pro's Edit Reference Bones); POLL_SAYS_NO = True makes the limb options
-button refuse every call ("context is incorrect"). SEEN["limb_calls"] records each call."""
+button refuse every call ("context is incorrect"); ALSO_RESET = {"head": {"skull_bones": False}}
+makes it also change an option nobody asked for. SEEN["limb_calls"] records each call."""
 
 from __future__ import annotations
 
@@ -34,6 +35,7 @@ from mathutils import Vector
 IGNORE_TAIL_PARENT = False
 HIDE_REFS = False
 POLL_SAYS_NO = False
+ALSO_RESET: dict = {}
 SEEN: dict = {}
 # each limb's options and the reference bone that stores them
 LIMB_KEYS = {"head": ("facial", "facial_mouth", "skull_bones"),
@@ -158,6 +160,8 @@ class FAKE_OT_show_limb_params(bpy.types.Operator):
             return {"CANCELLED"}
         for k in LIMB_KEYS[self.limb_type]:            # every option, passed or not
             b[k] = getattr(self, k)
+        for k, v in ALSO_RESET.get(self.limb_type, {}).items():
+            b[k] = v
         if self.limb_type == "tail":
             _chain_count(eb, "tail_{:02d}_ref" + self.side, 0, self.tail_count)
         elif self.limb_type == "ear":

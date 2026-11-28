@@ -5,7 +5,9 @@ The test copies this file to <tmp>/auto_rig_pro/src/auto_rig.py, next to a blend
 and imports it in the probe's own Blender process (never in the pytest process), so nothing it
 registers leaks into other tests. Behaviour follows ARP 3.77.33 where the probe looks:
   - append_arp: armature "rig" of *_ref bones in a "Reference" bone collection; root_ref.x keeps
-    'spine_count'; rig_preset "bird" kills Blender (the crash the probe must survive)
+    'spine_count'; head_ref.x keeps 'facial': 0 in the human preset and 1 in the dog and horse
+    presets (as Auto-Rig Pro 3.79.17's, docs/research/arp_3_79_probe.json); rig_preset "bird"
+    kills Blender (the crash the probe must survive)
   - show_limb_params (EXEC) writes the options onto the limb's reference bones; a tail moved
     to another side takes that side's next free name (tail_00_ref_dupli_001.x -> tail_00_ref.l);
     on an arm it also stores the finger IK colour on hand_ref as an ID-property array, as ARP's
@@ -19,9 +21,12 @@ registers leaks into other tests. Behaviour follows ARP 3.77.33 where the probe 
     reports a heat-weighting failure and turns scene.arp_bind_scale_fix on, as ARP does
   - arp_export_fbx_panel writes the selection with Blender's FBX exporter
   - id.set_humanoid_rig / id.set_mped_rig exist (ARP registers them under "id.")
-With FAKE_ARP_POLL=before_add_limb in the environment, show_limb_params' check (poll) says no
-on a rig no limb was added to yet, as the director's Auto-Rig Pro 3.79.17 did for the face
-switch right after append_arp ("poll() failed, context is incorrect").
+With FAKE_ARP_POLL in the environment, show_limb_params' check (poll) says no ("poll() failed,
+context is incorrect") the way the director's Auto-Rig Pro 3.79.17 did on a fresh rig:
+  - before_add_limb: on a rig no limb was added to yet, whatever is shown (the cause is unknown)
+  - hidden_refs: append_arp hides the "Reference" bone collection, and the check wants a selected
+    bone that can be seen (add_limb shows the collection again, as Auto-Rig Pro does): the cause
+    Forge guesses, which showing the reference bones first fixes
 """
 
 from __future__ import annotations
@@ -144,7 +149,11 @@ class FAKE_OT_append_arp(bpy.types.Operator):
             ad.edit_bones["root_ref.x"]["spine_count"] = 2
             for s in "lr":
                 ad.edit_bones[f"hand_ref.{s}"]["fingers_ik_color"] = [0.8, 0.432, 0.0]
+        if "head_ref.x" in ad.edit_bones:               # face bones: off in the human preset only
+            ad.edit_bones["head_ref.x"]["facial"] = 0 if self.rig_preset == "human" else 1
         bpy.ops.object.mode_set(mode="OBJECT")
+        if POLL == "hidden_refs":
+            ad.collections["Reference"].is_visible = False
         o["arp_rig_type"] = self.rig_preset
         print(f"appended {self.rig_preset}")
         return {"FINISHED"}
@@ -181,6 +190,9 @@ class FAKE_OT_show_limb_params(bpy.types.Operator):
         rig = context.active_object
         if POLL == "before_add_limb":
             return rig is not None and bool(rig.get("fake_limb_added"))
+        if POLL == "hidden_refs":
+            return rig is not None and rig.mode == "EDIT" and any(
+                b.select and not b.hide and all(c.is_visible for c in b.collections) for b in rig.data.edit_bones)
         return True
 
     def execute(self, context):
@@ -220,6 +232,8 @@ class FAKE_OT_add_limb(bpy.types.Operator):
     def execute(self, context):
         rig = context.active_object
         rig["fake_limb_added"] = True
+        if "Reference" in rig.data.collections:          # Auto-Rig Pro shows the reference bones
+            rig.data.collections["Reference"].is_visible = True
         bpy.ops.object.mode_set(mode="EDIT")
         ad = rig.data
         kind = self.limbs_presets
