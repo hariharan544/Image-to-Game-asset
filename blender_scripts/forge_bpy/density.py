@@ -425,19 +425,210 @@ def region_tris(low_obj, J: dict) -> dict:
 
 # ----------------------------------------------------------------------------- fit to original
 
-def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
-    """Move every vertex of the new mesh onto the original surface. After a SYMMETRIC remesh
-    this puts one-sided details back (a notch in one ear) and pulls the mesh into grooves
-    (mouth line). Projection along the vertex normal (both ways) keeps the quads even; where
-    that finds nothing (the notch: there is no surface along the normal) the nearest surface
-    point is used. A light relax keeps the quads from bunching, then they are projected again."""
+FACING = 0.2         # a hit on the original counts only if its face turns at most ~78 deg from the vertex
+STAND_FOR = 1.5      # a ray hit this many times farther than the nearest surface point is not the
+                     # surface the vertex stands for: the ray ran on down a groove narrower than the
+                     # quads, or onto a wall that faces across it
+FIT_SLACK = 0.05     # ... beyond that, a hit may lie this share of the vertex's edge farther (chord size)
+FIT_CHECK = 0.05     # a move longer than this share of the vertex's edge (beyond a face's chord error)
+                     # is checked: it must bring the faces round the vertex closer to the original,
+                     # or it is put back
+
+
+def _polys(me) -> list:
+    """Every face of a mesh as a tuple of its vertex indices."""
+    nf, nl = len(me.polygons), len(me.loops)
+    ls = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_start", ls)
+    lt = np.empty(nf, np.int64)
+    me.polygons.foreach_get("loop_total", lt)
+    lv = np.empty(nl, np.int64)
+    me.loops.foreach_get("vertex_index", lv)
+    return [tuple(int(x) for x in lv[s0:s0 + t]) for s0, t in zip(ls, lt)]
+
+
+def _vertex_faces(polys: list, n: int) -> list:
+    out: list = [[] for _ in range(n)]
+    for fi, f in enumerate(polys):
+        for v in f:
+            out[v].append(fi)
+    return out
+
+
+def _mean_edge(co: np.ndarray, ev: np.ndarray) -> np.ndarray:
+    """Per vertex: the mean length of its edges."""
+    n = len(co)
+    a, b = ev[:, 0], ev[:, 1]
+    deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)
+    el = np.linalg.norm(co[a] - co[b], axis=1)
+    return (np.bincount(a, weights=el, minlength=n) + np.bincount(b, weights=el, minlength=n)) / deg
+
+
+def _face(co: np.ndarray, f) -> tuple:
+    """One face (its corner indices in order) as (corners, unit normal, sample points: its middle
+    and the middle of each side, its longest side), in mathutils vectors (small and fast)."""
+    from mathutils import Vector
+    P = [Vector(co[v]) for v in f]
+    n = Vector((0.0, 0.0, 0.0))
+    for a, b in zip(P, P[1:] + P[:1]):
+        n += a.cross(b)
+    if n.length > 0:
+        n.normalize()
+    mid = sum(P, Vector((0.0, 0.0, 0.0))) / len(P)
+    sides = [(a, b) for a, b in zip(P, P[1:] + P[:1])]
+    return P, n, [mid] + [(a + b) * 0.5 for a, b in sides], max((a - b).length for a, b in sides) or 1e-9
+
+
+def _patch_out(tree, co: np.ndarray, faces: list) -> tuple:
+    """From samples on the faces to the original: the distance to the nearest original point, and
+    the original point under each sample (along the face's normal, out or in, within the face's
+    size; else the nearest point). A face that bridges a groove has the groove floor under it."""
+    out, under = [], []
+    for f in faces:
+        _P, nv, samples, reach = _face(co, f)
+        for pv in samples:
+            near = tree.find_nearest(pv)
+            if near[0] is None:
+                continue
+            out.append(near[3])
+            best = None
+            for s in (1.0, -1.0):
+                h = tree.ray_cast(pv, nv * s, reach)
+                if h[0] is not None and h[1].dot(nv) > 0.0 and (best is None or h[3] < best[3]):
+                    best = h
+            under.append(tuple((best or near)[0]))
+    return out, under
+
+
+def _patch_back(co: np.ndarray, faces: list, pts: list) -> list:
+    """From original points back to the faces: the distance to the nearest of the faces."""
     from mathutils import Vector
     from mathutils.bvhtree import BVHTree
-    tree = BVHTree.FromPolygons([v.co.copy() for v in src_me.vertices],
-                                [tuple(p.vertices) for p in src_me.polygons])
+    ids: dict = {}
+    tris = []
+    for f in faces:
+        k = [ids.setdefault(int(v), len(ids)) for v in f]
+        tris += [(k[0], k[j], k[j + 1]) for j in range(1, len(k) - 1)]
+    if not tris or not pts:
+        return []
+    local = BVHTree.FromPolygons([Vector(co[v]) for v in ids], tris)
+    return [local.find_nearest(Vector(p))[3] for p in pts]
+
+
+def _rms(gaps) -> float:
+    return float(np.sqrt(np.mean(np.square(gaps))))
+
+
+def _closer(tree, before: np.ndarray, after: np.ndarray, faces: list) -> bool:
+    """True when the faces lie closer to the original in the `after` shape than `before`,
+    measured both ways at face samples (from the faces to the original, and from the original
+    under the faces back to them) on the same original points in both shapes. Both ways: a
+    face that bridges a groove is far from the groove floor under it, a face sunk into a lip is
+    far from the lip above it - a move that trades one for a bigger other is not closer. Each
+    way is the root-mean-square gap: every sample counts, a big gap (a dent is one place) more
+    than many small ones."""
+    oa, ua = _patch_out(tree, before, faces)
+    ob, ub = _patch_out(tree, after, faces)
+    pts = ua + ub
+    if not oa or not ob or not pts:
+        return False
+    ea = _rms(oa) + _rms(_patch_back(before, faces, pts))
+    eb = _rms(ob) + _rms(_patch_back(after, faces, pts))
+    return eb < ea
+
+
+def _dug(tree, local, p, up, lim: float) -> float:
+    """How far the sample p of new faces lies dug into the original, measured both ways: its
+    distance to the original surface nearest to it when it lies behind that (and that faces
+    the way `up` does: not the far side of a thin part), and how far the original surface above
+    it (along `up`: from inside, the first surface met faces the way the ray goes) lies from
+    the new faces (`local`, a tree of them). In a narrow groove or a tight join the nearest
+    surface can be a wall right beside the sample while the lip above lies well off the faces:
+    the eye sees the lip."""
+    worst = 0.0
+    h = tree.find_nearest(p, lim)
+    if h[0] is not None and h[1].dot(up) > 0.0 and (p - h[0]).dot(h[1]) < 0.0:
+        worst = h[3]
+    r = tree.ray_cast(p, up, lim)
+    if r[0] is not None and r[1].dot(up) > 0.0:
+        back = local.find_nearest(r[0])
+        if back[0] is not None:
+            worst = max(worst, back[3])
+    return worst
+
+
+def _local_tree(corner_lists) -> "object | None":
+    """A tree of a few faces given as lists of corner points (to measure back to them)."""
+    from mathutils.bvhtree import BVHTree
+    pts, tris = [], []
+    for cs in corner_lists:
+        k0 = len(pts)
+        pts += [c.copy() for c in cs]
+        tris += [(k0, k0 + j, k0 + j + 1) for j in range(1, len(cs) - 1)]
+    return BVHTree.FromPolygons(pts, tris) if tris else None
+
+
+SPOKE = (0.15, 0.3, 0.45, 0.6, 0.75, 0.9)   # samples along each line from a moved point to its faces' other corners
+
+
+def _dig(tree, co: np.ndarray, v: int, faces: list) -> float:
+    """How deep the faces round point v dig into the original: the deepest of samples on them
+    (each face's middle, and points along each line from v to the face's other corners - where
+    a face sunk into a groove meets the groove's rim), measured both ways (_dug)."""
+    from mathutils import Vector
+    parts = [_face(co, f) for f in faces]
+    local = _local_tree([P for P, _n, _s, _r in parts])
+    if local is None:
+        return 0.0
+    pv = Vector(co[v])
+    worst = 0.0
+    for f, (P, nv, samples, reach) in zip(faces, parts):
+        pts = [samples[0]] + [pv.lerp(c, t) for c, w in zip(P, f) if w != v for t in SPOKE]
+        for p in pts:
+            worst = max(worst, _dug(tree, local, p, nv, reach))
+    return worst
+
+
+def _keep_closer(tree, start: np.ndarray, co: np.ndarray, polys: list, vf: list, edge: np.ndarray,
+                 tol: float, check: float = FIT_CHECK) -> tuple:
+    """Every vertex that moved by more than `check` of its edge from `start` keeps its move
+    only if its faces end up closer to the original (both ways) than with the vertex put back,
+    and dig no deeper into it than tol (nor deeper than they did): a vertex pulled into a groove
+    narrower than its faces takes them down into the lips on both sides - that is a notch,
+    however much nearer the groove floor gets. Otherwise it is put back. One vertex at a time,
+    in vertex order, each judged among its neighbours as they are by then. Returns
+    (coordinates, how many were put back)."""
+    out = co.copy()
+    back = 0
+    far = np.nonzero(np.linalg.norm(co - start, axis=1) > check * edge)[0]
+    for v in far:
+        faces = [polys[f] for f in vf[v]]
+        if not faces:
+            continue
+        was = out.copy()
+        was[v] = start[v]
+        if _dig(tree, out, v, faces) > max(tol, _dig(tree, was, v, faces)) or not _closer(tree, was, out, faces):
+            out[v] = start[v]
+            back += 1
+    return out, back
+
+
+def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2, tree=None, tol_rel: float = 0.0012) -> dict:
+    """Move every vertex of the new mesh onto the original surface. After a SYMMETRIC remesh
+    this puts one-sided details back (a notch in one ear) and pulls the mesh into grooves at
+    least as wide as its quads. Projection along the vertex normal (both ways) keeps the quads
+    even; where that finds nothing (the notch: there is no surface along the normal), or only a
+    surface much farther than the nearest one, the nearest surface point is used. A light relax
+    keeps the quads from bunching, then they are projected again. Last, every move longer than
+    a chord must have brought the faces round the vertex closer to the original, measured both
+    ways, without digging them more than tol_rel of the size into it (a vertex pulled into a
+    groove narrower than its faces sinks them into the lips on both sides: put back - carve
+    cuts such a crease along the edges instead, as a line that tapers where the groove fades)."""
+    from mathutils import Vector
+    tree = tree or source_tree(src_me)
     n = len(low_me.vertices)
     if n == 0:
-        return {"moved": 0}
+        return {"moved": 0, "put_back": 0}
     co = np.empty(n * 3, np.float32)
     low_me.vertices.foreach_get("co", co)
     co = co.reshape(-1, 3).astype(np.float64)
@@ -445,15 +636,16 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
     limit = max_rel * size
     ev = np.empty(len(low_me.edges) * 2, np.int32)
     low_me.edges.foreach_get("vertices", ev)
-    a, b = ev[0::2].astype(np.int64), ev[1::2].astype(np.int64)
+    ev = ev.reshape(-1, 2).astype(np.int64)
+    a, b = ev[:, 0], ev[:, 1]
     deg = np.maximum(np.bincount(a, minlength=n) + np.bincount(b, minlength=n), 1)[:, None]
 
     # each vertex may only move onto the original surface it stands for: one that faces the
     # same way, and not farther than a few of its own edges (next to a thin ear or in the gap
     # at a horn root, the nearest hit can be the far side of the sheet or another wall)
-    elen = np.linalg.norm(co[a] - co[b], axis=1)
-    reach = (np.bincount(a, weights=elen, minlength=n) + np.bincount(b, weights=elen, minlength=n)) / deg[:, 0]
-    reach = np.minimum(4.0 * reach, limit)
+    edge = _mean_edge(co, ev)
+    reach = np.minimum(4.0 * edge, limit)
+    slack = FIT_SLACK * edge
 
     def project(pts, nrm):
         out = pts.copy()
@@ -465,12 +657,13 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
             best = None
             for s in (1.0, -1.0):
                 hit = tree.ray_cast(p, d * s, lim)
-                if hit[0] is not None and hit[1].dot(d) > 0.2 and (best is None or hit[3] < best[1]):
+                if hit[0] is not None and hit[1].dot(d) > FACING and (best is None or hit[3] < best[1]):
                     best = (hit[0], hit[3])
-            if best is None:
-                near = tree.find_nearest(p, lim)
-                if near[0] is not None and near[1].dot(d) > 0.0:
-                    best = (near[0], near[3])
+            near = tree.find_nearest(p, lim)
+            if best is not None and near[0] is not None and best[1] > STAND_FOR * near[3] + slack[i]:
+                best = None             # down a narrow groove or onto its far wall: not this vertex's surface
+            if best is None and near[0] is not None and near[1].dot(d) > 0.0:
+                best = (near[0], near[3])
             if best is not None:
                 out[i] = best[0][:]
                 moved += best[1] > 1e-6 * size
@@ -483,6 +676,7 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
         low_me.vertices.foreach_get("normal", nr)
         return nr.reshape(-1, 3).astype(np.float64)
 
+    start = co.copy()
     co, moved = project(co, normals(co))
     for _ in range(relax):
         avg = (np.stack([np.bincount(a, weights=co[b, k], minlength=n) + np.bincount(b, weights=co[a, k], minlength=n)
@@ -492,9 +686,11 @@ def conform(low_me, src_me, max_rel: float = 0.04, relax: int = 2) -> dict:
         delta -= nrm * (delta * nrm).sum(axis=1, keepdims=True)   # slide along the surface only
         co = co + 0.5 * delta
         co, _m = project(co, normals(co))
+    polys = _polys(low_me)
+    co, back = _keep_closer(tree, start, co, polys, _vertex_faces(polys, n), edge, tol_rel * size)
     low_me.vertices.foreach_set("co", co.astype(np.float32).ravel())
     low_me.update()
-    return {"moved": int(moved)}
+    return {"moved": int(moved), "put_back": int(back)}
 
 
 # ----------------------------------------------------------------------------- carve creases
@@ -517,6 +713,25 @@ def _poly_strict(src_me) -> "np.ndarray | None":
     lv = np.empty(len(src_me.loops), np.int32)
     src_me.loops.foreach_get("vertex_index", lv)
     return sv[lv[ls]]
+
+
+def _cut_beside(tree, v, up, lim: float) -> float:
+    """How deep the faces round a carved point cut into the original beside the groove: the
+    deepest of samples on them (each face's middle and points along each line from the point to
+    the face's other corners - where the V meets the groove's rim), measured both ways (_dug)
+    along the bridging edge's normal."""
+    local = _local_tree([[x.co for x in f.verts] for f in v.link_faces])
+    if local is None:
+        return 0.0
+    worst = 0.0
+    for f in v.link_faces:
+        others = [x.co for x in f.verts if x is not v]
+        if not others:
+            continue
+        mid = (v.co + sum(others, v.co * 0.0)) / (len(others) + 1)
+        for p in [mid] + [v.co.lerp(c, t) for c in others for t in SPOKE]:
+            worst = max(worst, _dug(tree, local, p, up, lim))
+    return worst
 
 
 def _groove_pair(f, is_new, tree):
@@ -551,7 +766,15 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
     groove by more than tol_rel of the size, the edge is split at the groove floor and the new
     points are joined face by face, so the valley becomes a continuous edge line - on both
     sides, whatever direction the remesher chose. Only adds detail; never moves existing
-    vertices. Capped at max_add (share of the triangles)."""
+    vertices. Capped at max_add (share of the triangles).
+
+    The cut follows the original and nothing else: the floor must face the way the edge does
+    (a wall facing across the groove is not its floor); a crossing point with no partner among
+    its faces' crossing points is not a groove at all - it is put back on its edge; and the line
+    tapers where the groove fades: an end point sinks only as deep as its faces can go without
+    digging into the original beside the groove deeper than the groove is going to be one
+    crossing further on (never less than tol): else the V, as wide as the quads, would stop at
+    full depth where the groove fades to nothing - a notch the original does not have."""
     import bmesh
     from mathutils import Vector
     pstrict = _poly_strict(src_me)
@@ -576,9 +799,36 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
         best = None
         for s in (1.0, -1.0):
             h = tree.ray_cast(p, n * s, lim)
-            if h[0] is not None and h[1].dot(n) > 0.0 and (best is None or h[3] < best[3]):
+            if h[0] is not None and h[1].dot(n) > FACING and (best is None or h[3] < best[3]):
                 best = h
         return best
+
+    put_back = 0
+    cut_all: set = set()                                 # crossing points still cut, every pass
+    flat_at: dict = {}                                   # where each sat on its bridging edge
+    up_at: dict = {}
+
+    def taper(nv, before: float) -> bool:
+        """Raise the end point of a cut line from the floor towards its edge until its faces dig
+        into the original beside the groove no deeper than the groove would be one crossing
+        further on, going by how it changes from the point before (`before`, that point's
+        depth) to this one - never less than tol. A line broken off in a groove that goes on
+        at full depth keeps its end; where the groove fades, the end fades with it. True if it
+        is still cut."""
+        up, lim, gap = up_at[nv]
+        allow = max(tol, 2.0 * gap - before)
+        deep = nv.co.copy()
+        if _cut_beside(tree, nv, up, lim) <= allow:
+            return True
+        lo, hi = 0.0, 1.0                                # share of the way from the edge to the floor
+        for _step in range(8):
+            nv.co = flat_at[nv].lerp(deep, (lo + hi) / 2)
+            if _cut_beside(tree, nv, up, lim) <= allow:
+                lo = (lo + hi) / 2
+            else:
+                hi = (lo + hi) / 2
+        nv.co = flat_at[nv].lerp(deep, lo)
+        return lo > 0.0
 
     for _ in range(passes):
         bm.normal_update()
@@ -602,9 +852,9 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
                 if h is None or pstrict[h[2]] >= 0.999 or h[3] <= tol:
                     continue
                 if best is None or h[3] > best[0]:
-                    best = (h[3], t, Vector(h[0]))
+                    best = (h[3], t, Vector(h[0]), n.normalized(), lim)
             if best is not None:
-                marks.append((best[0], e, best[1], best[2]))
+                marks.append((best[0], e, best[1], best[2], best[3], best[4]))
         if not marks:
             break
         # deepest first; of two as deep, the one whose ends come first by place (never by the
@@ -618,12 +868,12 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
         # changes from run to run - the faces would be split, and the folds put back, in
         # another order each time)
         new_verts = []
-        flat_at = {}
-        for _gap, e, t, hit in marks:
+        for gap, e, t, hit, up, lim in marks:
             if not e.is_valid:
                 continue
             _ne, nv = bmesh.utils.edge_split(e, e.verts[0], t)
             flat_at[nv] = nv.co.copy()                   # where it sat on the bridging edge
+            up_at[nv] = (up, lim, gap)
             nv.co = hit
             new_verts.append(nv)
             splits += 1
@@ -649,6 +899,39 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
             if nv.is_valid and any(len(e.link_faces) == 2 and e.calc_face_angle(0.0) > math.radians(100)
                                    for e in nv.link_edges):
                 nv.co = flat_at[nv]
+        # a crossing point with no partner (no line to another crossing point that is still
+        # cut) is not a groove: a lone pit where the original's groove fades. Put back, until
+        # every point left has a partner
+        cut = {nv for nv in new_verts if nv.is_valid and (nv.co - flat_at[nv]).length > 1e-12 * size}
+
+        def partners(nv):
+            return sum(1 for e in nv.link_edges if e.other_vert(nv) in cut or e.other_vert(nv) in cut_all)
+        tapered: set = set()
+        while True:
+            lone = [nv for nv in new_verts if nv in cut and not partners(nv)]
+            for nv in lone:
+                nv.co = flat_at[nv]
+                cut.discard(nv)
+            # the line tapers where the original's groove fades (or where the face ends): along
+            # the line a groove narrower than the quads is cut as a V as wide as the quads - that
+            # is the crease kept - but at its end the V would stop at full depth, a notch the
+            # original does not have. Each end point sinks only as far as its faces can go
+            # without digging into the original beside it deeper than the groove is going to be
+            # one crossing on (from the point before it to this one: a line broken off in a
+            # groove that goes on keeps its end, one where the groove fades keeps a tol-deep end);
+            # one that cannot sink at all goes back on its edge, and the point before is the end
+            ends = [nv for nv in new_verts if nv in cut and nv not in tapered and partners(nv) == 1]
+            for nv in ends:
+                tapered.add(nv)
+                prev = next(e.other_vert(nv) for e in nv.link_edges
+                            if e.other_vert(nv) in cut or e.other_vert(nv) in cut_all)
+                if not taper(nv, up_at[prev][2] if prev in up_at else up_at[nv][2]):
+                    nv.co = flat_at[nv]
+                    cut.discard(nv)
+            if not lone and not ends:
+                break
+        put_back += sum(1 for nv in new_verts if nv.is_valid and nv not in cut)
+        cut_all |= cut
         added = sum(len(f.verts) - 2 for f in bm.faces) - tris0
         if added >= allowance:
             break
@@ -656,7 +939,7 @@ def carve(low_me, src_me, tree=None, tol_rel: float = 0.0012, passes: int = 2, s
     bm.to_mesh(low_me)
     bm.free()
     low_me.update()
-    return {"added": int(added), "splits": int(splits)}
+    return {"added": int(added), "splits": int(splits), "put_back": int(put_back)}
 
 
 def crease_kept(src_me, low_me, tol_rel: float = 0.0012, max_samples: int = 200_000) -> dict:
@@ -689,6 +972,149 @@ def crease_kept(src_me, low_me, tol_rel: float = 0.0012, max_samples: int = 200_
         out["right_pct"] = round(100.0 * ok[~left].mean(), 1)
     return out
 
+
+
+# ----------------------------------------------------------------------------- dent gate
+
+DENT_RATIO = 3.0     # a face may lie this many times its expected chord error off the original
+
+
+def _face_gaps(tree, co: np.ndarray, polys: list, fids, size: float, tol: float) -> dict:
+    """The faces (of fids) that lie off the original by more than they can explain: face ->
+    its worst signed gap at its samples (- inside: a dent, + outside: a bump). A flat face of
+    edge e on a surface whose normal turns by angle a under it lies about e * a / 8 off it (its
+    chord error); a face more than DENT_RATIO times that (and more than tol) off the original
+    is off where the original is not. Only where the original is smooth under the face: the
+    original under the face's samples (straight under them, along the face's normal) must lie
+    on one smooth sheet - within half the face's gap of a plane. A face over a groove or a
+    crease it bridges has the groove floor under some samples and the rim under others: that is
+    detail the face does not follow, not a dent or a bump it made. A sample whose nearest
+    original point faces away from the face (the other side of a thin ear) is not judged."""
+    out = {}
+    for fi in fids:
+        P, nv, samples, reach = _face(co, polys[fi])
+        ns, under, worst = [], [], 0.0
+        for k, pv in enumerate(P + samples):
+            h = tree.find_nearest(pv)
+            if h[0] is None or h[1].dot(nv) <= 0.0:
+                continue
+            ns.append(h[1][:])
+            if k < len(P):                       # (the corners lend their normals: they lie on it)
+                under.append(h[0][:])
+                continue
+            gap = (pv - h[0]).dot(h[1])
+            if abs(gap) > abs(worst):
+                worst = gap
+            best = None
+            for s_ in (1.0, -1.0):
+                r = tree.ray_cast(pv, nv * s_, reach)
+                if r[0] is not None and r[1].dot(nv) > 0.0 and (best is None or r[3] < best[3]):
+                    best = r
+            under.append((best or h)[0][:])
+        if len(ns) < 2 or not worst:
+            continue
+        N = np.array(ns)
+        turn = math.acos(float(np.clip((N @ N.T).min(), -1.0, 1.0)))
+        e = sum((a - b).length for a, b in zip(P, P[1:] + P[:1])) / len(P)
+        if abs(worst) <= max(DENT_RATIO * e * turn / 8.0, tol):
+            continue
+        U = np.array(under) - np.mean(under, axis=0)
+        sheet = np.linalg.svd(U, full_matrices=False)[2][-1]            # the plane they lie nearest
+        if float(np.abs(U @ sheet).max()) * 2.0 <= abs(worst):
+            out[fi] = worst
+    return out
+
+
+def _islands(polys: list, fids) -> list:
+    """Faces that share a corner, grouped (each group sorted, groups by their first face)."""
+    parent = {f: f for f in fids}
+
+    def find(x):
+        while parent[x] != x:
+            parent[x] = parent[parent[x]]
+            x = parent[x]
+        return x
+    by_vert: dict = {}
+    for f in sorted(fids):
+        for v in polys[f]:
+            if v in by_vert:
+                a, b = find(by_vert[v]), find(f)
+                if a != b:
+                    parent[max(a, b)] = min(a, b)
+            else:
+                by_vert[v] = f
+    groups: dict = {}
+    for f in sorted(fids):
+        groups.setdefault(find(f), []).append(f)
+    return [groups[k] for k in sorted(groups)]
+
+
+def smooth_dents(low_me, src_me, tree=None, tol_rel: float = 0.0012, before=None) -> dict:
+    """The dent gate at the end of the fit: islands of faces that lie farther inside (a dent) or
+    outside (a bump) the original than their chord error explains, where the original is
+    smooth, are repaired where they are: each of their points is relaxed towards its neighbours
+    and put back on the nearest original surface, and keeps that only if its faces then lie
+    closer to the original (both ways); an island that still shows is left and reported.
+    before: the points as the remesher gave them (before the fit): then only faces the fit
+    moved are judged - a face with a point moved by more than a chord (FIT_CHECK of its edge).
+    What the remesher made itself is the shape check's business, and a face round a crossing
+    point carve added is a crease cut on purpose (carve keeps its own cut to the original).
+    Returns {"found", "fixed", "left", "at": [island middle, ...], "left_at": [...], "kinds":
+    ["dent" (sunk) or "bump" (raised), one per island]}."""
+    tree = tree or source_tree(src_me)
+    n = len(low_me.vertices)
+    if n == 0 or not len(low_me.polygons):
+        return {"found": 0, "fixed": 0, "left": 0, "at": [], "left_at": [], "kinds": []}
+    co = np.empty(n * 3, np.float32)
+    low_me.vertices.foreach_get("co", co)
+    co = co.reshape(-1, 3).astype(np.float64)
+    size = float(np.linalg.norm(co.max(axis=0) - co.min(axis=0))) or 1.0
+    tol = tol_rel * size
+    polys = _polys(low_me)
+    vf = _vertex_faces(polys, n)
+    ev = np.empty(len(low_me.edges) * 2, np.int32)
+    low_me.edges.foreach_get("vertices", ev)
+    ev = ev.reshape(-1, 2).astype(np.int64)
+    nbrs: list = [[] for _ in range(n)]
+    for a, b in ev:
+        nbrs[a].append(int(b))
+        nbrs[b].append(int(a))
+    judged = range(len(polys))
+    if before is not None:
+        b = np.asarray(before, np.float64).reshape(-1, 3)
+        n0 = min(len(b), n)
+        moved = np.zeros(n, bool)
+        moved[:n0] = np.linalg.norm(co[:n0] - b[:n0], axis=1) > FIT_CHECK * _mean_edge(co, ev)[:n0]
+        judged = [fi for fi, f in enumerate(polys) if any(moved[v] for v in f) and max(f) < n0]
+    bad = _face_gaps(tree, co, polys, judged, size, tol)
+    islands = _islands(polys, list(bad))
+    from mathutils import Vector
+    fixed, at, left_at, kinds = 0, [], [], []
+    for isl in islands:
+        verts = sorted({v for f in isl for v in polys[f]})
+        middle = co[verts].mean(axis=0)
+        kinds.append("dent" if min(bad[f] for f in isl) < -max(bad[f] for f in isl) else "bump")
+        for v in verts:
+            if not nbrs[v]:
+                continue
+            trial = co.copy()
+            near = tree.find_nearest(Vector(co[nbrs[v]].mean(axis=0)))      # relax, then onto the original
+            if near[0] is None:
+                continue
+            trial[v] = near[0][:]
+            faces = [polys[f] for f in vf[v]]
+            if _closer(tree, co, trial, faces):
+                co = trial
+        near_faces = sorted({f for v in verts for f in vf[v]})
+        if _face_gaps(tree, co, polys, near_faces, size, tol):
+            left_at.append([round(float(x), 6) for x in middle])
+        else:
+            fixed += 1
+        at.append([round(float(x), 6) for x in middle])
+    low_me.vertices.foreach_set("co", co.astype(np.float32).ravel())
+    low_me.update()
+    return {"found": len(islands), "fixed": fixed, "left": len(islands) - fixed, "at": at, "left_at": left_at,
+            "kinds": kinds}
 
 
 # ----------------------------------------------------------------------------- symmetry and parts plan

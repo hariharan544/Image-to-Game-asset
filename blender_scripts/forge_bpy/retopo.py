@@ -35,6 +35,13 @@ def _surface_area(obj) -> float:
     return area
 
 
+def _coords(me):
+    import numpy as np
+    co = np.empty(len(me.vertices) * 3, np.float32)
+    me.vertices.foreach_get("co", co)
+    return co.reshape(-1, 3).astype(np.float64)
+
+
 def _replace_mesh(obj, src_mesh) -> None:
     old = obj.data
     obj.data = src_mesh
@@ -776,17 +783,21 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         # the body's own share of the triangles: the whole budget minus what the cut-off parts
         # reserved (each part's share is enforced where it is set)
         share = 2 * target / headroom
-        fit = {"tree": None, "fitted": False, "carve": {}}
+        fit = {"tree": None, "fitted": False, "carve": {}, "dents": None}
 
         def _fit():
-            """Fit to the original, then cut narrow face creases in (local, adds only)."""
-            from .density import carve, conform, source_tree
+            """Fit to the original, then cut narrow face creases in (local, adds only), then
+            the dent gate: what still lies off the original where it is smooth is repaired."""
+            from .density import carve, conform, smooth_dents, source_tree
+            if fit["tree"] is None:
+                fit["tree"] = source_tree(backup)
+            start = _coords(obj.data)                     # as the remesher gave it
             if args.get("conform", True):
-                conform(obj.data, backup, relax=int(args.get("conform_relax", 2)))
+                conform(obj.data, backup, relax=int(args.get("conform_relax", 2)), tree=fit["tree"])
             if args.get("carve", True):
-                if fit["tree"] is None:
-                    fit["tree"] = source_tree(backup)
                 fit["carve"] = carve(obj.data, backup, fit["tree"])
+            if args.get("dent_gate", True):
+                fit["dents"] = smooth_dents(obj.data, backup, fit["tree"], before=start)
             fit["fitted"] = True
         STATUS["text"] = f"{_short(obj.name)}: Quad Remesher"
         ok = yield from _qr_part(obj, target, args, timeout)
@@ -924,8 +935,12 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
         piece_fallbacks: list = []
         joints: list = []
         if ok and not fit["fitted"] and args.get("carve", True):
-            from .density import carve, source_tree       # rescued / unfitted result: carve only
-            fit["carve"] = carve(obj.data, backup, fit["tree"] or source_tree(backup))
+            from .density import carve, smooth_dents, source_tree   # rescued / unfitted result: carve only
+            fit["tree"] = fit["tree"] or source_tree(backup)
+            start = _coords(obj.data)
+            fit["carve"] = carve(obj.data, backup, fit["tree"])
+            if args.get("dent_gate", True):
+                fit["dents"] = smooth_dents(obj.data, backup, fit["tree"], before=start)
         if ok and split_pieces:
             # the body's own share: the budget minus what its parts take at its quad size
             share = 2 * (whole - sum(settle())) / headroom
@@ -1024,6 +1039,18 @@ def _qr_one(obj, budget: int, args: dict, timeout: float, report: dict):
                                for k, why in split_report]
         if crease or fit["carve"]:
             report[obj.get(C.PART_PROP)]["creases"] = {**crease, "carved_tris": fit["carve"].get("added", 0)}
+        dents = fit["dents"]
+        if dents and dents.get("found"):
+            # where they were, in the scene (the mirror's working frame moved back): the panel
+            # names the body region from these
+            from mathutils import Vector
+            m = obj.matrix_world
+
+            def place(p):
+                return [round(float(x), 5) for x in m @ Vector((p[0] + shift, p[1], p[2]))]
+            r["dents"] = {"found": int(dents["found"]), "fixed": int(dents["fixed"]), "left": int(dents["left"]),
+                          "at": [place(p) for p in dents["at"]], "left_at": [place(p) for p in dents["left_at"]],
+                          "kinds": list(dents.get("kinds", []))}
         if shape is not None:
             report[obj.get(C.PART_PROP)]["shape"] = {
                 "lost_pct": round(100 * shape["lost_ratio"], 2), "max_gap_pct": round(100 * shape["max_rel"], 2),
