@@ -13,6 +13,11 @@ some Blender 5 builds) does not lose the rest. A part writes what it has found a
 item; when its Blender dies, the item it was busy with is recorded as "crashed".
 
 The Blender side is `blender_scripts/forge_bpy/addon_trial.py` (`run_rig_probe`).
+
+`--only multi_arm,limbs,build` runs just those parts again and writes
+jobs/_setup/arp_probe/arp_3_79_probe_rerun.json; the full result is never overwritten. The
+director's first run (committed) lost three setups to a refused face switch; the rerun is for
+those three parts.
 """
 
 from __future__ import annotations
@@ -25,10 +30,11 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Callable, Optional
 
-from .blender import find_blender, run_stage
+from .blender import blender_not_found_lines, find_blender, run_stage
 
 ROOT = Path(__file__).resolve().parent.parent
 RESULT_NAME = "arp_3_79_probe.json"         # written to <jobs>/_setup/arp_probe/ (gitignored)
+RERUN_NAME = "arp_3_79_probe_rerun.json"    # `--only`: some parts again, next to the full result
 COMMITTED = ROOT / "docs" / "research" / RESULT_NAME    # where it goes once the director sent it
 SCHEMA_ID = "forge.arp_probe/1"
 
@@ -87,6 +93,9 @@ SUBS = (
 STATUSES = {"ok", "error", "skipped", "crashed", "not_run", "timeout", "partial"}
 PART_STATUSES = {"ok", "error", "crashed", "timeout", "skipped", "not_run"}
 NO_ARP = "Auto-Rig Pro is not loaded in this Blender"
+NOT_IN_RERUN = "not part of this rerun (see 'only')"
+# where each test rig's face switch is recorded (arp_limb_options.facial_off)
+FACIAL_AT = (("multi_arm_export", "facial"), ("extra", "limbs_setup", "facial"), ("extra", "build_setup", "facial"))
 
 WORDS = {"ok": "worked", "error": "failed", "skipped": "skipped", "crashed": "Blender closed (crash)",
          "not_run": "not reached", "timeout": "took too long", "partial": "partly recorded"}
@@ -135,6 +144,8 @@ def _missing(part: str, parts: dict, arp_loaded=None) -> dict:
         return {"status": "skipped", "reason": NO_ARP}
     if st is None:
         return {"status": "not_run", "reason": f"the '{part}' part did not run"}
+    if st["status"] == "not_run":
+        return {"status": "not_run", "reason": st.get("reason") or f"the '{part}' part did not run"}
     if st["status"] == "skipped":
         return {"status": "skipped", "reason": st.get("reason", NO_ARP)}
     if st.get("arp_loaded") is False:
@@ -145,13 +156,16 @@ def _missing(part: str, parts: dict, arp_loaded=None) -> dict:
             "reason": f"Blender stopped during the '{part}' part ({st['status']}) before this was reached"}
 
 
-def assemble(merged: dict, parts: dict) -> dict:
-    """The final report: fixed top-level keys, every section present with a status."""
+def assemble(merged: dict, parts: dict, only: Optional[list] = None) -> dict:
+    """The final report: fixed top-level keys, every section present with a status. `only`:
+    the parts a rerun ran (the others are recorded as not_run)."""
     rep = {"schema": SCHEMA_ID,
            "written_at": datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
            "blender": merged.get("blender", {}),
            "arp": merged.get("arp", {"loaded": None}),
            "parts": parts}
+    if only:
+        rep["only"] = list(only)
     loaded = rep["arp"].get("loaded")
     presets = dict(merged.get("presets", {}))
     for name in PRESETS:
@@ -165,12 +179,15 @@ def assemble(merged: dict, parts: dict) -> dict:
         elif "status" not in sec:
             sec = {"status": "partial", "reason": f"the '{part}' part did not record this", **sec}
         rep[name] = sec
-    known = set(rep) | {"part", "_current", "errors"}
+    known = set(rep) | {"part", "_current", "errors", "only"}
     rep["extra"] = {k: v for k, v in merged.items() if k not in known}
     rep["errors"] = list(merged.get("errors", []))
     rep["notes"] = ("Each section and preset has a status: ok, error (with 'error'), skipped, crashed, "
                     "not_run or timeout (with 'reason'). A crash or an error is a result too. "
                     "Paths are shortened: <forge> is the Forge folder, ~ the user's home folder.")
+    if only:
+        rep["notes"] += (" This file is a rerun of the parts in 'only'; the other parts are not_run here "
+                         f"and their results are in {RESULT_NAME}.")
     return rep
 
 
@@ -209,6 +226,9 @@ def validate(rep: dict, require_arp: bool = False) -> list[str]:
     if arp.get("loaded") and not arp.get("version"):
         p.append("arp.version missing")
     parts = rep.get("parts") or {}
+    only = rep.get("only")
+    if only is not None and (not isinstance(only, list) or not only or set(only) - set(PART_KEYS)):
+        p.append(f"only is {only!r}, expected a list of {list(PART_KEYS)}")
     for k in PART_KEYS:
         if (parts.get(k) or {}).get("status") not in PART_STATUSES:
             p.append(f"parts.{k}: missing or unknown status")
@@ -250,35 +270,69 @@ def dumps(o, ind: int = 0, width: int = 100) -> str:
     return "[\n" + ",\n".join(pad + dumps(v, ind + 1, width) for v in o) + "\n" + " " * ind + "]"
 
 
+def _path_pattern(root) -> Optional[str]:
+    """A pattern for the folder `root` however a log or this JSON file writes it: either slash,
+    any case, and backslashes doubled once or twice. Blender and Auto-Rig Pro print some paths
+    as Python strings ('C:\\\\Users\\\\...'), which JSON doubles again; the director's first
+    file kept the home folder in that form."""
+    text = str(root)
+    parts = [x for x in re.split(r"[\\/]+", text) if x]
+    if not parts or len("/".join(parts)) < 4:
+        return None
+    sep = r"(?:\\+|/)"
+    lead = sep if text[:1] in "\\/" else ""
+    return lead + sep.join(re.escape(x) for x in parts) + r"(?![\w-])"
+
+
 def _scrub(text: str, roots: list) -> str:
-    """Replace the Forge folder and the home folder with placeholders (the file is shared)."""
+    """Replace the Forge folder and the home folder with placeholders (the file is shared).
+    The more specific folder comes first in `roots` (the Forge folder is inside the home)."""
     for root, label in roots:
-        variants = {str(root), str(root).replace("\\", "/"), str(root).replace("/", "\\")}
-        for v in sorted(variants, key=len, reverse=True):
-            if len(v) < 4:
-                continue
-            for form in (v, json.dumps(v)[1:-1]):
-                text = re.sub(re.escape(form), lambda _m: label, text, flags=re.IGNORECASE)
+        pat = _path_pattern(root)
+        if pat:
+            text = re.sub(pat, lambda _m: label, text, flags=re.IGNORECASE)
     return text
 
 
+def _dig(d, *keys):
+    for k in keys:
+        d = d.get(k) if isinstance(d, dict) else None
+    return d
+
+
 def summary_lines(rep: dict) -> list[str]:
+    """Plain words for the console. A rerun (rep["only"]) counts only the parts it ran."""
     a, b = rep.get("arp") or {}, rep.get("blender") or {}
     arp = f"Auto-Rig Pro {a.get('version') or '?'}" if a.get("loaded") else "Auto-Rig Pro: not loaded"
     out = [f"{arp}, Blender {b.get('version') or '?'}"]
+    only = rep.get("only") if isinstance(rep.get("only"), list) else None
+    ran = set(only or PART_KEYS)
+    if only:
+        out.append(f"Rerun of: {', '.join(only)} (the full result file stays as it was)")
     rigs = []
     for name in PRESETS:
+        if PRESET_PART[name] not in ran:
+            continue
         e = rep.get("presets", {}).get(name) or {}
         n = e.get("ref_count")
         rigs.append(f"{name} {n} reference bone{'' if n == 1 else 's'}" if e.get("status") == "ok"
                     else f"{name}: {WORDS.get(e.get('status'), e.get('status'))}")
-    out.append("Rigs: " + ", ".join(rigs))
-    good = [s for s in SECTIONS if (rep.get(s) or {}).get("status") == "ok"]
-    out.append(f"Checks that worked: {len(good)} of {len(SECTIONS)}")
-    bad = [f"{s} ({WORDS.get(rep[s].get('status'), rep[s].get('status'))})" for s in SECTIONS
+    if rigs:
+        out.append("Rigs: " + ", ".join(rigs))
+    sections = [s for s, (part, _k) in SECTIONS.items() if part in ran]
+    good = [s for s in sections if (rep.get(s) or {}).get("status") == "ok"]
+    out.append(f"Checks that worked: {len(good)} of {len(sections)}")
+    bad = [f"{s} ({WORDS.get(rep[s].get('status'), rep[s].get('status'))})" for s in sections
            if (rep.get(s) or {}).get("status") != "ok"]
     if bad:
         out.append("Checks that did not work (that is useful to know too): " + ", ".join(bad))
+    faces = [f for f in (_dig(rep, *at) for at in FACIAL_AT) if isinstance(f, dict)]
+    said_no = [f for f in faces if f.get("facial") == "still on"]
+    if said_no:
+        out.append(f"Face-bones switch: Auto-Rig Pro said no on {len(said_no)} of {len(faces)} test rigs "
+                   "(what it saw is in the file)")
+    elif faces:
+        out.append("Face-bones switch: " + ", ".join(sorted({str(f.get("facial")) for f in faces})))
     return out
 
 
@@ -294,12 +348,12 @@ def _safe_say(say: Callable[[str], None]) -> Callable[[str], None]:
     return s
 
 
-def _report_text(merged: dict, parts: dict) -> tuple[str, Optional[str]]:
+def _report_text(merged: dict, parts: dict, only: Optional[list] = None) -> tuple[str, Optional[str]]:
     """The result file's text, and what went wrong making it (None when nothing did). Never
     raises: when the full report cannot be put together, a plainer one still keeps the data."""
     roots = [(ROOT, "<forge>"), (Path.home(), "~")]
     try:
-        return _scrub(dumps(assemble(merged, parts)), roots), None
+        return _scrub(dumps(assemble(merged, parts, only)), roots), None
     except Exception as exc:                    # noqa: BLE001
         problem = f"{type(exc).__name__}: {exc}"[:300]
     try:
@@ -325,32 +379,58 @@ def _write(targets: list, text: str, say: Callable[[str], None]) -> Optional[Pat
     return None
 
 
+def parse_only(text) -> list[str]:
+    """'multi_arm, limbs,build' -> ['multi_arm', 'limbs', 'build'] (a list is taken as it is)."""
+    items = text if isinstance(text, (list, tuple)) else str(text or "").split(",")
+    return [str(x).strip() for x in items if str(x).strip()]
+
+
 def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = None,
-        say: Callable[[str], None] = print, runner: Callable = run_stage) -> int:
+        say: Callable[[str], None] = print, runner: Callable = run_stage, only=None) -> int:
+    """Run the probe parts (all, or the ones in `only`) and write the result file."""
     t_start = time.time()
     say = _safe_say(say)
+    chosen = parse_only(only) if only else None
+    if only is not None and (not chosen or set(chosen) - set(PART_KEYS)):
+        wrong = ", ".join(sorted(set(chosen or []) - set(PART_KEYS))) or "nothing"
+        say(f"[X] --only takes part names from this list: {','.join(PART_KEYS)} (it got: {wrong}).")
+        say("    For example: --only multi_arm,limbs,build")
+        return 1
+    if chosen:
+        chosen = [k for k in PART_KEYS if k in chosen]          # in the probe's own order
     blender = blender or find_blender()
     if not blender:
-        say("[X] Blender was not found. Run `forge setup-blender` first, or add --blender \"C:\\path\\to\\blender.exe\".")
+        for line in blender_not_found_lines("forge arp-probe"):
+            say(line)
         return 1
     work = (Path(jobs_dir) / "_setup" / "arp_probe").resolve()     # Blender must never see relative paths
-    out = Path(out_path) if out_path else work / RESULT_NAME
+    name = RERUN_NAME if chosen else RESULT_NAME
+    out = Path(out_path) if out_path else work / name
+    if chosen and out.resolve() == (work / RESULT_NAME).resolve():
+        out = work / RERUN_NAME                                     # a rerun never replaces the full result
     logs, exports = work / "logs", work / "exports"
     exports.mkdir(parents=True, exist_ok=True)
     logs.mkdir(parents=True, exist_ok=True)
-    say("Auto-Rig Pro check for the new Step 8.")
-    say(f"Blender windows open and close by themselves {sum(1 for p in PARTS if p[2])} times "
-        "(about 5 minutes, up to 15 on a slow PC).")
+    todo = [p for p in PARTS if not chosen or p[0] in chosen]
+    say("Auto-Rig Pro check for the new Step 8." + (f" Rerun of: {', '.join(chosen)}." if chosen else ""))
+    say(f"Blender windows open and close by themselves {sum(1 for p in todo if p[2])} times "
+        + ("(a few minutes)." if chosen else "(about 5 minutes, up to 15 on a slow PC)."))
     say("Please don't close them or click in them. Your own Blender files and settings are not changed.")
 
     merged: dict = {}
     parts: dict = {}
     arp_missing = False
-    for i, (key, label, windowed, timeout) in enumerate(PARTS, 1):
+    arp_checked = False
+    n = 0
+    for key, label, windowed, timeout in PARTS:
+        if chosen and key not in chosen:
+            parts[key] = {"status": "not_run", "reason": NOT_IN_RERUN}
+            continue
         if arp_missing:
             parts[key] = {"status": "skipped", "reason": NO_ARP}
             continue
-        say(f"  [{i}/{len(PARTS)}] {label} ...")
+        n += 1
+        say(f"  [{n}/{len(todo)}] {label} ...")
         partial = work / f"{key}.partial.json"
         partial.unlink(missing_ok=True)
         log = logs / f"{key}.log"
@@ -395,7 +475,9 @@ def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = 
             say(f"  [!] {'Blender closed by itself' if st['status'] == 'crashed' else 'This part stopped'}: "
                 f"{st['message'][:160]}")
             say("      That is a result too - it is recorded in the file. Carrying on.")
-        if key == "basics" and st.get("arp_loaded") is False:
+        first_windowed = windowed and not arp_checked     # (ARP may not load without a window: a finding)
+        arp_checked = arp_checked or windowed
+        if first_windowed and st.get("arp_loaded") is False:
             arp_missing = True
             a = head_arp or {}
             say(f"[X] Auto-Rig Pro is not turned on in this Blender ({blender[0]}).")
@@ -405,8 +487,8 @@ def run(blender: Optional[list[str]], jobs_dir: str, out_path: Optional[Path] = 
             say("    then run this command again. (The file below is still written.)")
 
     # from here on nothing may stop the file being written or the plain-words summary being shown
-    text, write_error = _report_text(merged, parts)
-    written = _write([out, work / RESULT_NAME], text, say)
+    text, write_error = _report_text(merged, parts, chosen)
+    written = _write([out, work / name], text, say)
     try:
         report = json.loads(text)
         problems = validate(report)

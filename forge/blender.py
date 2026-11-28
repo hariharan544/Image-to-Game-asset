@@ -51,6 +51,41 @@ def find_blender() -> Optional[list[str]]:
     return None
 
 
+# where the Blender installer puts it on Windows (the version number follows the release)
+USUAL_BLENDER = r"C:\Program Files\Blender Foundation\Blender 5.3\blender.exe"
+
+
+def known_blender() -> Optional[str]:
+    """The Blender Forge would use without --blender, if it is really there."""
+    b = find_blender()
+    return b[0] if b and Path(b[0]).exists() else None
+
+
+def no_such_blender_lines(path: str, known: Optional[str]) -> list[str]:
+    """What to say when --blender names a file that is not there. The director once typed the
+    example from a message, C:\\path\\to\\blender.exe, word for word: say it was an example."""
+    lines = [f"[X] There is no blender.exe at {path}"]
+    if "path\\to\\" in str(path).replace("/", "\\").lower():
+        lines.append("    (That path was only an example of how to write it.)")
+    lines += ["    After --blender, give the real place of blender.exe on this PC. It is usually:",
+              f"      \"{USUAL_BLENDER}\"",
+              "      (the version number in the folder name may differ)."]
+    if known:
+        lines += ["    Or leave --blender out: Forge then uses the Blender it already knows:", f"      {known}"]
+    else:
+        lines.append("    Forge does not know a Blender on this PC yet: run `forge setup-blender` first.")
+    return lines
+
+
+def blender_not_found_lines(command: str) -> list[str]:
+    """What to say when no Blender was given and none was found (the path shown is an example)."""
+    return ["[X] Forge could not find Blender on this PC.",
+            f"    Install it (see docs/SETUP_BLENDER.md), then run `{command}` again. If Blender is",
+            "    installed somewhere unusual, add --blender with the real place of blender.exe,",
+            f"    for example: --blender \"{USUAL_BLENDER}\"",
+            "    (that is an example: use the folder Blender is in on your PC)."]
+
+
 def run_stage(stage: str, args: dict, log_path: Path, timeout: float = 3600,
               blender: Optional[list[str]] = None, factory_startup: bool = True,
               windowed: bool = False) -> dict:

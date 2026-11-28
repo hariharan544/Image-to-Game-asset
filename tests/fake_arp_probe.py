@@ -19,6 +19,9 @@ registers leaks into other tests. Behaviour follows ARP 3.77.33 where the probe 
     reports a heat-weighting failure and turns scene.arp_bind_scale_fix on, as ARP does
   - arp_export_fbx_panel writes the selection with Blender's FBX exporter
   - id.set_humanoid_rig / id.set_mped_rig exist (ARP registers them under "id.")
+With FAKE_ARP_POLL=before_add_limb in the environment, show_limb_params' check (poll) says no
+on a rig no limb was added to yet, as the director's Auto-Rig Pro 3.79.17 did for the face
+switch right after append_arp ("poll() failed, context is incorrect").
 """
 
 from __future__ import annotations
@@ -27,6 +30,8 @@ import os
 
 import bpy
 from mathutils import Vector
+
+POLL = os.environ.get("FAKE_ARP_POLL", "")
 
 LIMBS = [("arm.l", "Arm (Left)", ""), ("arm.r", "Arm (Right)", ""), ("ears", "Ears", ""),
          ("head", "Head", ""), ("leg.l", "Leg (Left)", ""), ("leg.r", "Leg (Right)", ""),
@@ -171,6 +176,13 @@ class FAKE_OT_show_limb_params(bpy.types.Operator):
     facial: bpy.props.BoolProperty(default=True)
     facial_mouth: bpy.props.BoolProperty(default=True)
 
+    @classmethod
+    def poll(cls, context):
+        rig = context.active_object
+        if POLL == "before_add_limb":
+            return rig is not None and bool(rig.get("fake_limb_added"))
+        return True
+
     def execute(self, context):
         rig = context.active_object
         eb = rig.data.edit_bones
@@ -207,6 +219,7 @@ class FAKE_OT_add_limb(bpy.types.Operator):
 
     def execute(self, context):
         rig = context.active_object
+        rig["fake_limb_added"] = True
         bpy.ops.object.mode_set(mode="EDIT")
         ad = rig.data
         kind = self.limbs_presets
